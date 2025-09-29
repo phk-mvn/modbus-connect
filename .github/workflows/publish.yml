@@ -1,4 +1,4 @@
-name: Publish to npm
+name: modbus-connect
 on:
   release:
     types: [created]
