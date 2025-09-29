@@ -1543,7 +1543,7 @@ You can add your own Modbus functions by implementing a pair of `build...Request
 <br>
 
 ## <span id="changelog">CHANGELOG</span>
-### **1.9.3 (2025-9-29)**
+### **1.9.4 (2025-9-29)**
 >**TCP/IP connectivity is expected to be added in the next version.**
 - Added full Github support
 
