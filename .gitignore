@@ -4,3 +4,4 @@ dist/
 *.log
 npm-debug.log*
 .DS_Store
+test-node.js

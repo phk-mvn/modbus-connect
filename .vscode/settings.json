@@ -5,7 +5,7 @@
     "workbench.list.smoothScrolling": true,
     "terminal.integrated.smoothScrolling": true,
     "editor.cursorBlinking": "expand",
-    "workbench.colorTheme": "Manjaro Halcyon Dark",
+    "workbench.colorTheme": "Sonokai Espresso",
     "workbench.iconTheme": "material-icon-theme",
     "editor.fontFamily": "JetBrains Mono",
     "editor.codeLensFontFamily": "JetBrains Mono",

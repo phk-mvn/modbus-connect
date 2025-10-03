@@ -1,7 +1,6 @@
 // function-codes/SGM130/closeFile.js
 
 const FUNCTION_CODE = 0x57;
-const EXPECTED_RESPONSE_SIZE = 1;
 
 /**
  * Строит PDU-запрос для закрытия файла (Close File)
@@ -26,15 +25,15 @@ function parseCloseFileResponse(response) {
         throw new TypeError('Response must be Uint8Array');
     }
 
-    const responseLength = response.length;
-    
-    if (responseLength === 0) {
-        console.warn('⚠️ Empty response for Close File command (0x57)');
-        return false;
+    // Устройство может не возвращать ответ или возвращать пустой ответ
+    if (response.length === 0) {
+        console.warn('⚠️ Empty response for Close File command (0x57) - device may have closed file automatically');
+        return true; // Считаем, что файл закрыт
     }
 
-    if (responseLength !== EXPECTED_RESPONSE_SIZE || response[0] !== FUNCTION_CODE) {
-        throw new Error(`Invalid response: expected [0x${FUNCTION_CODE.toString(16)}], got [${Array.from(response).map(b => '0x' + b.toString(16)).join(', ')}]`);
+    // Проверяем, что первый байт - код функции
+    if (response[0] !== FUNCTION_CODE) {
+        throw new Error(`Invalid response: expected [0x${FUNCTION_CODE.toString(16)}], got [0x${response[0].toString(16)}]`);
     }
 
     return true;

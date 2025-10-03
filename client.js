@@ -188,11 +188,7 @@ class ModbusClient {
           
       case 0x57: // Close File
           return 5; // slave(1) + func(1) + status(1) + CRC(2)
-          
-      case 0x5A: // Read File Chunk
-          if (pdu.length < 3) return null;
-          return 5 + (pdu[2] & 0xFF); // slave(1) + func(1) + chunkSize(1) + data(N) + CRC(2)
-          
+
       case 0x5C: // Restart Controller
           return 0; // Ответа не ожидается
           
@@ -227,7 +223,6 @@ class ModbusClient {
       const timeLeft = timeout - (Date.now() - start);
       if (timeLeft <= 0) throw new ModbusTimeoutError('Read timeout');
       
-      // Для функции 0x14 ждём минимум 5 байт (адрес + функция + канал + длина + 1 байт)
       const minPacketLength = 5;
       const bytesToRead = expectedLength 
         ? Math.max(1, expectedLength - buffer.length)
@@ -786,8 +781,27 @@ class ModbusClient {
    */
   async closeFile(timeout) {
     const pdu = buildCloseFileRequest();
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return parseCloseFileResponse(responsePdu);
+    const responsePdu = await this._sendRequest(pdu, timeout, true);
+    
+    // Если responsePdu === undefined (устройство не ответило), возвращаем успех
+    if (responsePdu === undefined) {
+        // Ждем немного и очищаем буфер
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (this.transport.flush) {
+            await this.transport.flush();
+        }
+        return true;
+    }
+    
+    const result = parseCloseFileResponse(responsePdu);
+    
+    // Ждем немного и очищаем буфер
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (this.transport.flush) {
+        await this.transport.flush();
+    }
+    
+    return result;
   }
 
   /**
@@ -797,7 +811,7 @@ class ModbusClient {
    */
   async restartController(timeout) {
     const pdu = buildRestartControllerRequest();
-    const responsePdu = await this._sendRequest(pdu, timeout);
+    const responsePdu = await this._sendRequest(pdu, timeout, true);
     return parseRestartControllerResponse(responsePdu);
   }
 

@@ -1543,8 +1543,14 @@ You can add your own Modbus functions by implementing a pair of `build...Request
 <br>
 
 ## <span id="changelog">CHANGELOG</span>
+### 2.0.2 (2025-10-03)
+- Fixed `file opening` function for **SGM130**
+- Fixed `file closing` function for **SGM130**
+- Fixed **autoreconnect** for `WebSerialTransport` and `NodeSerialTransport`
+> **TCP/IP connection capability is being tested and improved**
+
 ### **2.0.1 (2025-9-29)**
->**TCP/IP connectivity is expected to be added in the next version.**
+> **TCP/IP connectivity is expected to be added in the next version.**
 - Added full Github support
 
 ### **1.9.2 (2025-8-16)**
