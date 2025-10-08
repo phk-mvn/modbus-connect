@@ -4519,6 +4519,12 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 <br>
 
 # <span id="changelog">CHANGELOG</span>
+### 2.0.6 (2025-10-08)
+- The logger is now represented in the Logger video class.
+- Loggers in `PollingManager`, `ModbusClient`, and `SlaveEmulator` are disabled by default.
+- Methods have been added to enable loggers in `PollingManager`, `ModbusClient`, and `SlaveEmulator`.
+- The library documentation has been completely revised.
+
 ### 2.0.2 (2025-10-03)
 - Fixed `file opening` function for **SGM130**
 - Fixed `file closing` function for **SGM130**
