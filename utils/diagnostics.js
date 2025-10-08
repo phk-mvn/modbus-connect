@@ -1,6 +1,15 @@
 // utils/diagnostics.js
 const { FUNCTION_CODES, EXCEPTION_CODES } = require('../constants/constants');
-const logger = require('../logger');
+const Logger = require('../logger');
+const logger = new Logger();
+logger.setLevel('info'); // Включаем info уровень по умолчанию
+
+// Настраиваем формат лога: timestamp, level, logger
+logger.setLogFormat(['timestamp', 'level', 'logger']);
+// Устанавливаем кастомный форматтер для logger
+logger.setCustomFormatter('logger', (value) => {
+    return value ? `[${value}]` : '';
+});
 
 /**
  * Class that collects and analyzes statistics about Modbus communication.
@@ -19,7 +28,8 @@ class Diagnostics {
     this.notificationThreshold = options.notificationThreshold || 10;
     this.errorRateThreshold = options.errorRateThreshold || 10; // % error rate
     this.slaveIds = Array.isArray(options.slaveId) ? options.slaveId : [options.slaveId || 1];
-    this.logger = logger.createLogger(options.loggerName || 'diagnostics');
+    this.logger = logger.createLogger(options.loggerName || 'Diagnostics');
+    this.logger.setLevel('none'); // Отключаем логгер Diagnostics изначально
     this.reset();
   }
 
@@ -120,7 +130,7 @@ class Diagnostics {
    */
   destroy() {
     this.reset();
-    this.logger.pause(); // Отключаем логгер
+    this.logger.setLevel('none'); // Отключаем логгер
   }
 
   /**
@@ -143,7 +153,8 @@ class Diagnostics {
       slaveId: this.slaveIds.join(','),
       errorCount: notification.errorCount,
       errorRate: notification.errorRate,
-      lastError: notification.lastError
+      lastError: notification.lastError,
+      logger: 'Diagnostics'
     });
   }
 
@@ -158,7 +169,11 @@ class Diagnostics {
     this.requestTimestamps.push(Date.now());
     if (this.requestTimestamps.length > 1000) this.requestTimestamps.shift(); // Ограничиваем историю
 
-    this.logger.trace('Request sent', { slaveId: slaveId || this.slaveIds[0], funcCode });
+    this.logger.trace('Request sent', { 
+      slaveId: slaveId || this.slaveIds[0], 
+      funcCode,
+      logger: 'Diagnostics' 
+    });
   }
 
   /**
@@ -169,7 +184,11 @@ class Diagnostics {
    */
   recordRetry(attempts, slaveId, funcCode) {
     this.totalRetries += attempts;
-    this.logger.debug(`Retry attempt #${attempts}`, { slaveId: slaveId || this.slaveIds[0], funcCode });
+    this.logger.debug(`Retry attempt #${attempts}`, { 
+      slaveId: slaveId || this.slaveIds[0], 
+      funcCode,
+      logger: 'Diagnostics' 
+    });
   }
 
   /**
@@ -179,7 +198,11 @@ class Diagnostics {
    */
   recordRetrySuccess(slaveId, funcCode) {
     this.totalRetrySuccesses++;
-    this.logger.debug('Retry successful', { slaveId: slaveId || this.slaveIds[0], funcCode });
+    this.logger.debug('Retry successful', { 
+      slaveId: slaveId || this.slaveIds[0], 
+      funcCode,
+      logger: 'Diagnostics' 
+    });
   }
 
   /**
@@ -195,7 +218,8 @@ class Diagnostics {
     this.logger.trace('Function called', {
       slaveId: slaveId || this.slaveIds[0],
       funcCode,
-      funcName: Object.keys(FUNCTION_CODES).find(k => FUNCTION_CODES[k] === funcCode) || 'Unknown'
+      funcName: Object.keys(FUNCTION_CODES).find(k => FUNCTION_CODES[k] === funcCode) || 'Unknown',
+      logger: 'Diagnostics'
     });
   }
 
@@ -222,11 +246,12 @@ class Diagnostics {
       slaveId: slaveId || this.slaveIds[0]
     };
 
-    this.logger.info('Response received', {
-      slaveId: slaveId || this.slaveIds[0],
-      funcCode,
-      responseTime: responseTimeMs
-    });
+    // this.logger.info('Response received', {
+    //   slaveId: slaveId || this.slaveIds[0],
+    //   funcCode,
+    //   responseTime: responseTimeMs,
+    //   logger: 'Diagnostics'
+    // });
   }
 
   /**
@@ -270,7 +295,8 @@ class Diagnostics {
       slaveId: slaveId || this.slaveIds[0],
       funcCode,
       exceptionCode,
-      responseTime: responseTimeMs
+      responseTime: responseTimeMs,
+      logger: 'Diagnostics'
     });
 
     this.sendNotification();
@@ -284,7 +310,11 @@ class Diagnostics {
    */
   recordDataSent(byteLength, slaveId, funcCode) {
     this.totalDataSent += byteLength;
-    this.logger.trace(`Data sent: ${byteLength} bytes`, { slaveId: slaveId || this.slaveIds[0], funcCode });
+    this.logger.trace(`Data sent: ${byteLength} bytes`, { 
+      slaveId: slaveId || this.slaveIds[0], 
+      funcCode,
+      logger: 'Diagnostics' 
+    });
   }
 
   /**
@@ -295,7 +325,11 @@ class Diagnostics {
    */
   recordDataReceived(byteLength, slaveId, funcCode) {
     this.totalDataReceived += byteLength;
-    this.logger.trace(`Data received: ${byteLength} bytes`, { slaveId: slaveId || this.slaveIds[0], funcCode });
+    this.logger.trace(`Data received: ${byteLength} bytes`, { 
+      slaveId: slaveId || this.slaveIds[0], 
+      funcCode,
+      logger: 'Diagnostics' 
+    });
   }
 
   /**
@@ -423,33 +457,35 @@ class Diagnostics {
    */
   printStats() {
     const stats = this.getStats();
-    this.logger.info('=== Modbus Diagnostics ===');
-    this.logger.info(`Slave IDs: ${stats.slaveIds.join(', ')}`);
-    this.logger.info(`Uptime: ${stats.uptimeSeconds} seconds`);
-    this.logger.info(`Total Sessions: ${stats.totalSessions}`);
-    this.logger.info(`Total Requests: ${stats.totalRequests}`);
-    this.logger.info(`Successful Responses: ${stats.successfulResponses}`);
-    this.logger.info(`Error Responses: ${stats.errorResponses} (Rate: ${stats.errorRate?.toFixed(2) || 'N/A'}%)`);
-    this.logger.info(`Timeouts: ${stats.timeouts}`);
-    this.logger.info(`CRC Errors: ${stats.crcErrors}`);
-    this.logger.info(`Modbus Exceptions: ${stats.modbusExceptions}`);
-    this.logger.info(`Exception Codes: ${JSON.stringify(stats.exceptionCodeCounts, null, 2)}`);
-    this.logger.info(`Total Retries: ${stats.totalRetries}`);
-    this.logger.info(`Successful Retries: ${stats.totalRetrySuccesses}`);
-    this.logger.info(`Last Response Time: ${stats.lastResponseTime || 'N/A'} ms`);
-    this.logger.info(`Min Response Time: ${stats.minResponseTime || 'N/A'} ms`);
-    this.logger.info(`Max Response Time: ${stats.maxResponseTime || 'N/A'} ms`);
-    this.logger.info(`Average Response Time (Success): ${stats.averageResponseTime?.toFixed(2) || 'N/A'} ms`);
-    this.logger.info(`Average Response Time (All): ${stats.averageResponseTimeAll?.toFixed(2) || 'N/A'} ms`);
-    this.logger.info(`Requests per Second: ${stats.requestsPerSecond?.toFixed(2) || 'N/A'}`);
-    this.logger.info(`Data Sent: ${stats.dataSent} bytes`);
-    this.logger.info(`Data Received: ${stats.dataReceived} bytes`);
-    this.logger.info(`Last Request: ${stats.lastRequestTimestamp || 'N/A'}`);
-    this.logger.info(`Last Success: ${stats.lastSuccessTimestamp || 'N/A'}`);
-    this.logger.info(`Last Error: ${stats.lastErrorTimestamp || 'N/A'}`);
-    this.logger.info('Function Calls:', JSON.stringify(stats.functionCallCounts, null, 2));
-    this.logger.info('Common Errors:', JSON.stringify(stats.commonErrors, null, 2));
-    this.logger.info('=========================');
+    this.logger.info('=== Modbus Diagnostics ===', { logger: 'Diagnostics' });
+    this.logger.info(`Slave IDs: ${stats.slaveIds.join(', ')}`, { logger: 'Diagnostics' });
+    this.logger.info(`Uptime: ${stats.uptimeSeconds} seconds`, { logger: 'Diagnostics' });
+    this.logger.info(`Total Sessions: ${stats.totalSessions}`, { logger: 'Diagnostics' });
+    this.logger.info(`Total Requests: ${stats.totalRequests}`, { logger: 'Diagnostics' });
+    this.logger.info(`Successful Responses: ${stats.successfulResponses}`, { logger: 'Diagnostics' });
+    this.logger.info(`Error Responses: ${stats.errorResponses} (Rate: ${stats.errorRate?.toFixed(2) || 'N/A'}%)`, { logger: 'Diagnostics' });
+    this.logger.info(`Timeouts: ${stats.timeouts}`, { logger: 'Diagnostics' });
+    this.logger.info(`CRC Errors: ${stats.crcErrors}`, { logger: 'Diagnostics' });
+    this.logger.info(`Modbus Exceptions: ${stats.modbusExceptions}`, { logger: 'Diagnostics' });
+    this.logger.info(`Exception Codes: ${JSON.stringify(stats.exceptionCodeCounts, null, 2)}`, { logger: 'Diagnostics' });
+    this.logger.info(`Total Retries: ${stats.totalRetries}`, { logger: 'Diagnostics' });
+    this.logger.info(`Successful Retries: ${stats.totalRetrySuccesses}`, { logger: 'Diagnostics' });
+    this.logger.info(`Last Response Time: ${stats.lastResponseTime || 'N/A'} ms`, { logger: 'Diagnostics' });
+    this.logger.info(`Min Response Time: ${stats.minResponseTime || 'N/A'} ms`, { logger: 'Diagnostics' });
+    this.logger.info(`Max Response Time: ${stats.maxResponseTime || 'N/A'} ms`, { logger: 'Diagnostics' });
+    this.logger.info(`Average Response Time (Success): ${stats.averageResponseTime?.toFixed(2) || 'N/A'} ms`, { logger: 'Diagnostics' });
+    this.logger.info(`Average Response Time (All): ${stats.averageResponseTimeAll?.toFixed(2) || 'N/A'} ms`, { logger: 'Diagnostics' });
+    this.logger.info(`Requests per Second: ${stats.requestsPerSecond?.toFixed(2) || 'N/A'}`, { logger: 'Diagnostics' });
+    this.logger.info(`Data Sent: ${stats.dataSent} bytes`, { logger: 'Diagnostics' });
+    this.logger.info(`Data Received: ${stats.dataReceived} bytes`, { logger: 'Diagnostics' });
+    this.logger.info(`Last Request: ${stats.lastRequestTimestamp || 'N/A'}`, { logger: 'Diagnostics' });
+    this.logger.info(`Last Success: ${stats.lastSuccessTimestamp || 'N/A'}`, { logger: 'Diagnostics' });
+    this.logger.info(`Last Error: ${stats.lastErrorTimestamp || 'N/A'}`, { logger: 'Diagnostics' });
+    this.logger.info('Function Calls:', { logger: 'Diagnostics' });
+    this.logger.info(JSON.stringify(stats.functionCallCounts, null, 2), { logger: 'Diagnostics' });
+    this.logger.info('Common Errors:', { logger: 'Diagnostics' });
+    this.logger.info(JSON.stringify(stats.commonErrors, null, 2), { logger: 'Diagnostics' });
+    this.logger.info('=========================', { logger: 'Diagnostics' });
   }
 
   /**
@@ -526,7 +562,10 @@ class Diagnostics {
     this.requestTimestamps.push(...other.requestTimestamps);
     if (this.requestTimestamps.length > 1000) this.requestTimestamps = this.requestTimestamps.slice(-1000);
 
-    this.logger.info('Merged diagnostics', { slaveIds: other.slaveIds });
+    this.logger.info('Merged diagnostics', { 
+      slaveIds: other.slaveIds,
+      logger: 'Diagnostics' 
+    });
   }
 }
 

@@ -8,7 +8,9 @@ const {
   allocUint8Array,
   isUint8Array
 } = require('../../utils/utils.js');
-const logger = require('../../logger.js');
+const Logger = require('../../logger.js');
+const logger = new Logger();
+logger.setLevel('info'); // Включаем trace уровень
 
 const {
   ModbusError,
@@ -54,19 +56,25 @@ class NodeSerialTransport {
     this._connectionPromise = null;
     this._resolveConnection = null;
     this._rejectConnection = null;
+    
+    // Настраиваем формат лога
+    logger.setLogFormat(['timestamp', 'level', 'logger']);
+    logger.setCustomFormatter('logger', (value) => {
+        return value ? `[${value}]` : '';
+    });
   }
 
   async connect() {
     // Если максимальное количество попыток достигнуто, сразу бросаем ошибку
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts && !this.isOpen) {
       const error = new Error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`);
-      logger.error(`Connection failed: ${error.message}`);
+      logger.error(`Connection failed: ${error.message}`, { logger: 'NodeSerialTransport' });
       throw error;
     }
 
     // Предотвращаем двойное подключение
     if (this._isConnecting) {
-      logger.warn(`Connection attempt already in progress, waiting for it to complete`);
+      logger.warn(`Connection attempt already in progress, waiting for it to complete`, { logger: 'NodeSerialTransport' });
       if (this._connectionPromise) {
         return this._connectionPromise;
       }
@@ -90,11 +98,11 @@ class NodeSerialTransport {
 
       // Если у нас есть старый порт, убедимся, что он закрыт
       if (this.port && this.port.isOpen) {
-        logger.warn(`Closing existing port before reconnecting to ${this.path}`);
+        logger.warn(`Closing existing port before reconnecting to ${this.path}`, { logger: 'NodeSerialTransport' });
         await new Promise((resolve, reject) => {
           this.port.close((err) => {
             if (err) {
-              logger.warn(`Error closing existing port: ${err.message}`);
+              logger.error(`Error closing existing port: ${err.message}`, { logger: 'NodeSerialTransport' });
             }
             resolve();
           });
@@ -104,7 +112,7 @@ class NodeSerialTransport {
       // Создаем и открываем новый порт
       await this._createAndOpenPort();
 
-      logger.info(`Serial port ${this.path} opened`);
+      logger.info(`Serial port ${this.path} opened`, { logger: 'NodeSerialTransport' });
       
       // Разрешаем промис успешного подключения
       if (this._resolveConnection) {
@@ -115,14 +123,14 @@ class NodeSerialTransport {
       
       return this._connectionPromise;
     } catch (err) {
-      logger.error(`Failed to open serial port ${this.path}: ${err.message}`);
+      logger.error(`Failed to open serial port ${this.path}: ${err.message}`, { logger: 'NodeSerialTransport' });
       
       this.isOpen = false;
       
       // Если достигнуто максимальное количество попыток, отклоняем промис
       if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
         const maxAttemptsError = new Error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`);
-        logger.error(`Max reconnect attempts reached, connection failed`);
+        logger.error(`Max reconnect attempts reached, connection failed`, { logger: 'NodeSerialTransport' });
         if (this._rejectConnection) {
           this._rejectConnection(maxAttemptsError);
           this._resolveConnection = null;
@@ -164,7 +172,7 @@ class NodeSerialTransport {
 
         this.port.open(err => {
           if (err) {
-            logger.error(`Failed to open serial port ${this.path}: ${err.message}`);
+            logger.error(`Failed to open serial port ${this.path}: ${err.message}`, { logger: 'NodeSerialTransport' });
             this.isOpen = false;
             return reject(err);
           }
@@ -209,7 +217,7 @@ class NodeSerialTransport {
   }
 
   _onError(err) {
-    logger.error(`Serial port ${this.path} error: ${err.message}`);
+    logger.error(`Serial port ${this.path} error: ${err.message}`, { logger: 'NodeSerialTransport' });
     this.readBuffer = allocUint8Array(0);
     // Порт может быть уже закрыт, но если нет - закрываем
     if (this.isOpen) {
@@ -219,7 +227,7 @@ class NodeSerialTransport {
   }
 
   _onClose() {
-    logger.warn(`Serial port ${this.path} closed`);
+    logger.info(`Serial port ${this.path} closed`, { logger: 'NodeSerialTransport' });
     this.isOpen = false;
     this._removeAllListeners();
     
@@ -230,7 +238,7 @@ class NodeSerialTransport {
 
   _scheduleReconnect(err) {
     if (!this._shouldReconnect || this._isDisconnecting) {
-      logger.info('Reconnect disabled or disconnecting, not scheduling');
+      logger.warn('Reconnect disabled or disconnecting, not scheduling', { logger: 'NodeSerialTransport' });
       return;
     }
 
@@ -239,7 +247,7 @@ class NodeSerialTransport {
     }
 
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
-      logger.error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached for ${this.path}`);
+      logger.error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached for ${this.path}`, { logger: 'NodeSerialTransport' });
       // Отклоняем промис, если достигнуто максимальное количество попыток
       if (this._rejectConnection) {
         const maxAttemptsError = new Error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`);
@@ -253,7 +261,7 @@ class NodeSerialTransport {
     }
 
     this._reconnectAttempts++;
-    logger.info(`Scheduling reconnect to ${this.path} in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`);
+    logger.info(`Scheduling reconnect to ${this.path} in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`, { logger: 'NodeSerialTransport' });
     
     this._reconnectTimeout = setTimeout(() => {
       this._reconnectTimeout = null;
@@ -272,7 +280,7 @@ class NodeSerialTransport {
 
       await this._createAndOpenPort();
 
-      logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
+      logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`, { logger: 'NodeSerialTransport' });
       this._reconnectAttempts = 0;
       
       // Разрешаем промис, если он еще существует
@@ -282,7 +290,7 @@ class NodeSerialTransport {
         this._rejectConnection = null;
       }
     } catch (err) {
-      logger.warn(`Reconnect attempt ${this._reconnectAttempts} failed: ${err.message}`);
+      logger.error(`Reconnect attempt ${this._reconnectAttempts} failed: ${err.message}`, { logger: 'NodeSerialTransport' });
       this._reconnectAttempts++;
       
       if (this._shouldReconnect && !this._isDisconnecting && this._reconnectAttempts <= this.options.maxReconnectAttempts) {
@@ -300,9 +308,9 @@ class NodeSerialTransport {
   }
 
   async flush(){
-    logger.debug('Flushing NodeSerial transport buffer')
+    logger.info('Flushing NodeSerial transport buffer', { logger: 'NodeSerialTransport' })
     if(this._isFlushing){
-      logger.warn('Flush already in progress')
+      logger.info('Flush already in progress', { logger: 'NodeSerialTransport' })
       return Promise.all(this._pendingFlushPromises).catch(() => {})
     }
 
@@ -313,12 +321,12 @@ class NodeSerialTransport {
 
     try {
       this.readBuffer = allocUint8Array(0)
-      logger.debug('NodeSerial read buffer flushed')
+      logger.info('NodeSerial read buffer flushed', { logger: 'NodeSerialTransport' })
     } finally {
       this._isFlushing = false
       this._pendingFlushPromises.forEach((resolve) => resolve())
       this._pendingFlushPromises = []
-      logger.debug('NodeSerial transport flush completed')
+      logger.info('NodeSerial transport flush completed', { logger: 'NodeSerialTransport' })
     }
 
     return flushPromise
@@ -326,7 +334,7 @@ class NodeSerialTransport {
 
   async write(buffer) {
     if (!this.isOpen || !this.port || !this.port.isOpen) {
-      logger.warn(`Write attempted on closed port ${this.path}`);
+      logger.info(`Write attempted on closed port ${this.path}`, { logger: 'NodeSerialTransport' });
       throw new Error('Port is closed');
     }
 
@@ -335,12 +343,12 @@ class NodeSerialTransport {
       return new Promise((resolve, reject) => {
         this.port.write(buffer, err => {
           if (err) {
-            logger.error(`Write error on port ${this.path}: ${err.message}`);
+            logger.error(`Write error on port ${this.path}: ${err.message}`, { logger: 'NodeSerialTransport' });
             return reject(err);
           }
           this.port.drain(drainErr => {
             if (drainErr) {
-              logger.error(`Drain error on port ${this.path}: ${drainErr.message}`);
+              logger.info(`Drain error on port ${this.path}: ${drainErr.message}`, { logger: 'NodeSerialTransport' });
               return reject(drainErr);
             }
             resolve();
@@ -360,23 +368,23 @@ class NodeSerialTransport {
       return new Promise((resolve, reject) => {
         const checkData = () => {
           if (!this.isOpen || !this.port || !this.port.isOpen) {
-            logger.warn('Read operation interrupted: port is not open');
+            logger.info('Read operation interrupted: port is not open', { logger: 'NodeSerialTransport' });
             return reject(new Error('Port is closed'));
           }
           
           if (this._isFlushing) {
-            logger.debug('Read operation interrupted by flush');
+            logger.info('Read operation interrupted by flush', { logger: 'NodeSerialTransport' });
             return reject(new ModbusFlushError());
           }
 
           if (this.readBuffer.length >= length) {
             const data = sliceUint8Array(this.readBuffer, 0, length);
             this.readBuffer = sliceUint8Array(this.readBuffer, length);
-            logger.debug(`Read ${length} bytes from ${this.path}`);
+            logger.trace(`Read ${length} bytes from ${this.path}`, { logger: 'NodeSerialTransport' });
             return resolve(data);
           }
           if (Date.now() - start > timeout) {
-            logger.warn(`Read timeout on ${this.path}`);
+            logger.error(`Read timeout on ${this.path}`, { logger: 'NodeSerialTransport' });
             return reject(new Error('Read timeout'));
           }
           setTimeout(checkData, 10);
@@ -420,11 +428,11 @@ class NodeSerialTransport {
         this.isOpen = false;
         
         if (err) {
-          logger.error(`Error closing port ${this.path}: ${err.message}`);
+          logger.error(`Error closing port ${this.path}: ${err.message}`, { logger: 'NodeSerialTransport' });
           return reject(err);
         }
         
-        logger.info(`Serial port ${this.path} closed`);
+        logger.info(`Serial port ${this.path} closed`, { logger: 'NodeSerialTransport' });
         resolve();
       });
     });
@@ -450,10 +458,10 @@ class NodeSerialTransport {
       try {
         this._removeAllListeners();
         this.port.close(() => {
-          logger.info(`Port ${this.path} destroyed`);
+          logger.info(`Port ${this.path} destroyed`, { logger: 'NodeSerialTransport' });
         });
       } catch (err) {
-        logger.error(`Error destroying port ${this.path}: ${err.message}`);
+        logger.error(`Error destroying port ${this.path}: ${err.message}`, { logger: 'NodeSerialTransport' });
       }
     }
     

@@ -1,6 +1,6 @@
 // transport/web-transports/web-serialport.js
 
-const logger = require("../../logger.js");
+const Logger = require("../../logger.js");
 const { allocUint8Array } = require("../../utils/utils.js");
 const { Mutex } = require('async-mutex');
 
@@ -13,6 +13,15 @@ const {
   ModbusExceptionError,
   ModbusFlushError
 } = require('../../errors.js')
+
+const logger = new Logger();
+logger.setLevel('info'); // Включаем info уровень
+
+// Настраиваем формат лога
+logger.setLogFormat(['timestamp', 'level', 'logger']);
+logger.setCustomFormatter('logger', (value) => {
+    return value ? `[${value}]` : '';
+});
 
 class WebSerialTransport {
   constructor(portFactory, options = {}) {
@@ -58,7 +67,7 @@ class WebSerialTransport {
 
   async connect() {
     if (this._isConnecting) {
-      logger.warn('Connection attempt already in progress, waiting for it to complete');
+      logger.warn('Connection attempt already in progress, waiting for it to complete', { logger: 'WebSerialTransport' });
       return this._connectionPromise;
     }
 
@@ -78,10 +87,10 @@ class WebSerialTransport {
       this._shouldReconnect = true;
       this._emptyReadCount = 0;
 
-      logger.debug('Requesting new SerialPort instance from factory...');
+      logger.debug('Requesting new SerialPort instance from factory...', { logger: 'WebSerialTransport' });
       
       if (this.port && this.isOpen) {
-        logger.warn('Closing existing port before reconnecting');
+        logger.warn('Closing existing port before reconnecting', { logger: 'WebSerialTransport' });
         await this._forceCloseCurrentPort();
       }
 
@@ -89,7 +98,7 @@ class WebSerialTransport {
       if (!this.port || typeof this.port.open !== 'function') {
           throw new Error('Port factory did not return a valid SerialPort object.');
       }
-      logger.debug('New SerialPort instance acquired.');
+      logger.debug('New SerialPort instance acquired.', { logger: 'WebSerialTransport' });
 
       this._cleanupResources();
 
@@ -106,7 +115,7 @@ class WebSerialTransport {
 
       if (!readable || !writable) {
         const errorMsg = 'Serial port not readable/writable after open';
-        logger.error(errorMsg);
+        logger.error(errorMsg, { logger: 'WebSerialTransport' });
         await this._forceCloseCurrentPort();
         throw new Error(errorMsg);
       }
@@ -117,7 +126,7 @@ class WebSerialTransport {
       this._reconnectAttempts = 0;
 
       this._startReading();
-      logger.info('WebSerial port opened successfully with new instance');
+      logger.info('WebSerial port opened successfully with new instance', { logger: 'WebSerialTransport' });
       
       if (this._resolveConnection) {
         this._resolveConnection();
@@ -127,12 +136,12 @@ class WebSerialTransport {
       
       return this._connectionPromise;
     } catch (err) {
-      logger.error(`Failed to open WebSerial port: ${err.message}`);
+      logger.error(`Failed to open WebSerial port: ${err.message}`, { logger: 'WebSerialTransport' });
       
       this.isOpen = false;
       
       if (this._shouldReconnect && this._reconnectAttempts < this.options.maxReconnectAttempts) {
-        logger.info('Auto-reconnect enabled, starting reconnect process...');
+        logger.info('Auto-reconnect enabled, starting reconnect process...', { logger: 'WebSerialTransport' });
         this._scheduleReconnect(err);
         
         return this._connectionPromise;
@@ -152,7 +161,7 @@ class WebSerialTransport {
   async _forceCloseCurrentPort() {
     if (!this.port) return;
 
-    logger.debug('Force closing current port...');
+    logger.debug('Force closing current port...', { logger: 'WebSerialTransport' });
     
     this._readLoopActive = false;
     if (this._readLoopAbortController) {
@@ -165,7 +174,7 @@ class WebSerialTransport {
         await this.reader.cancel();
         this.reader.releaseLock();
       } catch (err) {
-        logger.debug('Error cancelling reader:', err.message);
+        logger.debug('Error cancelling reader:', err.message, { logger: 'WebSerialTransport' });
       }
       this.reader = null;
     }
@@ -175,7 +184,7 @@ class WebSerialTransport {
         this.writer.releaseLock();
         await this.writer.close().catch(() => {});
       } catch (err) {
-        logger.debug('Error releasing writer:', err.message);
+        logger.debug('Error releasing writer:', err.message, { logger: 'WebSerialTransport' });
       }
       this.writer = null;
     }
@@ -183,9 +192,9 @@ class WebSerialTransport {
     if (this.port && this.port.opened) {
       try {
         await this.port.close();
-        logger.debug('Port closed successfully');
+        logger.debug('Port closed successfully', { logger: 'WebSerialTransport' });
       } catch (err) {
-        logger.warn(`Error closing port: ${err.message}`);
+        logger.warn(`Error closing port: ${err.message}`, { logger: 'WebSerialTransport' });
       }
     }
 
@@ -195,7 +204,7 @@ class WebSerialTransport {
   }
 
   _cleanupResources() {
-    logger.debug('Cleaning up WebSerial resources');
+    logger.debug('Cleaning up WebSerial resources', { logger: 'WebSerialTransport' });
     
     this._readLoopActive = false;
     if (this._readLoopAbortController) {
@@ -208,7 +217,7 @@ class WebSerialTransport {
         this.reader.cancel();
         this.reader.releaseLock(); 
       } catch (e) { 
-        logger.debug('Error releasing reader:', e.message); 
+        logger.debug('Error releasing reader:', e.message, { logger: 'WebSerialTransport' }); 
       }
       this.reader = null;
     }
@@ -217,7 +226,7 @@ class WebSerialTransport {
       try { 
         this.writer.releaseLock(); 
       } catch (e) { 
-        logger.debug('Error releasing writer:', e.message); 
+        logger.debug('Error releasing writer:', e.message, { logger: 'WebSerialTransport' }); 
       }
       this.writer = null;
     }
@@ -229,13 +238,13 @@ class WebSerialTransport {
 
   _startReading() {
     if (!this.isOpen || !this.reader || this._readLoopActive) {
-        logger.warn('Cannot start reading: port not open, no reader, or loop already active');
+        logger.warn('Cannot start reading: port not open, no reader, or loop already active', { logger: 'WebSerialTransport' });
         return;
     }
 
     this._readLoopActive = true;
     this._readLoopAbortController = new AbortController();
-    logger.debug('Starting read loop');
+    logger.debug('Starting read loop', { logger: 'WebSerialTransport' });
 
     const loop = async () => {
       try {
@@ -244,7 +253,7 @@ class WebSerialTransport {
             const { value, done } = await this.reader.read();
             
             if (done || this._readLoopAbortController.signal.aborted) {
-              logger.warn('WebSerial read stream closed (done=' + done + ')');
+              logger.warn('WebSerial read stream closed (done=' + done + ')', { logger: 'WebSerialTransport' });
               this._readLoopActive = false;
               this._onClose();
               break;
@@ -259,7 +268,7 @@ class WebSerialTransport {
             } else {
               this._emptyReadCount++;
               if (this._emptyReadCount >= this.options.maxEmptyReadsBeforeReconnect) {
-                logger.warn(`Too many empty reads (${this._emptyReadCount}), triggering reconnect`);
+                logger.warn(`Too many empty reads (${this._emptyReadCount}), triggering reconnect`, { logger: 'WebSerialTransport' });
                 this._emptyReadCount = 0;
                 this._readLoopActive = false;
                 this._onError(new ModbusTooManyEmptyReadsError());
@@ -268,10 +277,10 @@ class WebSerialTransport {
             }
           } catch (readErr) {
             if (this._readLoopAbortController.signal.aborted) {
-              logger.debug('Read loop aborted');
+              logger.debug('Read loop aborted', { logger: 'WebSerialTransport' });
               break;
             }
-            logger.warn(`Read operation error: ${readErr.message}`);
+            logger.warn(`Read operation error: ${readErr.message}`, { logger: 'WebSerialTransport' });
             this._readLoopActive = false;
             this._onError(readErr);
             break;
@@ -279,20 +288,20 @@ class WebSerialTransport {
         }
       } catch (loopErr) {
         if (this._readLoopAbortController.signal.aborted) {
-          logger.debug('Read loop aborted externally');
+          logger.debug('Read loop aborted externally', { logger: 'WebSerialTransport' });
         } else {
-          logger.error(`Unexpected error in read loop: ${loopErr.message}`);
+          logger.error(`Unexpected error in read loop: ${loopErr.message}`, { logger: 'WebSerialTransport' });
           this._readLoopActive = false;
           this._onError(loopErr);
         }
       } finally {
         this._readLoopActive = false;
-        logger.debug('Read loop finished');
+        logger.debug('Read loop finished', { logger: 'WebSerialTransport' });
       }
     };
     
     loop().catch(err => {
-      logger.error('Read loop promise rejected:', err);
+      logger.error('Read loop promise rejected:', err, { logger: 'WebSerialTransport' });
       this._readLoopActive = false;
       this._onError(err);
     });
@@ -300,12 +309,12 @@ class WebSerialTransport {
 
   async write(buffer) {
     if (this._isFlushing) {
-      logger.debug('Write operation aborted due to ongoing flush');
+      logger.debug('Write operation aborted due to ongoing flush', { logger: 'WebSerialTransport' });
       throw new ModbusFlushError();
     }
 
     if(!this.isOpen || !this.writer){
-      logger.warn(`Write attempted on closed/unready port`);
+      logger.warn(`Write attempted on closed/unready port`, { logger: 'WebSerialTransport' });
       throw new Error('Port is closed or not ready for writing');
     }
 
@@ -317,14 +326,14 @@ class WebSerialTransport {
 
       try {
         await this.writer.write(buffer, { signal: abort.signal });
-        logger.debug(`Wrote ${buffer.length} bytes to WebSerial port`);
+        logger.debug(`Wrote ${buffer.length} bytes to WebSerial port`, { logger: 'WebSerialTransport' });
       } catch (err) {
         if (abort.signal.aborted) {
-          logger.warn(`Write timeout on WebSerial port`);
+          logger.warn(`Write timeout on WebSerial port`, { logger: 'WebSerialTransport' });
           this._onError(new ModbusTimeoutError('Write timeout'));
           throw new ModbusTimeoutError('Write timeout');
         } else {
-          logger.error(`Write error on WebSerial port: ${err.message}`);
+          logger.error(`Write error on WebSerial port: ${err.message}`, { logger: 'WebSerialTransport' });
           this._onError(err);
           throw err;
         }
@@ -339,7 +348,7 @@ class WebSerialTransport {
 
   async read(length, timeout = this.options.readTimeout) {
     if (!this.isOpen) {
-      logger.warn('Read attempted on closed port');
+      logger.warn('Read attempted on closed port', { logger: 'WebSerialTransport' });
       throw new Error('Port is closed');
     }
 
@@ -350,18 +359,18 @@ class WebSerialTransport {
       return new Promise((resolve, reject) => {
         const check = () => {
           if (this._isFlushing) {
-            logger.debug('Read operation interrupted by flush');
+            logger.debug('Read operation interrupted by flush', { logger: 'WebSerialTransport' });
             return reject(new ModbusFlushError());
           }
 
           if (this.readBuffer.length >= length) {
             const data = this.readBuffer.slice(0, length);
             this.readBuffer = this.readBuffer.slice(length);
-            logger.debug(`Read ${length} bytes from WebSerial port`);
+            logger.debug(`Read ${length} bytes from WebSerial port`, { logger: 'WebSerialTransport' });
             return resolve(data);
           }
           if (Date.now() - start > timeout) {
-            logger.warn(`Read timeout on WebSerial port`);
+            logger.warn(`Read timeout on WebSerial port`, { logger: 'WebSerialTransport' });
             return reject(new ModbusTimeoutError('Read timeout'));
           }
           setTimeout(check, 10);
@@ -374,7 +383,7 @@ class WebSerialTransport {
   }
 
   async disconnect() {
-    logger.info('Disconnecting WebSerial transport...');
+    logger.info('Disconnecting WebSerial transport...', { logger: 'WebSerialTransport' });
     this._shouldReconnect = false;
     this._isDisconnecting = true;
 
@@ -390,11 +399,11 @@ class WebSerialTransport {
 
       if (this.port) {
         try {
-          logger.debug('Closing port...');
+          logger.debug('Closing port...', { logger: 'WebSerialTransport' });
           await this.port.close();
-          logger.debug('Port closed successfully.');
+          logger.debug('Port closed successfully.', { logger: 'WebSerialTransport' });
         } catch (err) {
-          logger.warn(`Error closing port (might be already closed): ${err.message}`);
+          logger.warn(`Error closing port (might be already closed): ${err.message}`, { logger: 'WebSerialTransport' });
         }
         this.port = null;
       }
@@ -406,10 +415,10 @@ class WebSerialTransport {
       }
 
       this.isOpen = false;
-      logger.info('WebSerial transport disconnected successfully');
+      logger.info('WebSerial transport disconnected successfully', { logger: 'WebSerialTransport' });
 
     } catch (err) {
-      logger.error(`Error during WebSerial transport shutdown: ${err.message}`);
+      logger.error(`Error during WebSerial transport shutdown: ${err.message}`, { logger: 'WebSerialTransport' });
     } finally {
       this._isDisconnecting = false;
       this.isOpen = false;
@@ -420,10 +429,10 @@ class WebSerialTransport {
   }
 
   async flush(){
-    logger.debug('Flushing WebSerial transport buffer');
+    logger.debug('Flushing WebSerial transport buffer', { logger: 'WebSerialTransport' });
 
     if(this._isFlushing){
-      logger.warn('Flush already in progress');
+      logger.warn('Flush already in progress', { logger: 'WebSerialTransport' });
       return Promise.all(this._pendingFlushPromises).catch(() => {});
     }
 
@@ -435,12 +444,12 @@ class WebSerialTransport {
     try {
       this.readBuffer = allocUint8Array(0);
       this._emptyReadCount = 0;
-      logger.debug('WebSerial read buffer flushed');
+      logger.debug('WebSerial read buffer flushed', { logger: 'WebSerialTransport' });
     } finally {
       this._isFlushing = false;
       this._pendingFlushPromises.forEach((resolve) => resolve());
       this._pendingFlushPromises = [];
-      logger.debug('WebSerial transport flush completed');
+      logger.debug('WebSerial transport flush completed', { logger: 'WebSerialTransport' });
     }
 
     return flushPromise;
@@ -449,7 +458,7 @@ class WebSerialTransport {
   _handleConnectionLoss(reason) {
     if (!this.isOpen && !this._isConnecting) return;
 
-    logger.warn(`Connection loss detected: ${reason}`);
+    logger.warn(`Connection loss detected: ${reason}`, { logger: 'WebSerialTransport' });
     
     this.isOpen = false;
     this._readLoopActive = false;
@@ -462,18 +471,18 @@ class WebSerialTransport {
   }
 
   _onError(err) {
-    logger.error(`WebSerial port error: ${err.message}`);
+    logger.error(`WebSerial port error: ${err.message}`, { logger: 'WebSerialTransport' });
     this._handleConnectionLoss(`Error: ${err.message}`);
   }
 
   _onClose() {
-    logger.warn(`WebSerial port closed`);
+    logger.info(`WebSerial port closed`, { logger: 'WebSerialTransport' });
     this._handleConnectionLoss('Port closed');
   }
 
   _scheduleReconnect(err) {
     if (!this._shouldReconnect || this._isDisconnecting) {
-      logger.info('Reconnect disabled or disconnecting, not scheduling');
+      logger.info('Reconnect disabled or disconnecting, not scheduling', { logger: 'WebSerialTransport' });
       return;
     }
 
@@ -482,7 +491,7 @@ class WebSerialTransport {
     }
 
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
-      logger.error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached for WebSerial port`);
+      logger.error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached for WebSerial port`, { logger: 'WebSerialTransport' });
       if (this._rejectConnection) {
         const maxAttemptsError = new Error(`Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`);
         this._rejectConnection(maxAttemptsError);
@@ -494,7 +503,7 @@ class WebSerialTransport {
     }
 
     this._reconnectAttempts++;
-    logger.info(`Scheduling reconnect to WebSerial port in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`);
+    logger.info(`Scheduling reconnect to WebSerial port in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`, { logger: 'WebSerialTransport' });
 
     this._reconnectTimer = setTimeout(() => {
         this._reconnectTimer = null;
@@ -538,7 +547,7 @@ class WebSerialTransport {
       this._reconnectAttempts = 0;
 
       this._startReading();
-      logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
+      logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`, { logger: 'WebSerialTransport' });
       
       // Разрешаем промис, если он еще существует
       if (this._resolveConnection) {
@@ -547,7 +556,7 @@ class WebSerialTransport {
         this._rejectConnection = null;
       }
     } catch (err) {
-      logger.warn(`Reconnect attempt ${this._reconnectAttempts} failed: ${err.message}`);
+      logger.warn(`Reconnect attempt ${this._reconnectAttempts} failed: ${err.message}`, { logger: 'WebSerialTransport' });
       this._reconnectAttempts++;
       
       if (this._shouldReconnect && !this._isDisconnecting && this._reconnectAttempts <= this.options.maxReconnectAttempts) {
@@ -565,7 +574,7 @@ class WebSerialTransport {
   }
 
   destroy() {
-    logger.info('Destroying WebSerial transport...');
+    logger.info('Destroying WebSerial transport...', { logger: 'WebSerialTransport' });
     this._shouldReconnect = false;
     
     if (this._reconnectTimer) {
@@ -586,7 +595,7 @@ class WebSerialTransport {
       try {
         this.port.close().catch(() => {});
       } catch (err) {
-        logger.debug('Error closing port during destroy:', err.message);
+        logger.debug('Error closing port during destroy:', err.message, { logger: 'WebSerialTransport' });
       }
       this.port = null;
     }

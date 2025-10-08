@@ -6,7 +6,7 @@ const ModbusExceptionError = require('../errors.js');
 const crc16Modbus = require('../utils/crc.js');
 
 class SlaveEmulator {
-    constructor(slaveAddress = 1) {
+    constructor(slaveAddress = 1, options = {}) {
         // Валидация адреса
         if (typeof slaveAddress !== 'number' || slaveAddress < 0 || slaveAddress > 247) {
             throw new Error('Slave address must be a number between 0 and 247');
@@ -20,8 +20,40 @@ class SlaveEmulator {
         this.exceptions = new Map();
         this._infinityTasks = new Map();
         
-        this.log = logger.createLogger('SlaveEmulator');
+        // Инициализация логгера с учетом флага
+        this.loggerEnabled = !!options.loggerEnabled;
+        if (this.loggerEnabled) {
+            this.log = logger.createLogger('SlaveEmulator');
+        } else {
+            this.log = {
+                info: () => {},
+                debug: () => {},
+                warn: () => {},
+                error: () => {}
+            };
+        }
+        
         this.connected = false;
+    }
+
+    // Методы для управления логгером
+    enableLogger() {
+        if (!this.loggerEnabled) {
+            this.loggerEnabled = true;
+            this.log = logger.createLogger('SlaveEmulator');
+        }
+    }
+
+    disableLogger() {
+        if (this.loggerEnabled) {
+            this.loggerEnabled = false;
+            this.log = {
+                info: () => {},
+                debug: () => {},
+                warn: () => {},
+                error: () => {}
+            };
+        }
     }
 
     async connect() {

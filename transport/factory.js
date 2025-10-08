@@ -1,6 +1,8 @@
 // transport/factory.js
 // @ts-nocheck
-const logger = require('../logger.js');
+const Logger = require('../logger.js');
+const logger = new Logger();
+logger.createLogger('factory')
 
 /**
  * Creates a new transport instance for the given type and options.

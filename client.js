@@ -1,4 +1,26 @@
 // client.js
+
+// ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+// ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠛⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+// ⣿⣿⣿⣿⢹⣿⣿⣿⣿⣿⣿⣿⣿⡧⠤⢼⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⣿⣿
+// ⣿⣿⣿⣿⢸⣿⣿⣿⣿⣿⣿⡿⠿⡗⠒⢺⣿⠿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⣿⣿
+// ⣿⣿⣿⡇⢸⡏⢸⠙⡿⠛⠉⠄⠄⣋⣉⣉⣿⠄⣶⣍⡻⢿⠏⡇⢹⡇⢻⣿⣿⣿
+// ⣿⣿⣿⡇⢸⡇⠈⡇⡇⠄⠄⠄⢠⠤⠤⠤⠿⡄⠸⣿⣿⣾⢰⠃⠘⣇⢸⣿⣿⣿
+// ⣿⣿⣿⠃⢸⠁⠄⢧⢸⠄⠄⠄⢸⠤⠤⠤⢾⡇⠄⠹⣿⡏⢸⠄⠄⢻⠈⣿⣿⣿
+// ⣿⣿⡿⠄⡏⠄⠄⢸⠘⡄⣀⠠⢞⠒⠒⠒⢺⣿⣄⡀⠈⡅⡏⠄⠄⢸⡄⢹⣿⣿
+// ⣿⣿⡇⠄⡇⠄⢀⡠⠖⠋⠁⣰⣿⣷⣒⣒⣺⣿⣿⣿⣷⣦⣇⠄⠄⠘⡇⠸⣿⣿
+// ⣿⣿⣡⢴⠃⢾⠓⠒⠢⠤⠼⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠛⠲⠄⡷⢄⣿⣿
+// ⣿⡏⠁⢸⠄⠈⣿⣿⠉⠓⣶⣶⡖⠒⠒⠒⠒⢒⣶⣶⡒⠛⢹⣿⠁⠄⡇⠄⠙⣿
+// ⣿⡇⠄⢸⠄⠄⠻⡛⢄⣠⣤⣤⣥⡔⡏⣉⡟⣦⣭⣭⣅⠄⠘⡻⠄⠄⣿⠄⠄⣿
+// ⣿⡇⠄⢸⠄⠄⠄⠙⢄⣙⣿⡿⠿⠛⠉⡟⠁⠛⠿⣿⣏⣁⠞⠁⠄⠄⢻⠄⠄⣿
+// ⣿⡇⠄⢸⠄⠄⠄⠄⢸⣿⡇⠄⠄⠄⠄⡇⠄⠄⠄⠄⣿⣿⠄⠄⠄⠄⢸⠄⠄⣿
+// ⣿⡇⠄⣸⠄⠄⠄⠄⢸⣿⡇⠄⠄⠄⠄⡇⠄⠄⠄⠄⣿⣿⠄⠄⠄⠄⢸⠄⠄⣿
+// ⣿⣿⣦⣿⠄⠄⠄⠄⢸⣿⡇⠄⠄⠄⠄⡇⠄⠄⠄⠄⣿⣿⠄⠄⠄⠄⢸⣤⣾⣿
+// ⣿⣿⣿⣿⠄⠄⣠⠴⢊⣽⠃⠄⠄⠄⠄⡇⠄⠄⠄⠄⢩⡉⠲⢄⡀⠄⣸⣿⣿⣿
+// ⣿⣿⣿⣿⣷⣮⣁⣠⣿⣿⣿⣶⣦⣀⡀⡇⢀⣠⣶⣿⣿⣿⣦⣀⣽⣾⣿⣿⣿⣿
+// ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+// ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+
 const { Mutex } = require('async-mutex');
 
 // Registers
@@ -39,7 +61,7 @@ const {
 
 const { buildPacket, parsePacket } = require('./packet-builder.js');
 const { concatUint8Arrays, allocUint8Array, toHex } = require('./utils/utils.js');
-const logger = require('./logger.js');
+const Logger = require('./logger.js');
 const { Diagnostics } = require('./utils/diagnostics.js');
 
 const crcFns = require('./utils/crc.js');
@@ -59,6 +81,9 @@ const crcAlgorithmMap = {
   crcjam: crcFns.crcjam
 };
 
+const logger = new Logger();
+logger.setLevel('error');
+
 class ModbusClient {
   constructor(transport, slaveId = 1, options = {}) {
     this.transport = transport;
@@ -68,12 +93,65 @@ class ModbusClient {
     this.retryDelay = options.retryDelay || 100;
     this.echoEnabled = options.echoEnabled || false;
 
-    this.diagnostics = new Diagnostics();
+    this.diagnosticsEnabled = !!options.diagnostics;
+    this.diagnostics = this.diagnosticsEnabled ? new Diagnostics() : {
+      recordRequest: () => {},
+      recordFunctionCall: () => {},
+      recordDataSent: () => {},
+      recordDataReceived: () => {},
+      recordSuccess: () => {},
+      recordError: () => {},
+      recordRetry: () => {},
+      getStats: () => ({}),
+      reset: () => {}
+    };
 
     this.crcFunc = crcAlgorithmMap[options.crcAlgorithm || 'crc16Modbus'];
     if (!this.crcFunc) throw new Error(`Unknown CRC algorithm: ${options.crcAlgorithm}`);
 
     this._mutex = new Mutex(); // Добавляем мьютекс для синхронизации подключения
+    
+    // Устанавливаем начальный контекст
+    this._setAutoLoggerContext();
+  }
+
+  /**
+   * Включает логгер ModbusClient
+   * @param {string} [level='info'] - Уровень логирования
+   */
+  enableLogger(level = 'info') {
+    logger.setLevel(level);
+  }
+
+  /**
+   * Отключает логгер ModbusClient (устанавливает самый высокий уровень - error)
+   */
+  disableLogger() {
+    logger.setLevel('error');
+  }
+
+  /**
+   * Устанавливает контекст для логгера (slaveId, functionCode и т.д.)
+   * @param {Object} context - Контекст для логгера
+   */
+  setLoggerContext(context) {
+    logger.addGlobalContext(context);
+  }
+
+  /**
+   * Устанавливает контекст логгера автоматически на основе текущих параметров
+   */
+  _setAutoLoggerContext(funcCode = null) {
+    const context = {
+      slaveId: this.slaveId,
+      transport: this.transport.constructor.name
+    };
+    
+    if (funcCode !== null) {
+      context.funcCode = funcCode;
+    }
+    
+    logger.addGlobalContext(context);
   }
 
   /**
@@ -84,6 +162,7 @@ class ModbusClient {
     const release = await this._mutex.acquire();
     try {
       await this.transport.connect();
+      this._setAutoLoggerContext();
       logger.info('Transport connected', { transport: this.transport.constructor.name });
     } finally {
       release();
@@ -98,6 +177,7 @@ class ModbusClient {
     const release = await this._mutex.acquire();
     try {
       await this.transport.disconnect();
+      this._setAutoLoggerContext();
       logger.info('Transport disconnected', { transport: this.transport.constructor.name });
     } finally {
       release();
@@ -109,6 +189,7 @@ class ModbusClient {
       throw new Error('Invalid slave ID. Must be a number between 0 and 247');
     }
     this.slaveId = slaveId;
+    this._setAutoLoggerContext();
   }
 
   /**
@@ -232,6 +313,7 @@ class ModbusClient {
       if (!chunk || chunk.length === 0) continue;
       
       buffer = concatUint8Arrays([buffer, chunk]);
+      this._setAutoLoggerContext(requestPdu ? requestPdu[0] : null);
       logger.debug('Received chunk:', { bytes: chunk.length, total: buffer.length });
       
       // Проверяем, достаточно ли данных для минимального пакета
@@ -270,8 +352,12 @@ class ModbusClient {
     try {
       const funcCode = pdu[0];
       const slaveId = this.slaveId;
-      this.diagnostics.recordRequest(slaveId, funcCode);
-      this.diagnostics.recordFunctionCall(funcCode, slaveId);
+      
+      // Записываем статистику только если диагностика включена
+      if (this.diagnosticsEnabled) {
+        this.diagnostics.recordRequest(slaveId, funcCode);
+        this.diagnostics.recordFunctionCall(funcCode, slaveId);
+      }
   
       let lastError;
       const startTime = Date.now();
@@ -282,13 +368,18 @@ class ModbusClient {
           const timeLeft = timeout - (attemptStart - startTime);
           if (timeLeft <= 0) throw new ModbusTimeoutError('Timeout before request');
   
+          this._setAutoLoggerContext(funcCode);
           logger.debug(`Attempt #${attempt + 1} — sending request`, {
             slaveId,
             funcCode
           });
   
           const packet = buildPacket(slaveId, pdu, this.crcFunc);
-          this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
+          
+          // Записываем данные только если диагностика включена
+          if (this.diagnosticsEnabled) {
+            this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
+          }
   
           await this.transport.write(packet);
           logger.debug('Packet written to transport', { bytes: packet.length, slaveId, funcCode });
@@ -309,13 +400,22 @@ class ModbusClient {
   
           if (ignoreNoResponse) {
             const elapsed = Date.now() - startTime;
-            this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
+            
+            // Записываем успех только если диагностика включена
+            if (this.diagnosticsEnabled) {
+              this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
+            }
+            
             logger.info('Request sent, no response expected', { slaveId, funcCode, responseTime: elapsed });
             return;
           }
   
           const response = await this._readPacket(timeLeft, pdu);
-          this.diagnostics.recordDataReceived(response.length, slaveId, funcCode);
+          
+          // Записываем полученные данные только если диагностика включена
+          if (this.diagnosticsEnabled) {
+            this.diagnostics.recordDataReceived(response.length, slaveId, funcCode);
+          }
   
           const elapsed = Date.now() - startTime;
           const { slaveAddress, pdu: responsePdu } = parsePacket(response, this.crcFunc);
@@ -330,13 +430,15 @@ class ModbusClient {
             throw new ModbusExceptionError(responseFuncCode & 0x7F, exceptionCode);
           }
   
-          this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
+          // Записываем успех только если диагностика включена
+          if (this.diagnosticsEnabled) {
+            this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
+          }
+          
           logger.info('Response received', {
-            slaveAddress,
+            slaveId,
             funcCode,
-            responseTime: elapsed,
-            hex: this._toHex(responsePdu),
-            slaveId
+            responseTime: elapsed
           });
   
           return responsePdu;
@@ -348,14 +450,18 @@ class ModbusClient {
                             err.message.toLowerCase().includes('crc') ? 'crc' :
                             err instanceof ModbusExceptionError ? 'modbus-exception' : null;
   
-          this.diagnostics.recordError(err, {
-            code: errorCode,
-            responseTimeMs: elapsed,
-            slaveId,
-            funcCode,
-            exceptionCode: err instanceof ModbusExceptionError ? err.exceptionCode : null
-          });
+          // Записываем ошибку только если диагностика включена
+          if (this.diagnosticsEnabled) {
+            this.diagnostics.recordError(err, {
+              code: errorCode,
+              responseTimeMs: elapsed,
+              slaveId,
+              funcCode,
+              exceptionCode: err instanceof ModbusExceptionError ? err.exceptionCode : null
+            });
+          }
   
+          this._setAutoLoggerContext(funcCode);
           logger.warn(`Attempt #${attempt + 1} failed: ${err.message}`, {
             responseTime: elapsed,
             error: err,
@@ -377,12 +483,21 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed
             });
-            this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
+            
+            // Записываем успех только если диагностика включена
+            if (this.diagnosticsEnabled) {
+              this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
+            }
+            
             return;
           }
   
           if (attempt < this.retryCount) {
-            this.diagnostics.recordRetry(1, slaveId, funcCode);
+            // Записываем повторную попытку только если диагностика включена
+            if (this.diagnosticsEnabled) {
+              this.diagnostics.recordRetry(1, slaveId, funcCode);
+            }
+            
             let delay = this.retryDelay;
             if (isFlushedError) {
               delay = Math.min(50, delay);

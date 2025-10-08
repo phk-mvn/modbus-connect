@@ -1,5 +1,4 @@
 // errors.js
-
 const EXCEPTION_CODES = require('./constants/constants.js');
 
 /**

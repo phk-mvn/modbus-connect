@@ -1,6 +1,20 @@
 // polling-manager.js
+
+// ⣿⣿⣿⣿⣿⢿⠿⠿⠿⠛⠛⠛⠛⠻⠿⠿⢿⣿⣿⣿⣿⣿⣿⣿
+// ⣿⣿⠟⠋⣁⠄⠄⣀⣤⣤⣤⣀⣉⣁⡀⠒⠄⠉⠛⣿⣿⣿⣿⣿
+// ⡏⢡⣴⠟⠁⠐⠉⠄⣤⣄⠉⣿⠟⢃⡄⠄⠄⢠⡀⠈⠻⣿⣿⣿
+// ⠄⢸⣤⣤⣀⠑⠒⠚⠛⣁⣤⣿⣦⣄⡉⠛⠛⠛⠉⣠⣄⠙⣿⣿
+// ⠄⣾⣿⣿⡟⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡀⠚⣿
+// ⠄⢻⣿⣿⣷⣄⣉⠙⠛⠛⠛⠛⠛⠛⠋⣉⣉⣀⣤⠤⠄⣸⡀⢻
+// ⣇⡈⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⢠⣶⣿⣇⠘
+// ⣿⣧⡈⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠇⢸⣿⣿⡿⠄
+// ⣿⣿⣷⡀⠹⣿⣿⣿⣿⣿⣿⡋⠙⢻⣿⣿⣿⠟⢀⣾⣿⣿⠃⣸
+// ⣿⣿⣿⣿⣦⠈⠻⣿⣿⣿⣿⣿⣷⣤⣀⣀⣠⣤⣿⣿⠟⢁⣼⣿
+// ⣿⣿⣿⣿⣿⣿⣶⣤⣈⠙⠛⠛⠿⠿⠿⠿⠿⠛⠛⣡⣴⣿⣿⣿
+// ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣷⣶⣶⣶⣶⣶⣾⣿⣿⣿⣿⣿⣿
+
 const { Mutex } = require('async-mutex');
-const logger = require('./logger');
+const Logger = require('./logger');
 
 /**
  * PollingManager управляет набором задач и очередями для ресурсов.
@@ -19,7 +33,7 @@ class PollingManager {
             defaultMaxRetries: 3,
             defaultBackoffDelay: 1000,
             defaultTaskTimeout: 5000,
-            logLevel: 'info',
+            logLevel: 'trace',
             ...config
         };
 
@@ -30,10 +44,26 @@ class PollingManager {
         /** @type {Set<string>} */
         this.queuedOrProcessingTasks = new Set();
         
-        this.logger = logger.createLogger('PollingManager');
-        this.logger.setLevel(this.config.logLevel);
+        // Создаем локальный экземпляр логгера
+        this.loggerInstance = new Logger();
         
+        // Настройка формата лога: timestamp, level, logger
+        this.loggerInstance.setLogFormat(['timestamp', 'level', 'logger']);
+        
+        // Устанавливаем кастомный форматтер для logger
+        this.loggerInstance.setCustomFormatter('logger', (value) => {
+            return value ? `[${value}]` : '';
+        });
+
+        this.logger = this.loggerInstance.createLogger('PollingManager');
+        this.logger.setLevel('none'); // Отключаем логгер PollingManager изначально
+
+        this.logger.trace('PollingManager trace log');
+        this.logger.debug('PollingManager debug log');
         this.logger.info('PollingManager initialized', { config: this.config });
+        this.logger.warn('PollingManager warning log');
+        this.logger.error('PollingManager error log');
+        this.loggerInstance.flush();
     }
 
     /**
@@ -107,12 +137,14 @@ class PollingManager {
                 throw error;
             }
             
+            this.logger.trace('Creating TaskController', { id, resourceId });
             const controller = new TaskController(options, this);
             this.tasks.set(id, controller);
             
             if (resourceId) {
                 if (!this.queues.has(resourceId)) {
-                    this.queues.set(resourceId, new TaskQueue(resourceId, this, this.queuedOrProcessingTasks));
+                    this.logger.debug('Creating new TaskQueue', { resourceId });
+                    this.queues.set(resourceId, new TaskQueue(resourceId, this, this.queuedOrProcessingTasks, this.loggerInstance));
                 }
                 this.queues.get(resourceId).enqueue(controller);
             }
@@ -126,8 +158,10 @@ class PollingManager {
             }
             
             this.logger.info('Task added successfully', { id, resourceId, immediate: options.immediate });
+            this.loggerInstance.flush();  // Fixed: Force flush after add
         } catch (error) {
             this.logger.error('Failed to add task', { error: error.message, options });
+            this.loggerInstance.flush();
             throw error;
         }
     }
@@ -451,6 +485,140 @@ class PollingManager {
             tasks: this.getAllTaskStats()
         };
     }
+
+    // === Методы для управления логгерами ===
+
+    /**
+     * Включает логгер PollingManager
+     * @param {string} [level='info'] - Уровень логирования
+     */
+    enablePollingManagerLogger(level = 'info') {
+        this.logger.setLevel(level);
+    }
+
+    /**
+     * Отключает логгер PollingManager
+     */
+    disablePollingManagerLogger() {
+        this.logger.setLevel('none');
+    }
+
+    /**
+     * Включает логгеры всех TaskQueue
+     * @param {string} [level='info'] - Уровень логирования
+     */
+    enableTaskQueueLoggers(level = 'info') {
+        for (const queue of this.queues.values()) {
+            queue.logger.setLevel(level);
+        }
+    }
+
+    /**
+     * Отключает логгеры всех TaskQueue
+     */
+    disableTaskQueueLoggers() {
+        for (const queue of this.queues.values()) {
+            queue.logger.setLevel('none');
+        }
+    }
+
+    /**
+     * Включает логгеры всех TaskController
+     * @param {string} [level='info'] - Уровень логирования
+     */
+    enableTaskControllerLoggers(level = 'info') {
+        for (const task of this.tasks.values()) {
+            task.logger.setLevel(level);
+        }
+    }
+
+    /**
+     * Отключает логгеры всех TaskController
+     */
+    disableTaskControllerLoggers() {
+        for (const task of this.tasks.values()) {
+            task.logger.setLevel('none');
+        }
+    }
+
+    /**
+     * Включает логгеры для конкретной очереди
+     * @param {string} resourceId - Идентификатор ресурса очереди
+     * @param {string} [level='info'] - Уровень логирования
+     */
+    enableTaskQueueLogger(resourceId, level = 'info') {
+        const queue = this.queues.get(resourceId);
+        if (queue) {
+            queue.logger.setLevel(level);
+        }
+    }
+
+    /**
+     * Отключает логгеры для конкретной очереди
+     * @param {string} resourceId - Идентификатор ресурса очереди
+     */
+    disableTaskQueueLogger(resourceId) {
+        const queue = this.queues.get(resourceId);
+        if (queue) {
+            queue.logger.setLevel('none');
+        }
+    }
+
+    /**
+     * Включает логгер для конкретной задачи
+     * @param {string} taskId - Идентификатор задачи
+     * @param {string} [level='info'] - Уровень логирования
+     */
+    enableTaskControllerLogger(taskId, level = 'info') {
+        const task = this.tasks.get(taskId);
+        if (task) {
+            task.logger.setLevel(level);
+        }
+    }
+
+    /**
+     * Отключает логгер для конкретной задачи
+     * @param {string} taskId - Идентификатор задачи
+     */
+    disableTaskControllerLogger(taskId) {
+        const task = this.tasks.get(taskId);
+        if (task) {
+            task.logger.setLevel('none');
+        }
+    }
+
+    /**
+     * Включает все логгеры
+     * @param {string} [level='info'] - Уровень логирования
+     */
+    enableAllLoggers(level = 'info') {
+        this.enablePollingManagerLogger(level);
+        this.enableTaskQueueLoggers(level);
+        this.enableTaskControllerLoggers(level);
+    }
+
+    /**
+     * Отключает все логгеры
+     */
+    disableAllLoggers() {
+        this.disablePollingManagerLogger();
+        this.disableTaskQueueLoggers();
+        this.disableTaskControllerLoggers();
+    }
+
+    /**
+     * Устанавливает уровень логирования для всех компонентов
+     * @param {string} level - Уровень логирования
+     */
+    setLogLevelForAll(level) {
+        this.logger.setLevel(level);
+        for (const queue of this.queues.values()) {
+            queue.logger.setLevel(level);
+        }
+        for (const task of this.tasks.values()) {
+            task.logger.setLevel(level);
+        }
+    }
 }
 
 /**
@@ -462,8 +630,9 @@ class TaskQueue {
      * @param {string} resourceId
      * @param {PollingManager} pollingManager
      * @param {Set<string>} taskSet
+     * @param {Logger} loggerInstance
      */
-    constructor(resourceId, pollingManager, taskSet) {
+    constructor(resourceId, pollingManager, taskSet, loggerInstance) {
         this.resourceId = resourceId;
         this.pollingManager = pollingManager;
         this.queuedOrProcessingTasks = taskSet;
@@ -471,10 +640,13 @@ class TaskQueue {
         this.mutex = new Mutex();
         this.processing = false;
         
-        this.logger = logger.createLogger(`Queue:${resourceId}`);
-        this.logger.setLevel(pollingManager.config.logLevel);
+        this.logger = loggerInstance.createLogger('TaskQueue');
+        this.logger.setLevel('none'); // Отключаем логгер TaskQueue изначально
         
+        this.logger.trace('TaskQueue trace log');
         this.logger.debug('TaskQueue created');
+        this.logger.warn('TaskQueue warning log');
+        this.logger.error('TaskQueue error log');
     }
 
     /**
@@ -660,9 +832,10 @@ class TaskController {
         };
         this.transportMutex = new Mutex();
 
-        this.logger = logger.createLogger(`Task:${id}`);
-        this.logger.setLevel(pollingManager.config.logLevel);
+        this.logger = pollingManager.loggerInstance.createLogger('TaskController');
+        this.logger.setLevel('none'); // Отключаем логгер TaskController изначально
         
+        this.logger.trace('TaskController trace log');
         this.logger.debug('TaskController created', { 
             id, 
             resourceId, 
@@ -672,6 +845,8 @@ class TaskController {
             backoffDelay,
             taskTimeout
         });
+        this.logger.warn('TaskController warning log');
+        this.logger.error('TaskController error log');
     }
 
     /**
@@ -790,6 +965,7 @@ class TaskController {
             for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
                 let retryCount = 0;
                 let result = null;
+                let fnSuccess = false;
                 while (!this.stopped && retryCount <= this.maxRetries) {
                     if (this.paused) {
                         this.logger.debug('Task paused during execution');
@@ -802,9 +978,9 @@ class TaskController {
                             throw new Error(`Task ${this.id} fn ${fnIndex} did not return a Promise`);
                         }
                         result = await this._withTimeout(fnResult, this.taskTimeout);
+                        fnSuccess = true;
                         this.stats.successes++;
                         this.stats.lastError = null;
-                        success = true;
                         break;
                     } catch (err) {
                         retryCount++;
@@ -825,13 +1001,13 @@ class TaskController {
                             this.stats.failures++;
                             this.onFailure?.(err);
                             this.onError?.(err, fnIndex, retryCount);
-                            this.logger.warn('Max retries exhausted', { 
+                            this.logger.warn('Max retries exhausted for fn[' + fnIndex + ']', { 
                                 fnIndex, 
                                 retryCount, 
                                 error: err.message 
                             });
                         } else {
-                            this.logger.debug('Retrying with delay', { delay, retryCount });
+                            this.logger.debug('Retrying fn[' + fnIndex + '] with delay', { delay, retryCount });
                             await this._sleep(delay);
                             if (this.stopped) {
                                 this.executionInProgress = false;
@@ -841,20 +1017,23 @@ class TaskController {
                     }
                 }
                 results.push(result);
+                success = success || fnSuccess;  // Success if any fn succeeds
             }
             
             this.stats.lastResult = results;
             this.stats.lastRunTime = Date.now();
             
-            if (results.length > 0 && results[0] !== null && results[0] !== undefined) {
-                this.onData?.(results[0]);
-                this.logger.debug('Data callback executed', { result: results[0] });
+            // Fixed: onData gets full results array for multi-fn
+            if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
+                this.onData?.(results);
+                this.logger.debug('Data callback executed', { resultsCount: results.length });
             } else {
-                this.logger.warn('Skipping onData - invalid result(s)', { results });
+                this.logger.warn('Skipping onData - all results invalid', { results });
             }
             
             this.onFinish?.(success, results);
             this.logger.info('Task execution completed', { success, resultsCount: results.length });
+            this.pollingManager.loggerInstance.flush();  // Fixed: Force flush after execution
         } finally {
             release();
             this.executionInProgress = false;
@@ -933,7 +1112,7 @@ class TaskController {
         let consecutiveCrcErrors = 0;
         let backoffDelay = this.backoffDelay;
         
-        this.logger.debug('Starting run loop');
+        this.logger.info('Starting run loop');  // Fixed: info instead of debug
         while (this.loopRunning && !this.stopped) {
             if (this.paused) {
                 this.logger.debug('Task paused in loop');
@@ -967,6 +1146,7 @@ class TaskController {
                 for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
                     let retryCount = 0;
                     let result = null;
+                    let fnSuccess = false;
                     while (this.loopRunning && !this.stopped && retryCount <= this.maxRetries) {
                         try {
                             const fnResult = this.fn[fnIndex]();
@@ -974,9 +1154,9 @@ class TaskController {
                                 throw new Error(`Task ${this.id} fn ${fnIndex} did not return a Promise`);
                             }
                             result = await this._withTimeout(fnResult, this.taskTimeout);
+                            fnSuccess = true;
                             this.stats.successes++;
                             this.stats.lastError = null;
-                            success = true;
                             consecutiveCrcErrors = 0;
                             backoffDelay = this.backoffDelay;
                             break;
@@ -998,32 +1178,35 @@ class TaskController {
                                 this.stats.failures++;
                                 this.onFailure?.(err);
                                 this.onError?.(err, fnIndex, retryCount);
-                                this.logger.warn('Max retries exhausted', { 
+                                this.logger.warn('Max retries exhausted for fn[' + fnIndex + ']', { 
                                     fnIndex, 
                                     retryCount, 
                                     error: err.message 
                                 });
                             } else {
-                                this.logger.debug('Retrying with delay', { delay, retryCount });
+                                this.logger.debug('Retrying fn[' + fnIndex + '] with delay', { delay, retryCount });
                                 await this._sleep(delay);
                             }
                         }
                     }
                     results.push(result);
+                    success = success || fnSuccess;
                 }
                 
                 this.stats.lastResult = results;
                 this.stats.lastRunTime = Date.now();
                 
-                if (results.length > 0 && results[0] !== null && results[0] !== undefined) {
-                    this.onData?.(results[0]);
-                    this.logger.debug('Data callback executed', { result: results[0] });
+                // Fixed: onData gets full results array for multi-fn
+                if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
+                    this.onData?.(results);
+                    this.logger.debug('Data callback executed', { resultsCount: results.length });
                 } else {
-                    this.logger.warn('Skipping onData - invalid result(s)', { results });
+                    this.logger.warn('Skipping onData - all results invalid', { results });
                 }
                 
                 this.onFinish?.(success, results);
                 this.logger.info('Task execution completed', { success, resultsCount: results.length });
+                this.pollingManager.loggerInstance.flush();  // Fixed: Force flush after execution
             } finally {
                 release();
                 this.executionInProgress = false;
