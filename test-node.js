@@ -1,9 +1,9 @@
 // test-node.js
 
-const ModbusClient = require('./client.js');
-const { createTransport } = require('./transport/factory.js');
-const Logger = require('./logger.js');
-const PollingManager = require('./polling-manager.js');
+const ModbusClient = require('./dist/client.js')
+const { createTransport } = require('./dist/transport/factory.js')
+const Logger = require('./dist/logger.js')
+const PollingManager = require('./dist/polling-manager.js')
 
 const logger = new Logger();
 
@@ -38,6 +38,10 @@ async function main() {
     });
 
     await client.connect();
+    client.enableLogger('info')
+
+    // const regs = await client.readHoldingRegisters(0, 2);
+    // console.log(regs)
 
     poll.addTask({
         id: 'modbus-loop',
@@ -46,11 +50,9 @@ async function main() {
         immediate: true,
         fn: [
             () => client.readHoldingRegisters(0, 2, { type: 'uint16' }),
-            () => client.readInputRegisters(0, 4, { type: 'uint16' })
         ],
         onData: (results) => {
-            testLogger.info('Data received:', results);
-            console.log(client.diagnostics.getStats())
+            console.log('Data received:', results);
         },
         onError: (error, index, attempt) => {
             testLogger.error(`Error in fn[${index}], attempt ${attempt}`, { error: error.message });

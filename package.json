@@ -1,17 +1,47 @@
 {
   "name": "modbus-connect",
-  "version": "2.0.7",
+  "version": "2.1.29",
   "description": "Modbus RTU over Web Serial and Node.js SerialPort",
   "main": "./client.js",
+  "type": "commonjs",
+  "types": "./src/types/index.d.ts",
   "exports": {
-    "./client": "./client.js",
-    "./polling-manager": "./polling-manager.js",
-    "./transport": "./transport/factory.js",
-    "./logger": "./logger.js",
-    "./slave-emulator": "./slave-emulator/SlaveEmulator.js"
+    "./client": {
+      "require": "./dist/client.js",
+      "import": "./dist/client.js",
+      "types": "./src/types/client.d.ts"
+    },
+    "./polling-manager": {
+      "require": "./dist/polling-manager.js",
+      "import": "./dist/polling-manager.js",
+      "types": "./src/types/polling-manager.d.ts"
+    },
+    "./transport": {
+      "require": "./dist/transport/factory.js",
+      "import": "./dist/transport/factory.js",
+      "types": [
+        "./src/transport/node-transports/node-serialport.d.ts",
+        "./src/transport/web-transports/web-serialport.d.ts"
+      ]
+    },
+    "./logger": {
+      "require": "./dist/logger.js",
+      "import": "./dist/logger.js",
+      "types": "./src/types/logger.d.ts"
+    },
+    "./slave-emulator": {
+      "require": "./dist/slave-emulator.js",
+      "import": "./dist/slave-emulator.js",
+      "types": "./src/types/slave-emulator.d.ts"
+    }
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "esbuild src/**/*.ts --format=cjs --outdir=dist --platform=node && tsc --emitDeclarationOnly",
+    "dev": "tsc --watch",
+    "lint": "eslint . --fix",
+    "format": "prettier --write .",
+    "lint:check": "eslint .",
+    "format:check": "prettier --check ."
   },
   "repository": {
     "type": "git",
@@ -51,6 +81,7 @@
     "web-serial-rtu-udp",
     "web-serial-rtu-tcp-udp",
     "jsmodbus",
+    "tsmodbus",
     "serialport",
     "tcp",
     "udp",
@@ -65,13 +96,28 @@
     "automation",
     "stream",
     "node-crc",
-    "node-crc16"
+    "node-crc16",
+    "typescript"
   ],
   "author": "Danila Dukin",
   "license": "MIT",
-  "type": "commonjs",
   "dependencies": {
     "async-mutex": "^0.5.0",
     "serialport": "^13.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.37.0",
+    "@types/node": "^24.7.0",
+    "@types/serialport": "^8.0.5",
+    "@typescript-eslint/eslint-plugin": "^8.46.0",
+    "@typescript-eslint/parser": "^8.46.0",
+    "esbuild": "^0.25.10",
+    "eslint": "^9.37.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "globals": "^16.4.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
   }
 }

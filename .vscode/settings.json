@@ -1,28 +1,26 @@
 {
-    "files.autoSave": "afterDelay",
-    "editor.smoothScrolling": true,
-    "editor.cursorSmoothCaretAnimation": "on",
-    "workbench.list.smoothScrolling": true,
-    "terminal.integrated.smoothScrolling": true,
-    "editor.cursorBlinking": "expand",
-    "workbench.colorTheme": "Sonokai Espresso",
-    "workbench.iconTheme": "material-icon-theme",
-    "editor.fontFamily": "JetBrains Mono",
-    "editor.codeLensFontFamily": "JetBrains Mono",
-    "editor.inlayHints.fontFamily": "JetBrains Mono",
-    "editor.inlineSuggest.fontFamily": "JetBrains Mono",
-    "debug.console.fontFamily": "JetBrains Mono",
-    "scm.inputFontFamily": "JetBrains Mono",
-    "terminal.integrated.fontFamily": "JetBrains Mono",
-    "terminal.integrated.fontLigatures": true,
-    "notebook.output.fontFamily": "JetBrains Mono",
-    "errorLens.fontFamily": "JetBrains Mono",
-    "svelte.ask-to-enable-ts-plugin": false,
-    "editor.fontSize": 13,
-    "remote.SSH.remotePlatform": {
-        "10.59.51.111": "linux"
-    },
-    "json.schemas": [
-        
-    ]
+  "files.autoSave": "afterDelay",
+  "editor.smoothScrolling": true,
+  "editor.cursorSmoothCaretAnimation": "on",
+  "workbench.list.smoothScrolling": true,
+  "terminal.integrated.smoothScrolling": true,
+  "editor.cursorBlinking": "expand",
+  "workbench.colorTheme": "Sonokai Espresso",
+  "workbench.iconTheme": "material-icon-theme",
+  "editor.fontFamily": "JetBrains Mono",
+  "editor.codeLensFontFamily": "JetBrains Mono",
+  "editor.inlayHints.fontFamily": "JetBrains Mono",
+  "editor.inlineSuggest.fontFamily": "JetBrains Mono",
+  "debug.console.fontFamily": "JetBrains Mono",
+  "scm.inputFontFamily": "JetBrains Mono",
+  "terminal.integrated.fontFamily": "JetBrains Mono",
+  "terminal.integrated.fontLigatures": true,
+  "notebook.output.fontFamily": "JetBrains Mono",
+  "errorLens.fontFamily": "JetBrains Mono",
+  "svelte.ask-to-enable-ts-plugin": false,
+  "editor.fontSize": 13,
+  "remote.SSH.remotePlatform": {
+    "10.59.51.111": "linux"
+  },
+  "json.schemas": []
 }
