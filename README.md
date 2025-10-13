@@ -5317,7 +5317,7 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
-### 2.1.36 (2025-10-13)
+### 2.1.38 (2025-10-13)
 
 - Updated type declarations in files:
   - `src/types/client.d.ts`
