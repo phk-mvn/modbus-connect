@@ -1,11 +1,11 @@
 // src/types/index.d.ts
 
-export * from './client.d.ts';
-export * from './polling-manager.d.ts';
-export * from './transport.d.ts';
-export * from './logger.d.ts';
-export * from './diagnostics.d.ts';
-export * from './errors.d.ts';
-export * from '../transport/web-transports/web-serialport.d.ts';
-export * from '../transport/node-transports/node-serialport.d.ts';
-export * from '../slave-emulator/slave-emulator.d.ts';
+export * from './client.d.js';
+export * from './polling-manager.d.js';
+export * from '../transport/transport.d.js';
+export * from './logger.d.js';
+export * from './diagnostics.d.js';
+export * from './errors.d.js';
+export * from '../transport/web-transports/web-serialport.d.js';
+export * from '../transport/node-transports/node-serialport.d.js';
+export * from '../slave-emulator/slave-emulator.d.js';

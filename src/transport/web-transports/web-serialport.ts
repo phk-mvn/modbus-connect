@@ -796,4 +796,4 @@ class WebSerialTransport implements Transport {
   }
 }
 
-export { WebSerialTransport };
+export = WebSerialTransport;

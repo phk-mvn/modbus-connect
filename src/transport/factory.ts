@@ -39,7 +39,7 @@ export async function createTransport(
           throw new Error('Missing "port" (or "path") option for node transport');
         }
 
-        const { NodeSerialTransport } = await import('./node-transports/node-serialport.js');
+        const NodeSerialTransport = (await import('./node-transports/node-serialport.js')).default;
         const rest = { ...options };
         delete rest.port;
         delete rest.path;
@@ -54,7 +54,7 @@ export async function createTransport(
           throw new Error('Missing "port" option for web transport');
         }
 
-        const { WebSerialTransport } = await import('./web-transports/web-serialport.js');
+        const WebSerialTransport = (await import('./web-transports/web-serialport.js')).default;
 
         // Создаем фабрику, которая всегда возвращает тот же порт
         const portFactory = async (): Promise<any> => {

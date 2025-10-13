@@ -43,7 +43,7 @@ async function createTransport(type, options = {}) {
         if (!path) {
           throw new Error('Missing "port" (or "path") option for node transport');
         }
-        const { NodeSerialTransport } = await import("./node-transports/node-serialport.js");
+        const NodeSerialTransport = (await import("./node-transports/node-serialport.js")).default;
         const rest = { ...options };
         delete rest.port;
         delete rest.path;
@@ -54,7 +54,7 @@ async function createTransport(type, options = {}) {
         if (!port) {
           throw new Error('Missing "port" option for web transport');
         }
-        const { WebSerialTransport } = await import("./web-transports/web-serialport.js");
+        const WebSerialTransport = (await import("./web-transports/web-serialport.js")).default;
         const portFactory = async () => {
           logger.debug("WebSerialTransport portFactory: Returning provided port instance");
           try {

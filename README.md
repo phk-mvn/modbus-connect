@@ -5317,6 +5317,13 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.1.49 (2025-10-13)
+
+- Fixed type declaration for `modbus-connect/transport`
+- Fixed re-export of declared modules in `src/types/index.d.ts`
+- Added module declaration file `src/transport/factory.d.ts` for `modbus-connect/transport`
+- Fixed exports of the `WebSerialTransport` and `NodeSerialTransport` modules
+
 ### 2.1.38 (2025-10-13)
 
 - Updated type declarations in files:

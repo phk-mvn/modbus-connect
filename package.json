@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "2.1.38",
+  "version": "2.1.49",
   "description": "Modbus RTU over Web Serial and Node.js SerialPort",
   "main": "./client.js",
   "type": "commonjs",
@@ -17,10 +17,7 @@
       "import": "./dist/polling-manager.js"
     },
     "./transport": {
-      "types": [
-        "./src/transport/node-transports/node-serialport.d.ts",
-        "./src/transport/web-transports/web-serialport.d.ts"
-      ],
+      "types": "./src/transport/factory.d.ts",
       "require": "./dist/transport/factory.js",
       "import": "./dist/transport/factory.js"
     },

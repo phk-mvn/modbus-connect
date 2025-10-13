@@ -505,4 +505,4 @@ class NodeSerialTransport implements Transport {
   }
 }
 
-export { NodeSerialTransport };
+export = NodeSerialTransport;
