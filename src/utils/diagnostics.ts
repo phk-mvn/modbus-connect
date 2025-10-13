@@ -1,6 +1,10 @@
 // src/utils/diagnostics.ts
 
-import { FUNCTION_CODES, EXCEPTION_CODES } from '../constants/constants.js'; // For func/exception names
+import {
+  ModbusFunctionCode,
+  ModbusExceptionCode,
+  MODBUS_EXCEPTION_MESSAGES,
+} from '../constants/constants.js'; // For func/exception names
 import Logger from '../logger.js'; // For logger (LoggerInstance exported from logger.ts)
 
 import { DiagnosticsOptions, DiagnosticsStats, AnalysisResult } from '../types/diagnostics.d.js';
@@ -56,6 +60,29 @@ class Diagnostics {
   private lastErrorTimestamp: string | null = null;
   private totalSessions: number = 0;
   private requestTimestamps: number[] = []; // Для расчёта requests per second
+
+  // Кэшированные значения для производительности
+  private static readonly FUNCTION_CODE_NAMES = new Map<ModbusFunctionCode, string>([
+    [ModbusFunctionCode.READ_COILS, 'READ_COILS'],
+    [ModbusFunctionCode.READ_DISCRETE_INPUTS, 'READ_DISCRETE_INPUTS'],
+    [ModbusFunctionCode.READ_HOLDING_REGISTERS, 'READ_HOLDING_REGISTERS'],
+    [ModbusFunctionCode.READ_INPUT_REGISTERS, 'READ_INPUT_REGISTERS'],
+    [ModbusFunctionCode.WRITE_SINGLE_COIL, 'WRITE_SINGLE_COIL'],
+    [ModbusFunctionCode.WRITE_SINGLE_REGISTER, 'WRITE_SINGLE_REGISTER'],
+    [ModbusFunctionCode.WRITE_MULTIPLE_COILS, 'WRITE_MULTIPLE_COILS'],
+    [ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS, 'WRITE_MULTIPLE_REGISTERS'],
+    [ModbusFunctionCode.REPORT_SLAVE_ID, 'REPORT_SLAVE_ID'],
+    [ModbusFunctionCode.READ_DEVICE_COMMENT, 'READ_DEVICE_COMMENT'],
+    [ModbusFunctionCode.WRITE_DEVICE_COMMENT, 'WRITE_DEVICE_COMMENT'],
+    [ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 'READ_DEVICE_IDENTIFICATION'],
+    [ModbusFunctionCode.READ_FILE_LENGTH, 'READ_FILE_LENGTH'],
+    [ModbusFunctionCode.READ_FILE_CHUNK, 'READ_FILE_CHUNK'],
+    [ModbusFunctionCode.OPEN_FILE, 'OPEN_FILE'],
+    [ModbusFunctionCode.CLOSE_FILE, 'CLOSE_FILE'],
+    [ModbusFunctionCode.RESTART_CONTROLLER, 'RESTART_CONTROLLER'],
+    [ModbusFunctionCode.GET_CONTROLLER_TIME, 'GET_CONTROLLER_TIME'],
+    [ModbusFunctionCode.SET_CONTROLLER_TIME, 'SET_CONTROLLER_TIME'],
+  ]);
 
   constructor(options: DiagnosticsOptions = {}) {
     this.notificationThreshold = options.notificationThreshold || 10;
@@ -262,9 +289,7 @@ class Diagnostics {
     this.functionCallCounts[funcCode] ??= 0;
     this.functionCallCounts[funcCode]++;
     const funcName =
-      Object.keys(FUNCTION_CODES).find(
-        k => FUNCTION_CODES[k as keyof typeof FUNCTION_CODES] === funcCode
-      ) || 'Unknown';
+      Diagnostics.FUNCTION_CODE_NAMES.get(funcCode as ModbusFunctionCode) || 'Unknown';
     this.logger.trace('Function called', {
       slaveId: slaveId || this.slaveIds[0],
       funcCode,
@@ -483,7 +508,7 @@ class Diagnostics {
       exceptionCodeCounts: Object.entries(this.exceptionCodeCounts).reduce(
         (acc: Record<string, number>, [code, count]) => {
           const codeNum = Number(code);
-          const excName = EXCEPTION_CODES[codeNum as keyof typeof EXCEPTION_CODES] || 'Unknown';
+          const excName = MODBUS_EXCEPTION_MESSAGES[codeNum as ModbusExceptionCode] || 'Unknown';
           acc[`${code}/${excName}`] = count;
           return acc;
         },
@@ -504,10 +529,7 @@ class Diagnostics {
       functionCallCounts: Object.entries(this.functionCallCounts).reduce(
         (acc: Record<string, number>, [code, count]) => {
           const key = Number(code);
-          const name =
-            Object.keys(FUNCTION_CODES).find(
-              k => FUNCTION_CODES[k as keyof typeof FUNCTION_CODES] === key
-            ) || 'Unknown';
+          const name = Diagnostics.FUNCTION_CODE_NAMES.get(key as ModbusFunctionCode) || 'Unknown';
           acc[`${code}/${name}`] = count;
           return acc;
         },

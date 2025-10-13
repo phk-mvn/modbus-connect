@@ -75,7 +75,7 @@ class ModbusExceptionError extends ModbusError {
   functionCode;
   exceptionCode;
   constructor(functionCode, exceptionCode) {
-    const exceptionMessage = import_constants.EXCEPTION_CODES[exceptionCode] || "Unknown Exception";
+    const exceptionMessage = import_constants.MODBUS_EXCEPTION_MESSAGES[exceptionCode] || `Unknown exception code: ${exceptionCode}`;
     super(
       `Modbus exception: function 0x${functionCode.toString(16)}, code 0x${exceptionCode.toString(16)} (${exceptionMessage})`
     );

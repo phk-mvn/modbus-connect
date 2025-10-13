@@ -19,7 +19,11 @@
 // ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣄⡙⣦⠄⠄⣴⢋⣠⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿
 // ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
 
-import { FUNCTION_CODES, EXCEPTION_CODES } from './constants/constants.js';
+import {
+  ModbusFunctionCode,
+  ModbusExceptionCode,
+  MODBUS_EXCEPTION_MESSAGES,
+} from './constants/constants.js';
 import { LogContext, LoggerInstance, LogLevel } from './types/modbus-types.js';
 
 class Logger {
@@ -77,6 +81,29 @@ class Logger {
   private logRateLimit: number = 100;
   private lastLogTime: number = 0;
 
+  // Кэшированные значения для производительности
+  private static readonly FUNCTION_CODE_NAMES = new Map<ModbusFunctionCode, string>([
+    [ModbusFunctionCode.READ_COILS, 'READ_COILS'],
+    [ModbusFunctionCode.READ_DISCRETE_INPUTS, 'READ_DISCRETE_INPUTS'],
+    [ModbusFunctionCode.READ_HOLDING_REGISTERS, 'READ_HOLDING_REGISTERS'],
+    [ModbusFunctionCode.READ_INPUT_REGISTERS, 'READ_INPUT_REGISTERS'],
+    [ModbusFunctionCode.WRITE_SINGLE_COIL, 'WRITE_SINGLE_COIL'],
+    [ModbusFunctionCode.WRITE_SINGLE_REGISTER, 'WRITE_SINGLE_REGISTER'],
+    [ModbusFunctionCode.WRITE_MULTIPLE_COILS, 'WRITE_MULTIPLE_COILS'],
+    [ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS, 'WRITE_MULTIPLE_REGISTERS'],
+    [ModbusFunctionCode.REPORT_SLAVE_ID, 'REPORT_SLAVE_ID'],
+    [ModbusFunctionCode.READ_DEVICE_COMMENT, 'READ_DEVICE_COMMENT'],
+    [ModbusFunctionCode.WRITE_DEVICE_COMMENT, 'WRITE_DEVICE_COMMENT'],
+    [ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 'READ_DEVICE_IDENTIFICATION'],
+    [ModbusFunctionCode.READ_FILE_LENGTH, 'READ_FILE_LENGTH'],
+    [ModbusFunctionCode.READ_FILE_CHUNK, 'READ_FILE_CHUNK'],
+    [ModbusFunctionCode.OPEN_FILE, 'OPEN_FILE'],
+    [ModbusFunctionCode.CLOSE_FILE, 'CLOSE_FILE'],
+    [ModbusFunctionCode.RESTART_CONTROLLER, 'RESTART_CONTROLLER'],
+    [ModbusFunctionCode.GET_CONTROLLER_TIME, 'GET_CONTROLLER_TIME'],
+    [ModbusFunctionCode.SET_CONTROLLER_TIME, 'SET_CONTROLLER_TIME'],
+  ]);
+
   private getIndent(): string {
     return '  '.repeat(this.groupLevel);
   }
@@ -127,9 +154,7 @@ class Logger {
           : 'N/A';
       const funcName =
         context['funcCode'] != null
-          ? Object.keys(FUNCTION_CODES).find(
-              k => FUNCTION_CODES[k as keyof typeof FUNCTION_CODES] === context['funcCode']
-            ) || 'Unknown'
+          ? Logger.FUNCTION_CODE_NAMES.get(context['funcCode'] as ModbusFunctionCode) || 'Unknown'
           : 'N/A';
       const formatter: (value: unknown) => string =
         this.customFormatters['funcCode'] || (v => `[F:${v}/${funcName}]`);
@@ -137,7 +162,7 @@ class Logger {
     }
     if (this.logFormat.includes('exceptionCode') && context['exceptionCode'] != null) {
       const exceptionName =
-        EXCEPTION_CODES[context['exceptionCode'] as keyof typeof EXCEPTION_CODES] || 'Unknown';
+        MODBUS_EXCEPTION_MESSAGES[context['exceptionCode'] as ModbusExceptionCode] || 'Unknown';
       const formatter: (value: unknown) => string =
         this.customFormatters['exceptionCode'] || (v => `[E:${v}/${exceptionName}]`);
       headerParts.push(
@@ -516,9 +541,7 @@ class Logger {
         Object.entries(this.logStats.byFuncCode).reduce(
           (acc: Record<string, number>, [code, count]) => {
             const name =
-              Object.keys(FUNCTION_CODES).find(
-                k => FUNCTION_CODES[k as keyof typeof FUNCTION_CODES] === parseInt(code)
-              ) || 'Unknown';
+              Logger.FUNCTION_CODE_NAMES.get(parseInt(code) as ModbusFunctionCode) || 'Unknown';
             acc[`${code}/${name}`] = count;
             return acc;
           },
@@ -533,7 +556,7 @@ class Logger {
         Object.entries(this.logStats.byExceptionCode).reduce(
           (acc: Record<string, number>, [code, count]) => {
             acc[
-              `${code}/${EXCEPTION_CODES[parseInt(code) as keyof typeof EXCEPTION_CODES] || 'Unknown'}`
+              `${code}/${MODBUS_EXCEPTION_MESSAGES[parseInt(code) as ModbusExceptionCode] || 'Unknown'}`
             ] = count;
             return acc;
           },

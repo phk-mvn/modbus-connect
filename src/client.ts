@@ -90,6 +90,12 @@ import {
 } from './function-codes/SGM130/set-controller-time.js';
 
 import { ModbusTimeoutError, ModbusExceptionError, ModbusFlushError } from './errors.js';
+import {
+  ModbusFunctionCode,
+  ModbusExceptionCode,
+  MODBUS_EXCEPTION_MESSAGES,
+  RegisterType,
+} from './constants/constants.js';
 
 import { buildPacket, parsePacket } from './packet-builder.js';
 import Logger from './logger.js';
@@ -133,7 +139,11 @@ import {
   SetControllerTimeResponse,
 } from './types/modbus-types.js';
 
-const crcAlgorithmMap = {
+// Тип для CRC-функции
+type CrcFunction = (data: Uint8Array) => Uint8Array;
+
+// Карта CRC-алгоритмов с явной типизацией
+const crcAlgorithmMap: Record<string, CrcFunction> = {
   crc16Modbus,
   crc16CcittFalse,
   crc32,
@@ -151,6 +161,10 @@ const crcAlgorithmMap = {
 const logger = new Logger();
 logger.setLevel('error');
 
+type DataViewMethod32 = 'getUint32' | 'getInt32' | 'getFloat32';
+type DataViewMethod64 = 'getUint64' | 'getInt64' | 'getFloat64';
+type SwapMode = 'sw' | 'sb' | 'sbw' | 'le' | 'le_sw' | 'le_sb' | 'le_sbw';
+
 class ModbusClient {
   private transport: Transport;
   private slaveId: number;
@@ -160,28 +174,66 @@ class ModbusClient {
   private echoEnabled: boolean;
   private diagnosticsEnabled: boolean;
   private diagnostics: Diagnostics;
-  private crcFunc: (data: Uint8Array) => Uint8Array;
+  private crcFunc: CrcFunction;
   private _mutex: Mutex;
 
+  // Кэшированные значения для производительности
+  private static readonly FUNCTION_CODE_MAP = new Map<number, ModbusFunctionCode>([
+    [0x01, ModbusFunctionCode.READ_COILS],
+    [0x02, ModbusFunctionCode.READ_DISCRETE_INPUTS],
+    [0x03, ModbusFunctionCode.READ_HOLDING_REGISTERS],
+    [0x04, ModbusFunctionCode.READ_INPUT_REGISTERS],
+    [0x05, ModbusFunctionCode.WRITE_SINGLE_COIL],
+    [0x06, ModbusFunctionCode.WRITE_SINGLE_REGISTER],
+    [0x0f, ModbusFunctionCode.WRITE_MULTIPLE_COILS],
+    [0x10, ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS],
+    [0x11, ModbusFunctionCode.REPORT_SLAVE_ID],
+    [0x14, ModbusFunctionCode.READ_DEVICE_COMMENT],
+    [0x15, ModbusFunctionCode.WRITE_DEVICE_COMMENT],
+    [0x2b, ModbusFunctionCode.READ_DEVICE_IDENTIFICATION],
+    [0x52, ModbusFunctionCode.READ_FILE_LENGTH],
+    [0x5a, ModbusFunctionCode.READ_FILE_CHUNK],
+    [0x55, ModbusFunctionCode.OPEN_FILE],
+    [0x57, ModbusFunctionCode.CLOSE_FILE],
+    [0x5c, ModbusFunctionCode.RESTART_CONTROLLER],
+    [0x6e, ModbusFunctionCode.GET_CONTROLLER_TIME],
+    [0x6f, ModbusFunctionCode.SET_CONTROLLER_TIME],
+  ]);
+
+  private static readonly EXCEPTION_CODE_MAP = new Map<number, ModbusExceptionCode>([
+    [1, ModbusExceptionCode.ILLEGAL_FUNCTION],
+    [2, ModbusExceptionCode.ILLEGAL_DATA_ADDRESS],
+    [3, ModbusExceptionCode.ILLEGAL_DATA_VALUE],
+    [4, ModbusExceptionCode.SLAVE_DEVICE_FAILURE],
+    [5, ModbusExceptionCode.ACKNOWLEDGE],
+    [6, ModbusExceptionCode.SLAVE_DEVICE_BUSY],
+    [8, ModbusExceptionCode.MEMORY_PARITY_ERROR],
+    [10, ModbusExceptionCode.GATEWAY_PATH_UNAVAILABLE],
+    [11, ModbusExceptionCode.GATEWAY_TARGET_DEVICE_FAILED],
+  ]);
+
   constructor(transport: Transport, slaveId: number = 1, options: ModbusClientOptions = {}) {
-    if (slaveId < 1 || slaveId > 255) {
-      throw new Error('Invalid slave ID. Must be a number between 1 and 255');
+    if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 255) {
+      throw new Error('Invalid slave ID. Must be an integer between 1 and 255');
     }
 
     this.transport = transport;
     this.slaveId = slaveId;
-    this.defaultTimeout = options.timeout || 2000;
-    this.retryCount = options.retryCount || 0;
-    this.retryDelay = options.retryDelay || 100;
-    this.echoEnabled = options.echoEnabled || false;
-
+    this.defaultTimeout = options.timeout ?? 2000;
+    this.retryCount = options.retryCount ?? 0;
+    this.retryDelay = options.retryDelay ?? 100;
+    this.echoEnabled = options.echoEnabled ?? false;
     this.diagnosticsEnabled = !!options.diagnostics;
     this.diagnostics = this.diagnosticsEnabled
       ? new Diagnostics({ loggerName: 'ModbusClient' })
       : new Diagnostics({ loggerName: 'Noop' });
 
-    this.crcFunc = crcAlgorithmMap[options.crcAlgorithm || 'crc16Modbus'];
-    if (!this.crcFunc) throw new Error(`Unknown CRC algorithm: ${options.crcAlgorithm}`);
+    const algorithm = options.crcAlgorithm ?? 'crc16Modbus';
+    const crcFunc = crcAlgorithmMap[algorithm];
+    if (!crcFunc) {
+      throw new Error(`Unknown CRC algorithm: ${algorithm}`);
+    }
+    this.crcFunc = crcFunc;
 
     this._mutex = new Mutex();
 
@@ -192,14 +244,14 @@ class ModbusClient {
    * Включает логгер ModbusClient
    * @param level - Уровень логирования
    */
-  enableLogger(level: 'trace' | 'debug' | 'info' | 'warn' | 'error' = 'info') {
+  enableLogger(level: 'trace' | 'debug' | 'info' | 'warn' | 'error' = 'info'): void {
     logger.setLevel(level);
   }
 
   /**
    * Отключает логгер ModbusClient (устанавливает самый высокий уровень - error)
    */
-  disableLogger() {
+  disableLogger(): void {
     logger.setLevel('error');
   }
 
@@ -207,21 +259,21 @@ class ModbusClient {
    * Устанавливает контекст для логгера (slaveId, functionCode и т.д.)
    * @param context - Контекст для логгера
    */
-  setLoggerContext(context: LoggerContext) {
+  setLoggerContext(context: LoggerContext): void {
     logger.addGlobalContext(context);
   }
 
   /**
    * Устанавливает контекст логгера автоматически на основе текущих параметров
    */
-  private _setAutoLoggerContext(funcCode: number | null = null) {
+  private _setAutoLoggerContext(funcCode: ModbusFunctionCode | number | null = null): void {
     const context: LoggerContext = {
       slaveId: this.slaveId,
       transport: this.transport.constructor.name,
     };
 
     if (funcCode !== null) {
-      context.funcCode = funcCode;
+      context.funcCode = typeof funcCode === 'number' ? funcCode : funcCode;
     }
 
     logger.addGlobalContext(context);
@@ -231,7 +283,7 @@ class ModbusClient {
    * Establishes a connection to the Modbus transport.
    * Logs the connection status upon successful connection.
    */
-  async connect() {
+  async connect(): Promise<void> {
     const release = await this._mutex.acquire();
     try {
       await this.transport.connect();
@@ -246,7 +298,7 @@ class ModbusClient {
    * Closes the connection to the Modbus transport.
    * Logs the disconnection status upon successful disconnection.
    */
-  async disconnect() {
+  async disconnect(): Promise<void> {
     const release = await this._mutex.acquire();
     try {
       await this.transport.disconnect();
@@ -257,9 +309,9 @@ class ModbusClient {
     }
   }
 
-  setSlaveId(slaveId: number) {
-    if (typeof slaveId !== 'number' || slaveId < 1 || slaveId > 255) {
-      throw new Error('Invalid slave ID. Must be a number between 1 and 255');
+  setSlaveId(slaveId: number): void {
+    if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 255) {
+      throw new Error('Invalid slave ID. Must be an integer between 1 and 255');
     }
     this.slaveId = slaveId;
     this._setAutoLoggerContext();
@@ -270,7 +322,7 @@ class ModbusClient {
    * @param buffer - The buffer to convert.
    * @returns The hex string representation of the buffer.
    */
-  private _toHex(buffer: Uint8Array) {
+  private _toHex(buffer: Uint8Array): string {
     return Array.from(buffer)
       .map(b => b.toString(16).padStart(2, '0'))
       .join(' ');
@@ -284,85 +336,72 @@ class ModbusClient {
   private _getExpectedResponseLength(pdu: Uint8Array): number | null {
     if (!pdu || pdu.length === 0) return null;
 
-    const funcCode = pdu[0]!;
+    const funcCode = pdu[0];
+    const modbusFuncCode = ModbusClient.FUNCTION_CODE_MAP.get(funcCode!);
 
-    switch (funcCode) {
-      // Standard Modbus functions
-      case 0x01: // Read Coils
-      case 0x02: {
-        // Read Discrete Inputs
+    if (!modbusFuncCode) {
+      if (funcCode! & 0x80) {
+        return 5; // slave(1) + func(1) + errorCode(1) + CRC(2)
+      }
+      return null; // Неизвестный код функции
+    }
+
+    switch (modbusFuncCode) {
+      case ModbusFunctionCode.READ_COILS:
+      case ModbusFunctionCode.READ_DISCRETE_INPUTS: {
         if (pdu.length < 5) return null;
         const bitCount = (pdu[3]! << 8) | pdu[4]!;
         return 5 + Math.ceil(bitCount / 8); // slave(1) + func(1) + byteCount(1) + data(N) + CRC(2)
       }
 
-      case 0x03: // Read Holding Registers
-      case 0x04: {
-        // Read Input Registers
+      case ModbusFunctionCode.READ_HOLDING_REGISTERS:
+      case ModbusFunctionCode.READ_INPUT_REGISTERS: {
         if (pdu.length < 5) return null;
         const regCount = (pdu[3]! << 8) | pdu[4]!;
         return 5 + regCount * 2; // slave(1) + func(1) + byteCount(1) + data(N*2) + CRC(2)
       }
 
-      case 0x05: // Write Single Coil
-      case 0x06: // Write Single Register
+      case ModbusFunctionCode.WRITE_SINGLE_COIL:
+      case ModbusFunctionCode.WRITE_SINGLE_REGISTER:
         return 8; // slave(1) + func(1) + address(2) + value(2) + CRC(2)
 
-      case 0x0f: // Write Multiple Coils
-      case 0x10: // Write Multiple Registers
+      case ModbusFunctionCode.WRITE_MULTIPLE_COILS:
+      case ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS:
         return 8; // slave(1) + func(1) + address(2) + quantity(2) + CRC(2)
 
-      case 0x08: // Diagnostics
-        return 8; // slave(1) + func(1) + subFunc(2) + data(2) + CRC(2)
-
-      // Special functions for SGM130
-      case 0x14: // Read Device Comment
+      case ModbusFunctionCode.READ_DEVICE_COMMENT:
         return null;
 
-      case 0x15: // Write Device Comment
+      case ModbusFunctionCode.WRITE_DEVICE_COMMENT:
         return 5; // slave(1) + func(1) + channel(1) + length(1) + CRC(2)
 
-      case 0x2b: {
-        // Read Device Identification
+      case ModbusFunctionCode.READ_DEVICE_IDENTIFICATION: {
         if (pdu.length < 4) return null;
-
-        // Для ошибки
-        if (pdu[2]! === 0x00) return 6; // slave(1) + func(1) + interface(1) + error(1) + CRC(2)
-
-        // Для индивидуального запроса (категория 0x04)
-        if (pdu[2]! === 0x04) {
-          return null; // Длина строки неизвестна заранее
-        }
-
-        // Для основных/вспомогательных категорий
+        if (pdu[2] === 0x00) return 6; // slave(1) + func(1) + interface(1) + error(1) + CRC(2)
+        if (pdu[2] === 0x04) return null; // Длина строки неизвестна заранее
         return null; // Количество строк и их длины неизвестны заранее
       }
 
-      case 0x52: // Read File Length
+      case ModbusFunctionCode.READ_FILE_LENGTH:
         return 8; // slave(1) + func(1) + length(4) + CRC(2)
 
-      case 0x55: // Open File
+      case ModbusFunctionCode.OPEN_FILE:
         return 8; // slave(1) + func(1) + length(4) + CRC(2)
 
-      case 0x57: // Close File
+      case ModbusFunctionCode.CLOSE_FILE:
         return 5; // slave(1) + func(1) + status(1) + CRC(2)
 
-      case 0x5c: // Restart Controller
+      case ModbusFunctionCode.RESTART_CONTROLLER:
         return 0; // Ответа не ожидается
 
-      case 0x6e: // Get Controller Time
+      case ModbusFunctionCode.GET_CONTROLLER_TIME:
         return 10; // slave(1) + func(1) + time(6) + CRC(2)
 
-      case 0x6f: // Set Controller Time
+      case ModbusFunctionCode.SET_CONTROLLER_TIME:
         return 8; // slave(1) + func(1) + status(2) + CRC(2)
 
-      // Обработка ошибок
       default:
-        if (funcCode & 0x80) {
-          // Error response
-          return 5; // slave(1) + func(1) + errorCode(1) + CRC(2)
-        }
-        return null;
+        return null; // Неизвестный код функции (для полноты покрытия)
     }
   }
 
@@ -373,7 +412,10 @@ class ModbusClient {
    * @returns The received packet.
    * @throws ModbusTimeoutError If the read operation times out.
    */
-  private async _readPacket(timeout: number, requestPdu: Uint8Array | null = null) {
+  private async _readPacket(
+    timeout: number,
+    requestPdu: Uint8Array | null = null
+  ): Promise<Uint8Array> {
     const start = Date.now();
     let buffer = new Uint8Array(0);
     const expectedLength = requestPdu ? this._getExpectedResponseLength(requestPdu) : null;
@@ -390,32 +432,26 @@ class ModbusClient {
       const chunk = await this.transport.read(bytesToRead, timeLeft);
       if (!chunk || chunk.length === 0) continue;
 
-      // Исправление: используем ArrayBuffer для промежуточного представления
       const newBuffer = new Uint8Array(buffer.length + chunk.length);
       newBuffer.set(buffer, 0);
       newBuffer.set(chunk, buffer.length);
       buffer = newBuffer;
 
-      this._setAutoLoggerContext(requestPdu ? requestPdu[0]! : null);
+      const funcCode = requestPdu ? requestPdu[0] : null;
+      this._setAutoLoggerContext(funcCode);
       logger.debug('Received chunk:', { bytes: chunk.length, total: buffer.length });
 
-      // Проверяем, достаточно ли данных для минимального пакета
       if (buffer.length >= minPacketLength) {
         try {
-          // Пробуем распарсить пакет
           parsePacket(buffer, this.crcFunc);
-          // Если не было исключения - пакет корректный
           return buffer;
         } catch (err: unknown) {
           if (err instanceof Error && err.message.startsWith('Invalid packet: too short')) {
-            // Продолжаем чтение
             continue;
           }
           if (err instanceof Error && err.message.startsWith('CRC mismatch')) {
-            // Продолжаем чтение, возможно пакет ещё не полный
             continue;
           }
-          // Другая ошибка - пробрасываем её
           throw err;
         }
       }
@@ -427,7 +463,7 @@ class ModbusClient {
    * @param pdu - The PDU of the request packet.
    * @param timeout - The timeout in milliseconds.
    * @param ignoreNoResponse - Whether to ignore no response.
-   * @returns The received packet.
+   * @returns The received packet or undefined if no response is expected.
    * @throws ModbusTimeoutError If the send operation times out.
    */
   private async _sendRequest(
@@ -437,13 +473,13 @@ class ModbusClient {
   ): Promise<Uint8Array | undefined> {
     const release = await this._mutex.acquire();
     try {
-      const funcCode = pdu[0]!;
+      const funcCode = pdu[0];
+      const funcCodeEnum = ModbusClient.FUNCTION_CODE_MAP.get(funcCode!) ?? funcCode;
       const slaveId = this.slaveId;
 
-      // Записываем статистику только если диагностика включена
       if (this.diagnosticsEnabled) {
         this.diagnostics.recordRequest(slaveId, funcCode);
-        this.diagnostics.recordFunctionCall(funcCode, slaveId);
+        this.diagnostics.recordFunctionCall(funcCode!, slaveId);
       }
 
       let lastError: unknown;
@@ -455,7 +491,7 @@ class ModbusClient {
           const timeLeft = timeout - (attemptStart - startTime);
           if (timeLeft <= 0) throw new ModbusTimeoutError('Timeout before request');
 
-          this._setAutoLoggerContext(funcCode);
+          this._setAutoLoggerContext(funcCodeEnum);
           logger.debug(`Attempt #${attempt + 1} — sending request`, {
             slaveId,
             funcCode,
@@ -463,7 +499,6 @@ class ModbusClient {
 
           const packet = buildPacket(slaveId, pdu, this.crcFunc);
 
-          // Записываем данные только если диагностика включена
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
           }
@@ -480,7 +515,7 @@ class ModbusClient {
               );
             }
             for (let i = 0; i < packet.length; i++) {
-              if (packet[i]! !== echoResponse[i]!) {
+              if (packet[i] !== echoResponse[i]) {
                 throw new Error('Echo mismatch detected');
               }
             }
@@ -489,12 +524,9 @@ class ModbusClient {
 
           if (ignoreNoResponse) {
             const elapsed = Date.now() - startTime;
-
-            // Записываем успех только если диагностика включена
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
             }
-
             logger.info('Request sent, no response expected', {
               slaveId,
               funcCode,
@@ -505,7 +537,6 @@ class ModbusClient {
 
           const response = await this._readPacket(timeLeft, pdu);
 
-          // Записываем полученные данные только если диагностика включена
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordDataReceived(response.length, slaveId, funcCode);
           }
@@ -517,13 +548,26 @@ class ModbusClient {
             throw new Error(`Slave address mismatch (expected ${slaveId}, got ${slaveAddress})`);
           }
 
-          const responseFuncCode = responsePdu[0]!;
-          if ((responseFuncCode & 0x80) !== 0) {
-            const exceptionCode = responsePdu[1]!;
-            throw new ModbusExceptionError(responseFuncCode & 0x7f, exceptionCode);
+          const responseFuncCode = responsePdu[0];
+          if ((responseFuncCode! & 0x80) !== 0) {
+            const exceptionCode = responsePdu[1];
+            const modbusExceptionCode =
+              ModbusClient.EXCEPTION_CODE_MAP.get(exceptionCode!) ?? exceptionCode;
+            const exceptionMessage =
+              MODBUS_EXCEPTION_MESSAGES[exceptionCode as ModbusExceptionCode] ??
+              `Unknown exception code: ${exceptionCode}`;
+
+            logger.warn('Modbus exception received', {
+              slaveId,
+              funcCode,
+              exceptionCode,
+              exceptionMessage,
+              responseTime: elapsed,
+            });
+
+            throw new ModbusExceptionError(responseFuncCode! & 0x7f, modbusExceptionCode!);
           }
 
-          // Записываем успех только если диагностика включена
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
           }
@@ -547,7 +591,6 @@ class ModbusClient {
                   ? 'modbus-exception'
                   : null;
 
-          // Записываем ошибку только если диагностика включена
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordError(err instanceof Error ? err : new Error(String(err)), {
               code: errorCode,
@@ -558,7 +601,7 @@ class ModbusClient {
             });
           }
 
-          this._setAutoLoggerContext(funcCode);
+          this._setAutoLoggerContext(funcCodeEnum);
           logger.warn(
             `Attempt #${attempt + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
             {
@@ -592,7 +635,6 @@ class ModbusClient {
               responseTime: elapsed,
             });
 
-            // Записываем успех только если диагностика включена
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
             }
@@ -601,7 +643,6 @@ class ModbusClient {
           }
 
           if (attempt < this.retryCount) {
-            // Записываем повторную попытку только если диагностика включена
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordRetry(1, slaveId, funcCode);
             }
@@ -624,16 +665,11 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed,
             });
-            if (lastError instanceof Error) {
-              throw lastError;
-            } else {
-              throw new Error(String(lastError));
-            }
+            throw lastError instanceof Error ? lastError : new Error(String(lastError));
           }
         }
       }
 
-      // Явно бросаем ошибку, если цикл завершился без возврата значения
       throw new Error('Unexpected end of _sendRequest function');
     } finally {
       release();
@@ -641,46 +677,39 @@ class ModbusClient {
   }
 
   /**
-   * Converts Modbus registers to a buffer.
+   * Converts Modbus registers to the specified type.
    * @param registers - The registers to convert.
    * @param type - The type of the registers.
-   * @returns The buffer containing the converted registers.
+   * @returns The converted registers.
    */
-  private _convertRegisters(registers: number[], type: string = 'uint16'): ConvertedRegisters {
+  private _convertRegisters<T extends RegisterType>(
+    registers: number[],
+    type: T = RegisterType.UINT16 as T
+  ): ConvertedRegisters<T> {
+    if (!registers || !Array.isArray(registers)) {
+      throw new Error('Invalid registers: must be a non-empty array');
+    }
+
     const buffer = new ArrayBuffer(registers.length * 2);
     const view = new DataView(buffer);
 
-    // Big endian запись (Modbus по умолчанию)
     registers.forEach((reg, i) => {
       view.setUint16(i * 2, reg, false);
     });
 
-    const read32 = (
-      method: 'getUint32' | 'getInt32' | 'getFloat32',
-      littleEndian: boolean = false
-    ): number[] => {
+    const read32 = (method: DataViewMethod32, littleEndian: boolean = false): number[] => {
       const result: number[] = [];
       for (let i = 0; i < registers.length - 1; i += 2) {
-        switch (method) {
-          case 'getUint32':
-            result.push(view.getUint32(i * 2, littleEndian));
-            break;
-          case 'getInt32':
-            result.push(view.getInt32(i * 2, littleEndian));
-            break;
-          case 'getFloat32':
-            result.push(view.getFloat32(i * 2, littleEndian));
-            break;
-        }
+        result.push(view[method](i * 2, littleEndian));
       }
       return result;
     };
 
     const read64 = (
-      method: 'getUint64' | 'getInt64' | 'getDouble',
+      method: DataViewMethod64,
       littleEndian: boolean = false
     ): bigint[] | number[] => {
-      if (method === 'getDouble') {
+      if (method === 'getFloat64') {
         const result: number[] = [];
         for (let i = 0; i < registers.length - 3; i += 4) {
           const tempBuf = new ArrayBuffer(8);
@@ -691,37 +720,33 @@ class ModbusClient {
           result.push(tempView.getFloat64(0, littleEndian));
         }
         return result;
-      } else {
-        const result: bigint[] = [];
-        for (let i = 0; i < registers.length - 3; i += 4) {
-          const tempBuf = new ArrayBuffer(8);
-          const tempView = new DataView(tempBuf);
-          for (let j = 0; j < 8; j++) {
-            tempView.setUint8(j, view.getUint8(i * 2 + j));
-          }
-
-          if (method === 'getUint64') {
-            const high = BigInt(tempView.getUint32(0, littleEndian));
-            const low = BigInt(tempView.getUint32(4, littleEndian));
-            result.push((high << 32n) | low);
-          } else {
-            const high = BigInt(tempView.getUint32(0, littleEndian));
-            const low = BigInt(tempView.getUint32(4, littleEndian));
-            let value = (high << 32n) | low;
-            if (value & (1n << 63n)) value -= 1n << 64n;
-            result.push(value);
-          }
-        }
-        return result;
       }
+
+      const result: bigint[] = [];
+      for (let i = 0; i < registers.length - 3; i += 4) {
+        const tempBuf = new ArrayBuffer(8);
+        const tempView = new DataView(tempBuf);
+        for (let j = 0; j < 8; j++) {
+          tempView.setUint8(j, view.getUint8(i * 2 + j));
+        }
+
+        const high = BigInt(tempView.getUint32(0, littleEndian));
+        const low = BigInt(tempView.getUint32(4, littleEndian));
+        let value = (high << 32n) | low;
+        if (method === 'getInt64' && value & (1n << 63n)) {
+          value -= 1n << 64n;
+        }
+        result.push(value);
+      }
+      return result;
     };
 
-    const getSwapped32 = (i: number, mode: string) => {
+    const getSwapped32 = (i: number, mode: SwapMode): DataView => {
       const a = view.getUint8(i * 2);
       const b = view.getUint8(i * 2 + 1);
       const c = view.getUint8(i * 2 + 2);
       const d = view.getUint8(i * 2 + 3);
-      let bytes: number[] = [];
+      let bytes: number[];
 
       switch (mode) {
         case 'sw':
@@ -756,116 +781,97 @@ class ModbusClient {
       return tempView;
     };
 
-    const read32Swapped = (
-      method: 'getUint32' | 'getInt32' | 'getFloat32',
-      mode: string
-    ): number[] => {
+    const read32Swapped = (method: DataViewMethod32, mode: SwapMode): number[] => {
       const result: number[] = [];
       for (let i = 0; i < registers.length - 1; i += 2) {
         const tempView = getSwapped32(i, mode);
-        switch (method) {
-          case 'getUint32':
-            result.push(tempView.getUint32(0, false));
-            break;
-          case 'getInt32':
-            result.push(tempView.getInt32(0, false));
-            break;
-          case 'getFloat32':
-            result.push(tempView.getFloat32(0, false));
-            break;
-        }
+        result.push(tempView[method](0, false));
       }
       return result;
     };
 
-    switch (type.toLowerCase()) {
-      // 16-бит
-      case 'uint16':
-        return registers;
-      case 'int16':
-        return registers.map((_, i) => view.getInt16(i * 2, false));
+    switch (type) {
+      case RegisterType.UINT16:
+        return registers as ConvertedRegisters<T>;
+      case RegisterType.INT16:
+        return registers.map((_, i) => view.getInt16(i * 2, false)) as ConvertedRegisters<T>;
 
-      // 32-бит
-      case 'uint32':
-        return read32('getUint32');
-      case 'int32':
-        return read32('getInt32');
-      case 'float':
-        return read32('getFloat32');
+      case RegisterType.UINT32:
+        return read32('getUint32') as ConvertedRegisters<T>;
+      case RegisterType.INT32:
+        return read32('getInt32') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT:
+        return read32('getFloat32') as ConvertedRegisters<T>;
 
-      // 32-бит LE
-      case 'uint32_le':
-        return read32('getUint32', true);
-      case 'int32_le':
-        return read32('getInt32', true);
-      case 'float_le':
-        return read32('getFloat32', true);
+      case RegisterType.UINT32_LE:
+        return read32('getUint32', true) as ConvertedRegisters<T>;
+      case RegisterType.INT32_LE:
+        return read32('getInt32', true) as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_LE:
+        return read32('getFloat32', true) as ConvertedRegisters<T>;
 
-      // 32-бит со swap
-      case 'uint32_sw':
-        return read32Swapped('getUint32', 'sw');
-      case 'int32_sw':
-        return read32Swapped('getInt32', 'sw');
-      case 'float_sw':
-        return read32Swapped('getFloat32', 'sw');
+      case RegisterType.UINT32_SW:
+        return read32Swapped('getUint32', 'sw') as ConvertedRegisters<T>;
+      case RegisterType.INT32_SW:
+        return read32Swapped('getInt32', 'sw') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_SW:
+        return read32Swapped('getFloat32', 'sw') as ConvertedRegisters<T>;
 
-      case 'uint32_sb':
-        return read32Swapped('getUint32', 'sb');
-      case 'int32_sb':
-        return read32Swapped('getInt32', 'sb');
-      case 'float_sb':
-        return read32Swapped('getFloat32', 'sb');
+      case RegisterType.UINT32_SB:
+        return read32Swapped('getUint32', 'sb') as ConvertedRegisters<T>;
+      case RegisterType.INT32_SB:
+        return read32Swapped('getInt32', 'sb') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_SB:
+        return read32Swapped('getFloat32', 'sb') as ConvertedRegisters<T>;
 
-      case 'uint32_sbw':
-        return read32Swapped('getUint32', 'sbw');
-      case 'int32_sbw':
-        return read32Swapped('getInt32', 'sbw');
-      case 'float_sbw':
-        return read32Swapped('getFloat32', 'sbw');
+      case RegisterType.UINT32_SBW:
+        return read32Swapped('getUint32', 'sbw') as ConvertedRegisters<T>;
+      case RegisterType.INT32_SBW:
+        return read32Swapped('getInt32', 'sbw') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_SBW:
+        return read32Swapped('getFloat32', 'sbw') as ConvertedRegisters<T>;
 
-      // 32-бит little-endian через полные swap
-      case 'uint32_le_sw':
-        return read32Swapped('getUint32', 'le_sw');
-      case 'int32_le_sw':
-        return read32Swapped('getInt32', 'le_sw');
-      case 'float_le_sw':
-        return read32Swapped('getFloat32', 'le_sw');
+      case RegisterType.UINT32_LE_SW:
+        return read32Swapped('getUint32', 'le_sw') as ConvertedRegisters<T>;
+      case RegisterType.INT32_LE_SW:
+        return read32Swapped('getInt32', 'le_sw') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_LE_SW:
+        return read32Swapped('getFloat32', 'le_sw') as ConvertedRegisters<T>;
 
-      case 'uint32_le_sb':
-        return read32Swapped('getUint32', 'le_sb');
-      case 'int32_le_sb':
-        return read32Swapped('getInt32', 'le_sb');
-      case 'float_le_sb':
-        return read32Swapped('getFloat32', 'le_sb');
+      case RegisterType.UINT32_LE_SB:
+        return read32Swapped('getUint32', 'le_sb') as ConvertedRegisters<T>;
+      case RegisterType.INT32_LE_SB:
+        return read32Swapped('getInt32', 'le_sb') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_LE_SB:
+        return read32Swapped('getFloat32', 'le_sb') as ConvertedRegisters<T>;
 
-      case 'uint32_le_sbw':
-        return read32Swapped('getUint32', 'le_sbw');
-      case 'int32_le_sbw':
-        return read32Swapped('getInt32', 'le_sbw');
-      case 'float_le_sbw':
-        return read32Swapped('getFloat32', 'le_sbw');
+      case RegisterType.UINT32_LE_SBW:
+        return read32Swapped('getUint32', 'le_sbw') as ConvertedRegisters<T>;
+      case RegisterType.INT32_LE_SBW:
+        return read32Swapped('getInt32', 'le_sbw') as ConvertedRegisters<T>;
+      case RegisterType.FLOAT_LE_SBW:
+        return read32Swapped('getFloat32', 'le_sbw') as ConvertedRegisters<T>;
 
-      // 64-бит
-      case 'uint64':
-        return read64('getUint64');
-      case 'int64':
-        return read64('getInt64');
-      case 'double':
-        return read64('getDouble');
+      case RegisterType.UINT64:
+        return read64('getUint64') as ConvertedRegisters<T>;
+      case RegisterType.INT64:
+        return read64('getInt64') as ConvertedRegisters<T>;
+      case RegisterType.DOUBLE:
+        return read64('getFloat64') as ConvertedRegisters<T>;
 
-      // 64-бит LE
-      case 'uint64_le':
-        return read64('getUint64', true);
-      case 'int64_le':
-        return read64('getInt64', true);
-      case 'double_le':
-        return read64('getDouble', true);
+      case RegisterType.UINT64_LE:
+        return read64('getUint64', true) as ConvertedRegisters<T>;
+      case RegisterType.INT64_LE:
+        return read64('getInt64', true) as ConvertedRegisters<T>;
+      case RegisterType.DOUBLE_LE:
+        return read64('getFloat64', true) as ConvertedRegisters<T>;
 
-      // Разное
-      case 'hex':
-        return registers.map(r => r.toString(16).toUpperCase().padStart(4, '0'));
+      case RegisterType.HEX:
+        return registers.map(r =>
+          r.toString(16).toUpperCase().padStart(4, '0')
+        ) as ConvertedRegisters<T>;
 
-      case 'string': {
+      case RegisterType.STRING: {
         let str = '';
         for (let i = 0; i < registers.length; i++) {
           const high = (registers[i]! >> 8) & 0xff;
@@ -873,47 +879,52 @@ class ModbusClient {
           if (high !== 0) str += String.fromCharCode(high);
           if (low !== 0) str += String.fromCharCode(low);
         }
-        return [str];
+        return [str] as ConvertedRegisters<T>;
       }
 
-      case 'bool':
-        return registers.map(r => r !== 0);
+      case RegisterType.BOOL:
+        return registers.map(r => r !== 0) as ConvertedRegisters<T>;
 
-      case 'binary':
+      case RegisterType.BINARY:
         return registers.map(r =>
           r
             .toString(2)
             .padStart(16, '0')
             .split('')
             .map(b => b === '1')
-        );
+        ) as ConvertedRegisters<T>;
 
-      case 'bcd':
+      case RegisterType.BCD:
         return registers.map(r => {
           const high = (r >> 8) & 0xff;
           const low = r & 0xff;
           return ((high >> 4) * 10 + (high & 0x0f)) * 100 + (low >> 4) * 10 + (low & 0x0f);
-        });
+        }) as ConvertedRegisters<T>;
 
       default:
         throw new Error(`Unsupported type: ${type}`);
     }
   }
 
-  // --- Public method's Modbus ---
-
   /**
    * Reads holding registers from the Modbus device.
-   * @param startAddress - The starting address of the registers to read.
-   * @param quantity - The number of registers to read.
+   * @param startAddress - The starting address of the registers to read (0–65535).
+   * @param quantity - The number of registers to read (1–125 for Modbus standard).
    * @param options - The options for the read operation.
-   * @returns The buffer containing the read registers.
+   * @returns The converted registers.
    */
-  async readHoldingRegisters(
+  async readHoldingRegisters<T extends RegisterType>(
     startAddress: number,
     quantity: number,
     options: ConvertRegisterOptions = {}
-  ): Promise<ConvertedRegisters> {
+  ): Promise<ConvertedRegisters<T>> {
+    if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
+      throw new Error('Invalid startAddress: must be an integer between 0 and 65535');
+    }
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 125) {
+      throw new Error('Invalid quantity: must be an integer between 1 and 125');
+    }
+
     const pdu = buildReadHoldingRegistersRequest(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu);
     if (!responsePdu) {
@@ -921,38 +932,44 @@ class ModbusClient {
     }
     const registers = parseReadHoldingRegistersResponse(responsePdu);
 
-    const type = options.type || 'uint16';
-    return this._convertRegisters(registers, type);
+    const type = options.type ?? RegisterType.UINT16;
+    return this._convertRegisters(registers, type) as ConvertedRegisters<T>;
   }
 
   /**
    * Reads input registers from the Modbus device.
-   * @param startAddress - The starting address of the registers to read.
-   * @param quantity - The number of registers to read.
+   * @param startAddress - The starting address of the registers to read (0–65535).
+   * @param quantity - The number of registers to read (1–125 for Modbus standard).
    * @param options - The options for the read operation.
-   * @returns The buffer containing the read registers.
+   * @returns The converted registers.
    */
-  async readInputRegisters(
+  async readInputRegisters<T extends RegisterType>(
     startAddress: number,
     quantity: number,
     options: ConvertRegisterOptions = {}
-  ): Promise<ConvertedRegisters> {
-    const responsePdu = await this._sendRequest(
-      buildReadInputRegistersRequest(startAddress, quantity)
-    );
+  ): Promise<ConvertedRegisters<T>> {
+    if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
+      throw new Error('Invalid startAddress: must be an integer between 0 and 65535');
+    }
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 125) {
+      throw new Error('Invalid quantity: must be an integer between 1 and 125');
+    }
+
+    const pdu = buildReadInputRegistersRequest(startAddress, quantity);
+    const responsePdu = await this._sendRequest(pdu);
     if (!responsePdu) {
       throw new Error('No response received');
     }
     const registers = parseReadInputRegistersResponse(responsePdu);
 
-    const type = options.type || 'uint16';
-    return this._convertRegisters(registers, type);
+    const type = options.type ?? RegisterType.UINT16;
+    return this._convertRegisters(registers, type) as ConvertedRegisters<T>;
   }
 
   /**
    * Writes a single register to the Modbus device.
-   * @param address - The address of the register to write.
-   * @param value - The value to write to the register.
+   * @param address - The address of the register to write (0–65535).
+   * @param value - The value to write to the register (0–65535).
    * @param timeout - The timeout in milliseconds.
    * @returns The response from the Modbus device.
    */
@@ -961,6 +978,13 @@ class ModbusClient {
     value: number,
     timeout?: number
   ): Promise<WriteSingleRegisterResponse> {
+    if (!Number.isInteger(address) || address < 0 || address > 65535) {
+      throw new Error('Invalid address: must be an integer between 0 and 65535');
+    }
+    if (!Number.isInteger(value) || value < 0 || value > 65535) {
+      throw new Error('Invalid value: must be an integer between 0 and 65535');
+    }
+
     const pdu = buildWriteSingleRegisterRequest(address, value);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -971,8 +995,8 @@ class ModbusClient {
 
   /**
    * Writes multiple registers to the Modbus device.
-   * @param startAddress - The starting address of the registers to write.
-   * @param values - The values to write to the registers.
+   * @param startAddress - The starting address of the registers to write (0–65535).
+   * @param values - The values to write to the registers (each 0–65535).
    * @param timeout - The timeout in milliseconds.
    * @returns The response from the Modbus device.
    */
@@ -981,6 +1005,16 @@ class ModbusClient {
     values: number[],
     timeout?: number
   ): Promise<WriteMultipleRegistersResponse> {
+    if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
+      throw new Error('Invalid startAddress: must be an integer between 0 and 65535');
+    }
+    if (!Array.isArray(values) || values.length < 1 || values.length > 123) {
+      throw new Error('Invalid values: must be an array of 1 to 123 integers');
+    }
+    if (values.some(v => !Number.isInteger(v) || v < 0 || v > 65535)) {
+      throw new Error('Invalid values: each value must be an integer between 0 and 65535');
+    }
+
     const pdu = buildWriteMultipleRegistersRequest(startAddress, values);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -991,8 +1025,8 @@ class ModbusClient {
 
   /**
    * Reads coils from the Modbus device.
-   * @param startAddress - The starting address of the coils to read.
-   * @param quantity - The number of coils to read.
+   * @param startAddress - The starting address of the coils to read (0–65535).
+   * @param quantity - The number of coils to read (1–2000 for Modbus standard).
    * @param timeout - The timeout in milliseconds.
    * @returns The response from the Modbus device.
    */
@@ -1001,6 +1035,13 @@ class ModbusClient {
     quantity: number,
     timeout?: number
   ): Promise<ReadCoilsResponse> {
+    if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
+      throw new Error('Invalid startAddress: must be an integer between 0 and 65535');
+    }
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2000) {
+      throw new Error('Invalid quantity: must be an integer between 1 and 2000');
+    }
+
     const pdu = buildReadCoilsRequest(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -1011,8 +1052,8 @@ class ModbusClient {
 
   /**
    * Reads discrete inputs from the Modbus device.
-   * @param startAddress - The starting address of the discrete inputs to read.
-   * @param quantity - The number of discrete inputs to read.
+   * @param startAddress - The starting address of the discrete inputs to read (0–65535).
+   * @param quantity - The number of discrete inputs to read (1–2000 for Modbus standard).
    * @param timeout - The timeout in milliseconds.
    * @returns The response from the Modbus device.
    */
@@ -1021,6 +1062,13 @@ class ModbusClient {
     quantity: number,
     timeout?: number
   ): Promise<ReadDiscreteInputsResponse> {
+    if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
+      throw new Error('Invalid startAddress: must be an integer between 0 and 65535');
+    }
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2000) {
+      throw new Error('Invalid quantity: must be an integer between 1 and 2000');
+    }
+
     const pdu = buildReadDiscreteInputsRequest(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -1031,8 +1079,8 @@ class ModbusClient {
 
   /**
    * Writes a single coil to the Modbus device.
-   * @param address - The address of the coil to write.
-   * @param value - The value to write to the coil.
+   * @param address - The address of the coil to write (0–65535).
+   * @param value - The value to write to the coil (boolean or 0/1).
    * @param timeout - The timeout in milliseconds.
    * @returns The response from the Modbus device.
    */
@@ -1041,6 +1089,13 @@ class ModbusClient {
     value: boolean | number,
     timeout?: number
   ): Promise<WriteSingleCoilResponse> {
+    if (!Number.isInteger(address) || address < 0 || address > 65535) {
+      throw new Error('Invalid address: must be an integer between 0 and 65535');
+    }
+    if (typeof value === 'number' && value !== 0 && value !== 1) {
+      throw new Error('Invalid value: must be a boolean or 0/1');
+    }
+
     const pdu = buildWriteSingleCoilRequest(address, value);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -1051,7 +1106,7 @@ class ModbusClient {
 
   /**
    * Writes multiple coils to the Modbus device.
-   * @param startAddress - The starting address of the coils to write.
+   * @param startAddress - The starting address of the coils to write (0–65535).
    * @param values - The values to write to the coils.
    * @param timeout - The timeout in milliseconds.
    * @returns The response from the Modbus device.
@@ -1061,6 +1116,13 @@ class ModbusClient {
     values: boolean[],
     timeout?: number
   ): Promise<WriteMultipleCoilsResponse> {
+    if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
+      throw new Error('Invalid startAddress: must be an integer between 0 and 65535');
+    }
+    if (!Array.isArray(values) || values.length < 1 || values.length > 1968) {
+      throw new Error('Invalid values: must be an array of 1 to 1968 booleans');
+    }
+
     const pdu = buildWriteMultipleCoilsRequest(startAddress, values);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -1124,6 +1186,10 @@ class ModbusClient {
    * @returns The response from the Modbus device.
    */
   async openFile(filename: string, timeout?: number): Promise<OpenFileResponse> {
+    if (typeof filename !== 'string' || filename.length === 0) {
+      throw new Error('Invalid filename: must be a non-empty string');
+    }
+
     const pdu = buildOpenFileRequest(filename);
     const responsePdu = await this._sendRequest(pdu, timeout);
     if (!responsePdu) {
@@ -1141,19 +1207,16 @@ class ModbusClient {
     const pdu = buildCloseFileRequest();
     const responsePdu = await this._sendRequest(pdu, timeout, true);
 
-    // Если responsePdu === undefined (устройство не ответило), возвращаем успех
     if (responsePdu === undefined) {
-      // Ждем немного и очищаем буфер
       await new Promise(resolve => setTimeout(resolve, 100));
       if (this.transport.flush) {
         await this.transport.flush();
       }
-      return true;
+      return true as CloseFileResponse;
     }
 
     const result = parseCloseFileResponse(responsePdu);
 
-    // Ждем немного и очищаем буфер
     await new Promise(resolve => setTimeout(resolve, 100));
     if (this.transport.flush) {
       await this.transport.flush();
@@ -1171,7 +1234,7 @@ class ModbusClient {
     const pdu = buildRestartControllerRequest();
     const responsePdu = await this._sendRequest(pdu, timeout, true);
     if (responsePdu === undefined) {
-      throw new Error('No response received');
+      return { success: true } as RestartControllerResponse;
     }
     return parseRestartControllerResponse(responsePdu);
   }
@@ -1197,6 +1260,10 @@ class ModbusClient {
    * @returns The response from the Modbus device.
    */
   async setControllerTime(datetime: Date, timeout?: number): Promise<SetControllerTimeResponse> {
+    if (!(datetime instanceof Date) || isNaN(datetime.getTime())) {
+      throw new Error('Invalid datetime: must be a valid Date object');
+    }
+
     const time: ControllerTime = {
       seconds: datetime.getSeconds(),
       minutes: datetime.getMinutes(),

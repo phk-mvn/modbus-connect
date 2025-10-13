@@ -272,7 +272,7 @@ class SlaveEmulator {
       slaveAddress: this.slaveAddress
     });
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(import_constants.FUNCTION_CODES.READ_COILS, addr);
+      this._checkException(import_constants.ModbusFunctionCode.READ_COILS, addr);
     }
     const result = [];
     for (let i = 0; i < quantity; i++) {
@@ -283,7 +283,7 @@ class SlaveEmulator {
   writeSingleCoil(address, value) {
     this._validateAddress(address);
     this._validateValue(value, false);
-    this._checkException(import_constants.FUNCTION_CODES.WRITE_SINGLE_COIL, address);
+    this._checkException(import_constants.ModbusFunctionCode.WRITE_SINGLE_COIL, address);
     this.setCoil(address, value);
     this.logger.info("writeSingleCoil", {
       address,
@@ -302,7 +302,7 @@ class SlaveEmulator {
     }
     values.forEach((val, idx) => {
       this._validateValue(val, false);
-      this._checkException(import_constants.FUNCTION_CODES.WRITE_MULTIPLE_COILS, startAddress + idx);
+      this._checkException(import_constants.ModbusFunctionCode.WRITE_MULTIPLE_COILS, startAddress + idx);
     });
     values.forEach((val, idx) => {
       this.setCoil(startAddress + idx, val);
@@ -339,7 +339,7 @@ class SlaveEmulator {
       slaveAddress: this.slaveAddress
     });
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(import_constants.FUNCTION_CODES.READ_DISCRETE_INPUTS, addr);
+      this._checkException(import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS, addr);
     }
     const result = [];
     for (let i = 0; i < quantity; i++) {
@@ -374,7 +374,7 @@ class SlaveEmulator {
       slaveAddress: this.slaveAddress
     });
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(import_constants.FUNCTION_CODES.READ_HOLDING_REGISTERS, addr);
+      this._checkException(import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS, addr);
     }
     const result = [];
     for (let i = 0; i < quantity; i++) {
@@ -385,7 +385,7 @@ class SlaveEmulator {
   writeSingleRegister(address, value) {
     this._validateAddress(address);
     this._validateValue(value, true);
-    this._checkException(import_constants.FUNCTION_CODES.WRITE_SINGLE_REGISTER, address);
+    this._checkException(import_constants.ModbusFunctionCode.WRITE_SINGLE_REGISTER, address);
     this.setHoldingRegister(address, value);
     this.logger.info("writeSingleRegister", {
       address,
@@ -404,7 +404,7 @@ class SlaveEmulator {
     }
     values.forEach((val, idx) => {
       this._validateValue(val, true);
-      this._checkException(import_constants.FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS, startAddress + idx);
+      this._checkException(import_constants.ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS, startAddress + idx);
     });
     values.forEach((val, idx) => {
       this.setHoldingRegister(startAddress + idx, val);
@@ -442,7 +442,7 @@ class SlaveEmulator {
       slaveAddress: this.slaveAddress
     });
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(import_constants.FUNCTION_CODES.READ_INPUT_REGISTERS, addr);
+      this._checkException(import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS, addr);
     }
     const result = [];
     for (let i = 0; i < quantity; i++) {
@@ -460,7 +460,7 @@ class SlaveEmulator {
     const result = [];
     for (let i = 0; i < quantity; i++) {
       const addr = start + i;
-      this._checkException(import_constants.FUNCTION_CODES.READ_HOLDING_REGISTERS, addr);
+      this._checkException(import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS, addr);
       result.push(this.getHoldingRegister(addr));
     }
     return result;
@@ -474,7 +474,7 @@ class SlaveEmulator {
     const result = [];
     for (let i = 0; i < quantity; i++) {
       const addr = start + i;
-      this._checkException(import_constants.FUNCTION_CODES.READ_INPUT_REGISTERS, addr);
+      this._checkException(import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS, addr);
       result.push(this.getInputRegister(addr));
     }
     return result;
@@ -593,35 +593,38 @@ class SlaveEmulator {
         stack: error.stack,
         slaveAddress: this.slaveAddress
       });
-      return this._createExceptionResponse(buffer?.[1] || 0, 4);
+      return this._createExceptionResponse(
+        buffer?.[1] || 0,
+        import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+      );
     }
   }
   _processFunctionCode(functionCode, data, slaveAddr) {
     try {
       let responseData;
       switch (functionCode) {
-        case import_constants.FUNCTION_CODES.READ_COILS:
+        case import_constants.ModbusFunctionCode.READ_COILS:
           responseData = this._handleReadCoils(data);
           break;
-        case import_constants.FUNCTION_CODES.READ_DISCRETE_INPUTS:
+        case import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS:
           responseData = this._handleReadDiscreteInputs(data);
           break;
-        case import_constants.FUNCTION_CODES.READ_HOLDING_REGISTERS:
+        case import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS:
           responseData = this._handleReadHoldingRegisters(data);
           break;
-        case import_constants.FUNCTION_CODES.READ_INPUT_REGISTERS:
+        case import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS:
           responseData = this._handleReadInputRegisters(data);
           break;
-        case import_constants.FUNCTION_CODES.WRITE_SINGLE_COIL:
+        case import_constants.ModbusFunctionCode.WRITE_SINGLE_COIL:
           responseData = this._handleWriteSingleCoil(data);
           break;
-        case import_constants.FUNCTION_CODES.WRITE_SINGLE_REGISTER:
+        case import_constants.ModbusFunctionCode.WRITE_SINGLE_REGISTER:
           responseData = this._handleWriteSingleRegister(data);
           break;
-        case import_constants.FUNCTION_CODES.WRITE_MULTIPLE_COILS:
+        case import_constants.ModbusFunctionCode.WRITE_MULTIPLE_COILS:
           responseData = this._handleWriteMultipleCoils(data);
           break;
-        case import_constants.FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS:
+        case import_constants.ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS:
           responseData = this._handleWriteMultipleRegisters(data);
           break;
         default:
@@ -629,7 +632,7 @@ class SlaveEmulator {
             functionCode: `0x${functionCode.toString(16)}`,
             slaveAddress: this.slaveAddress
           });
-          throw new import_errors.ModbusExceptionError(functionCode, 1);
+          throw new import_errors.ModbusExceptionError(functionCode, import_constants.ModbusExceptionCode.ILLEGAL_FUNCTION);
       }
       return this._createSuccessResponse(slaveAddr, functionCode, responseData);
     } catch (error) {

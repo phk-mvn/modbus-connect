@@ -39,29 +39,32 @@ var import_errors = require("../../errors.js");
 const loggerInstance = new import_logger.default();
 loggerInstance.setLogFormat(["timestamp", "level", "logger"]);
 loggerInstance.setCustomFormatter("logger", (value) => {
-  return value ? `[${value}]` : "";
+  return typeof value === "string" ? `[${value}]` : "";
 });
 const logger = loggerInstance.createLogger("NodeSerialTransport");
 logger.setLevel("info");
 class NodeSerialTransport {
   path;
   options;
-  port = null;
+  port;
   readBuffer;
-  isOpen = false;
-  _reconnectAttempts = 0;
-  _shouldReconnect = true;
-  _reconnectTimeout = null;
-  // Флаг для отслеживания состояния подключения
-  _isConnecting = false;
-  _isDisconnecting = false;
-  _isFlushing = false;
-  _pendingFlushPromises = [];
+  isOpen;
+  _reconnectAttempts;
+  _shouldReconnect;
+  _reconnectTimeout;
+  _isConnecting;
+  _isDisconnecting;
+  _isFlushing;
+  _pendingFlushPromises;
   _operationMutex;
-  // Добавляем промис для ожидания успешного подключения
-  _connectionPromise = null;
-  _resolveConnection = null;
-  _rejectConnection = null;
+  _connectionPromise;
+  _resolveConnection;
+  _rejectConnection;
+  /**
+   * Создаёт новый экземпляр транспорта для последовательного порта.
+   * @param port - Путь к последовательному порту (например, '/dev/ttyUSB0').
+   * @param options - Конфигурационные параметры порта.
+   */
   constructor(port, options = {}) {
     this.path = port;
     this.options = {
@@ -73,13 +76,28 @@ class NodeSerialTransport {
       writeTimeout: 1e3,
       maxBufferSize: 4096,
       reconnectInterval: 3e3,
-      // ms
       maxReconnectAttempts: Infinity,
       ...options
     };
+    this.port = null;
     this.readBuffer = (0, import_utils.allocUint8Array)(0);
+    this.isOpen = false;
+    this._reconnectAttempts = 0;
+    this._shouldReconnect = true;
+    this._reconnectTimeout = null;
+    this._isConnecting = false;
+    this._isDisconnecting = false;
+    this._isFlushing = false;
+    this._pendingFlushPromises = [];
     this._operationMutex = new import_async_mutex.Mutex();
+    this._connectionPromise = null;
+    this._resolveConnection = null;
+    this._rejectConnection = null;
   }
+  /**
+   * Устанавливает соединение с последовательным портом.
+   * @throws NodeSerialConnectionError - Если не удалось открыть порт или превышено количество попыток подключения.
+   */
   async connect() {
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts && !this.isOpen) {
       const error = new import_errors.NodeSerialConnectionError(
@@ -90,10 +108,7 @@ class NodeSerialTransport {
     }
     if (this._isConnecting) {
       logger.warn(`Connection attempt already in progress, waiting for it to complete`);
-      if (this._connectionPromise) {
-        return this._connectionPromise;
-      }
-      return Promise.resolve();
+      return this._connectionPromise ?? Promise.resolve();
     }
     this._isConnecting = true;
     this._connectionPromise = new Promise((resolve, reject) => {
@@ -111,9 +126,10 @@ class NodeSerialTransport {
           this.port?.close((err) => {
             if (err) {
               logger.error(`Error closing existing port: ${err.message}`);
-              reject();
+              reject(err);
+            } else {
+              resolve();
             }
-            resolve(void 0);
           });
         });
       }
@@ -156,7 +172,12 @@ class NodeSerialTransport {
       this._isConnecting = false;
     }
   }
-  _createAndOpenPort() {
+  /**
+   * Создаёт и открывает новый последовательный порт.
+   * @private
+   * @throws NodeSerialConnectionError - Если не удалось открыть порт.
+   */
+  async _createAndOpenPort() {
     return new Promise((resolve, reject) => {
       try {
         const serialOptions = {
@@ -188,6 +209,10 @@ class NodeSerialTransport {
       }
     });
   }
+  /**
+   * Удаляет все обработчики событий порта.
+   * @private
+   */
   _removeAllListeners() {
     if (this.port) {
       this.port.removeAllListeners("data");
@@ -195,6 +220,11 @@ class NodeSerialTransport {
       this.port.removeAllListeners("close");
     }
   }
+  /**
+   * Обрабатывает входящие данные от порта.
+   * @private
+   * @param data - Входящие данные в виде Buffer.
+   */
   _onData(data) {
     if (!this.isOpen) return;
     const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -203,6 +233,11 @@ class NodeSerialTransport {
       this.readBuffer = (0, import_utils.sliceUint8Array)(this.readBuffer, -this.options.maxBufferSize);
     }
   }
+  /**
+   * Обрабатывает ошибки порта.
+   * @private
+   * @param err - Ошибка порта.
+   */
   _onError(err) {
     logger.error(`Serial port ${this.path} error: ${err.message}`);
     this.readBuffer = (0, import_utils.allocUint8Array)(0);
@@ -211,6 +246,10 @@ class NodeSerialTransport {
       this._removeAllListeners();
     }
   }
+  /**
+   * Обрабатывает событие закрытия порта.
+   * @private
+   */
   _onClose() {
     logger.info(`Serial port ${this.path} closed`);
     this.isOpen = false;
@@ -219,6 +258,11 @@ class NodeSerialTransport {
       this._scheduleReconnect(new import_errors.NodeSerialConnectionError("Port closed"));
     }
   }
+  /**
+   * Планирует попытку переподключения.
+   * @private
+   * @param err - Ошибка, вызвавшая необходимость переподключения.
+   */
   _scheduleReconnect(err) {
     if (!this._shouldReconnect || this._isDisconnecting) {
       logger.warn("Reconnect disabled or disconnecting, not scheduling");
@@ -226,6 +270,7 @@ class NodeSerialTransport {
     }
     if (this._reconnectTimeout) {
       clearTimeout(this._reconnectTimeout);
+      this._reconnectTimeout = null;
     }
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
       logger.error(
@@ -251,6 +296,10 @@ class NodeSerialTransport {
       this._attemptReconnect();
     }, this.options.reconnectInterval);
   }
+  /**
+   * Выполняет попытку переподключения.
+   * @private
+   */
   async _attemptReconnect() {
     try {
       if (this.port && this.port.isOpen) {
@@ -285,6 +334,10 @@ class NodeSerialTransport {
       }
     }
   }
+  /**
+   * Очищает буфер чтения транспорта.
+   * @returns Промис, который разрешается после завершения очистки.
+   */
   async flush() {
     logger.info("Flushing NodeSerial transport buffer");
     if (this._isFlushing) {
@@ -308,6 +361,11 @@ class NodeSerialTransport {
     }
     return flushPromise;
   }
+  /**
+   * Записывает данные в последовательный порт.
+   * @param buffer - Данные для записи.
+   * @throws NodeSerialWriteError - Если порт закрыт или произошла ошибка записи.
+   */
   async write(buffer) {
     if (!this.isOpen || !this.port || !this.port.isOpen) {
       logger.info(`Write attempted on closed port ${this.path}`);
@@ -316,12 +374,12 @@ class NodeSerialTransport {
     const release = await this._operationMutex.acquire();
     try {
       return new Promise((resolve, reject) => {
-        this.port?.write(buffer, (err) => {
+        this.port.write(buffer, (err) => {
           if (err) {
             logger.error(`Write error on port ${this.path}: ${err.message}`);
             return reject(new import_errors.NodeSerialWriteError(err.message));
           }
-          this.port?.drain((drainErr) => {
+          this.port.drain((drainErr) => {
             if (drainErr) {
               logger.info(`Drain error on port ${this.path}: ${drainErr.message}`);
               return reject(new import_errors.NodeSerialWriteError(drainErr.message));
@@ -334,11 +392,19 @@ class NodeSerialTransport {
       release();
     }
   }
+  /**
+   * Читает данные из последовательного порта.
+   * @param length - Количество байтов для чтения.
+   * @param timeout - Таймаут чтения в миллисекундах (по умолчанию из опций).
+   * @returns Прочитанные данные.
+   * @throws NodeSerialReadError - Если порт закрыт или таймаут чтения истёк.
+   * @throws ModbusFlushError - Если операция чтения прервана очисткой буфера.
+   */
   async read(length, timeout = this.options.readTimeout) {
     const start = Date.now();
     const release = await this._operationMutex.acquire();
     try {
-      return new Promise((resolve, reject) => {
+      return await new Promise((resolve, reject) => {
         const checkData = () => {
           if (!this.isOpen || !this.port || !this.port.isOpen) {
             logger.info("Read operation interrupted: port is not open");
@@ -366,6 +432,11 @@ class NodeSerialTransport {
       release();
     }
   }
+  /**
+   * Закрывает соединение с последовательным портом.
+   * @returns Промис, который разрешается после закрытия порта.
+   * @throws NodeSerialConnectionError - Если произошла ошибка при закрытии порта.
+   */
   async disconnect() {
     this._shouldReconnect = false;
     this._isDisconnecting = true;
@@ -384,7 +455,7 @@ class NodeSerialTransport {
     }
     return new Promise((resolve, reject) => {
       this._removeAllListeners();
-      this.port?.close((err) => {
+      this.port.close((err) => {
         this._isDisconnecting = false;
         this.isOpen = false;
         if (err) {
@@ -396,7 +467,9 @@ class NodeSerialTransport {
       });
     });
   }
-  // Дополнительный метод для принудительной очистки
+  /**
+   * Полностью уничтожает транспорт, закрывая порт и очищая ресурсы.
+   */
   destroy() {
     this._shouldReconnect = false;
     if (this._reconnectTimeout) {

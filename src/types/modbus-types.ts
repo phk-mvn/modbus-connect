@@ -1,39 +1,63 @@
 // src/types/modbus-types.ts
 
-// Типы для функций чтения
+import { RegisterType } from '../constants/constants.js';
+
+// =============================================================================
+// Типы для функций чтения Modbus
+// =============================================================================
+
+/** Ответ на запрос чтения coils (coils) */
 export type ReadCoilsResponse = boolean[];
+
+/** Ответ на запрос чтения дискретных входов (discrete inputs) */
 export type ReadDiscreteInputsResponse = boolean[];
+
+/** Ответ на запрос чтения holding регистров (holding registers) */
 export type ReadHoldingRegistersResponse = number[];
+
+/** Ответ на запрос чтения input регистров (input registers) */
 export type ReadInputRegistersResponse = number[];
 
-// Типы для функций записи
+// =============================================================================
+// Типы для функций записи Modbus
+// =============================================================================
+
+/** Ответ на запрос записи одного coil */
 export interface WriteSingleCoilResponse {
   address: number;
   value: boolean;
 }
 
+/** Ответ на запрос записи нескольких coil */
 export interface WriteMultipleCoilsResponse {
   startAddress: number;
   quantity: number;
 }
 
+/** Ответ на запрос записи одного регистра */
 export interface WriteSingleRegisterResponse {
   address: number;
   value: number;
 }
 
+/** Ответ на запрос записи нескольких регистров */
 export interface WriteMultipleRegistersResponse {
   startAddress: number;
   quantity: number;
 }
 
-// Типы для специальных функций
+// =============================================================================
+// Типы для специальных функций Modbus
+// =============================================================================
+
+/** Ответ на запрос идентификации устройства (Report Slave ID) */
 export interface ReportSlaveIdResponse {
   slaveId: number;
   isRunning: boolean;
   data: Uint8Array;
 }
 
+/** Ответ на запрос идентификатора устройства (Read Device Identification) */
 export interface ReadDeviceIdentificationResponse {
   functionCode: number;
   meiType: number;
@@ -45,20 +69,28 @@ export interface ReadDeviceIdentificationResponse {
   objects: Record<number, string>;
 }
 
+// =============================================================================
 // Типы для функций SGM130
+// =============================================================================
+
+/** Ответ на запрос длины файла */
 export type ReadFileLengthResponse = number;
 
+/** Ответ на запрос открытия файла */
 export interface OpenFileResponse {
   fileLength: number;
 }
 
+/** Ответ на запрос закрытия файла */
 export type CloseFileResponse = boolean;
 
+/** Ответ на запрос перезапуска контроллера */
 export interface RestartControllerResponse {
   success: boolean;
   warning?: string;
 }
 
+/** Ответ на запрос получения времени контроллера */
 export interface GetControllerTimeResponse {
   seconds: number;
   minutes: number;
@@ -68,6 +100,7 @@ export interface GetControllerTimeResponse {
   year: number;
 }
 
+/** Структура для представления времени контроллера */
 export interface ControllerTime {
   seconds: number;
   minutes: number;
@@ -77,19 +110,14 @@ export interface ControllerTime {
   year: number;
 }
 
+/** Ответ на запрос установки времени контроллера */
 export type SetControllerTimeResponse = boolean;
 
-// Типы для преобразованных регистров
-export type ConvertedRegisters =
-  | number[] // uint16, int16
-  | number[] // uint32, int32, float, uint32_le, int32_le, float_le и т.д.
-  | bigint[] // uint64, int64
-  | number[] // double
-  | string[] // hex, string, bcd
-  | boolean[] // bool
-  | boolean[][]; // binary
-
+// =============================================================================
 // Интерфейсы для транспорта
+// =============================================================================
+
+/** Интерфейс для транспорта Modbus */
 export interface Transport {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -98,7 +126,11 @@ export interface Transport {
   flush?(): Promise<void>;
 }
 
-// Интерфейсы для опций
+// =============================================================================
+// Интерфейсы для опций клиента
+// =============================================================================
+
+/** Опции для конфигурации Modbus клиента */
 export interface ModbusClientOptions {
   timeout?: number;
   retryCount?: number;
@@ -120,13 +152,14 @@ export interface ModbusClientOptions {
     | 'crcjam';
 }
 
-export interface ConvertRegisterOptions {
-  type?: string;
-}
-
+// =============================================================================
 // Типы для логгера
+// =============================================================================
+
+/** Уровни логирования */
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 
+/** Контекст для логирования */
 export interface LogContext {
   slaveId?: number;
   funcCode?: number;
@@ -139,6 +172,7 @@ export interface LogContext {
   [key: string]: string | number | boolean | undefined;
 }
 
+/** Интерфейс для экземпляра логгера */
 export interface LoggerInstance {
   trace(...args: unknown[]): Promise<void>;
   debug(...args: unknown[]): Promise<void>;
@@ -153,7 +187,11 @@ export interface LoggerInstance {
   resume(): void;
 }
 
+// =============================================================================
 // Типы для диагностики
+// =============================================================================
+
+/** Опции для диагностики */
 export interface DiagnosticsOptions {
   notificationThreshold?: number;
   errorRateThreshold?: number;
@@ -161,6 +199,7 @@ export interface DiagnosticsOptions {
   loggerName?: string;
 }
 
+/** Статистика диагностики */
 export interface DiagnosticsStats {
   uptimeSeconds: number;
   totalSessions: number;
@@ -198,12 +237,14 @@ export interface DiagnosticsStats {
   slaveIds: number[];
 }
 
+/** Результат анализа диагностики */
 export interface AnalysisResult {
   warnings: string[];
   isHealthy: boolean;
   stats: DiagnosticsStats;
 }
 
+/** Интерфейс для диагностики */
 export interface DiagnosticsInterface {
   recordRequest(slaveId?: number, funcCode?: number): void;
   recordFunctionCall(funcCode: number, slaveId?: number): void;
@@ -238,6 +279,11 @@ export interface DiagnosticsInterface {
   readonly uptimeSeconds: number;
 }
 
+// =============================================================================
+// Интерфейсы для транспорта через последовательный порт
+// =============================================================================
+
+/** Опции для транспорта через Node.js SerialPort */
 export interface NodeSerialTransportOptions {
   baudRate?: number;
   dataBits?: 5 | 6 | 7 | 8;
@@ -251,6 +297,7 @@ export interface NodeSerialTransportOptions {
   [key: string]: unknown;
 }
 
+/** Интерфейс для Web Serial Port */
 export interface WebSerialPort {
   open(options: WebSerialPortOptions): Promise<void>;
   close(): Promise<void>;
@@ -259,6 +306,7 @@ export interface WebSerialPort {
   readonly opened: boolean;
 }
 
+/** Опции для Web Serial Port */
 export interface WebSerialPortOptions {
   baudRate: number;
   dataBits: number;
@@ -267,6 +315,7 @@ export interface WebSerialPortOptions {
   flowControl: 'none';
 }
 
+/** Опции для транспорта через Web Serial */
 export interface WebSerialTransportOptions {
   baudRate?: number;
   dataBits?: number;
@@ -280,6 +329,11 @@ export interface WebSerialTransportOptions {
   [key: string]: unknown;
 }
 
+// =============================================================================
+// Типы для системы опроса (Polling)
+// =============================================================================
+
+/** Конфигурация менеджера опроса */
 export interface PollingManagerConfig {
   defaultMaxRetries?: number;
   defaultBackoffDelay?: number;
@@ -288,6 +342,7 @@ export interface PollingManagerConfig {
   [key: string]: unknown;
 }
 
+/** Опции для задачи опроса */
 export interface PollingTaskOptions {
   id: string;
   resourceId?: string;
@@ -311,6 +366,7 @@ export interface PollingTaskOptions {
   taskTimeout?: number;
 }
 
+/** Состояние задачи опроса */
 export interface PollingTaskState {
   stopped: boolean;
   paused: boolean;
@@ -318,6 +374,7 @@ export interface PollingTaskState {
   inProgress: boolean;
 }
 
+/** Статистика задачи опроса */
 export interface PollingTaskStats {
   totalRuns: number;
   totalErrors: number;
@@ -329,6 +386,7 @@ export interface PollingTaskStats {
   failures: number;
 }
 
+/** Информация о очереди опроса */
 export interface PollingQueueInfo {
   resourceId: string;
   queueLength: number;
@@ -338,6 +396,7 @@ export interface PollingQueueInfo {
   }>;
 }
 
+/** Статистика системы опроса */
 export interface PollingSystemStats {
   totalTasks: number;
   totalQueues: number;
@@ -345,11 +404,17 @@ export interface PollingSystemStats {
   tasks: Record<string, PollingTaskStats>;
 }
 
+// =============================================================================
+// Типы для эмулятора и регистров
+// =============================================================================
+
+/** Определение одного регистра */
 export interface RegisterDefinition {
   start: number;
   value: number | boolean;
 }
 
+/** Определения наборов регистров */
 export interface RegisterDefinitions {
   coils?: RegisterDefinition[];
   discrete?: RegisterDefinition[];
@@ -357,6 +422,7 @@ export interface RegisterDefinitions {
   input?: RegisterDefinition[];
 }
 
+/** Параметры для бесконечного изменения регистра */
 export interface InfinityChangeParams {
   typeRegister: 'Holding' | 'Input' | 'Coil' | 'Discrete';
   register: number;
@@ -364,11 +430,68 @@ export interface InfinityChangeParams {
   interval: number;
 }
 
+/** Параметры для остановки бесконечного изменения регистра */
 export interface StopInfinityChangeParams {
   typeRegister: 'Holding' | 'Input' | 'Coil' | 'Discrete';
   register: number;
 }
 
+/** Опции для эмулятора slave-устройства */
 export interface SlaveEmulatorOptions {
   loggerEnabled?: boolean;
+}
+
+/** Тип для конвертированных регистров с поддержкой различных типов данных */
+export type ConvertedRegisters<T extends RegisterType = RegisterType.UINT16> = T extends
+  | RegisterType.UINT16
+  | RegisterType.INT16
+  | RegisterType.UINT32
+  | RegisterType.INT32
+  | RegisterType.FLOAT
+  ? number[]
+  : T extends RegisterType.UINT64 | RegisterType.INT64
+    ? bigint[]
+    : T extends RegisterType.DOUBLE
+      ? number[]
+      : T extends RegisterType.UINT32_LE | RegisterType.INT32_LE | RegisterType.FLOAT_LE
+        ? number[]
+        : T extends
+              | RegisterType.UINT32_SW
+              | RegisterType.INT32_SW
+              | RegisterType.FLOAT_SW
+              | RegisterType.UINT32_SB
+              | RegisterType.INT32_SB
+              | RegisterType.FLOAT_SB
+              | RegisterType.UINT32_SBW
+              | RegisterType.INT32_SBW
+              | RegisterType.FLOAT_SBW
+              | RegisterType.UINT32_LE_SW
+              | RegisterType.INT32_LE_SW
+              | RegisterType.FLOAT_LE_SW
+              | RegisterType.UINT32_LE_SB
+              | RegisterType.INT32_LE_SB
+              | RegisterType.FLOAT_LE_SB
+              | RegisterType.UINT32_LE_SBW
+              | RegisterType.INT32_LE_SBW
+              | RegisterType.FLOAT_LE_SBW
+          ? number[]
+          : T extends RegisterType.UINT64_LE | RegisterType.INT64_LE
+            ? bigint[]
+            : T extends RegisterType.DOUBLE_LE
+              ? number[]
+              : T extends RegisterType.HEX
+                ? string[]
+                : T extends RegisterType.STRING
+                  ? string[]
+                  : T extends RegisterType.BOOL
+                    ? boolean[]
+                    : T extends RegisterType.BINARY
+                      ? boolean[][]
+                      : T extends RegisterType.BCD
+                        ? number[]
+                        : never;
+
+/** Опции для конвертации регистров */
+export interface ConvertRegisterOptions {
+  type?: RegisterType;
 }

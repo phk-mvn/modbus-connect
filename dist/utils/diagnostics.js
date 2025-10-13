@@ -73,6 +73,28 @@ class Diagnostics {
   totalSessions = 0;
   requestTimestamps = [];
   // Для расчёта requests per second
+  // Кэшированные значения для производительности
+  static FUNCTION_CODE_NAMES = /* @__PURE__ */ new Map([
+    [import_constants.ModbusFunctionCode.READ_COILS, "READ_COILS"],
+    [import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS, "READ_DISCRETE_INPUTS"],
+    [import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS, "READ_HOLDING_REGISTERS"],
+    [import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS, "READ_INPUT_REGISTERS"],
+    [import_constants.ModbusFunctionCode.WRITE_SINGLE_COIL, "WRITE_SINGLE_COIL"],
+    [import_constants.ModbusFunctionCode.WRITE_SINGLE_REGISTER, "WRITE_SINGLE_REGISTER"],
+    [import_constants.ModbusFunctionCode.WRITE_MULTIPLE_COILS, "WRITE_MULTIPLE_COILS"],
+    [import_constants.ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS, "WRITE_MULTIPLE_REGISTERS"],
+    [import_constants.ModbusFunctionCode.REPORT_SLAVE_ID, "REPORT_SLAVE_ID"],
+    [import_constants.ModbusFunctionCode.READ_DEVICE_COMMENT, "READ_DEVICE_COMMENT"],
+    [import_constants.ModbusFunctionCode.WRITE_DEVICE_COMMENT, "WRITE_DEVICE_COMMENT"],
+    [import_constants.ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, "READ_DEVICE_IDENTIFICATION"],
+    [import_constants.ModbusFunctionCode.READ_FILE_LENGTH, "READ_FILE_LENGTH"],
+    [import_constants.ModbusFunctionCode.READ_FILE_CHUNK, "READ_FILE_CHUNK"],
+    [import_constants.ModbusFunctionCode.OPEN_FILE, "OPEN_FILE"],
+    [import_constants.ModbusFunctionCode.CLOSE_FILE, "CLOSE_FILE"],
+    [import_constants.ModbusFunctionCode.RESTART_CONTROLLER, "RESTART_CONTROLLER"],
+    [import_constants.ModbusFunctionCode.GET_CONTROLLER_TIME, "GET_CONTROLLER_TIME"],
+    [import_constants.ModbusFunctionCode.SET_CONTROLLER_TIME, "SET_CONTROLLER_TIME"]
+  ]);
   constructor(options = {}) {
     this.notificationThreshold = options.notificationThreshold || 10;
     this.errorRateThreshold = options.errorRateThreshold || 10;
@@ -252,9 +274,7 @@ class Diagnostics {
     if (funcCode == null) return;
     this.functionCallCounts[funcCode] ??= 0;
     this.functionCallCounts[funcCode]++;
-    const funcName = Object.keys(import_constants.FUNCTION_CODES).find(
-      (k) => import_constants.FUNCTION_CODES[k] === funcCode
-    ) || "Unknown";
+    const funcName = Diagnostics.FUNCTION_CODE_NAMES.get(funcCode) || "Unknown";
     this.logger.trace("Function called", {
       slaveId: slaveId || this.slaveIds[0],
       funcCode,
@@ -430,7 +450,7 @@ class Diagnostics {
       exceptionCodeCounts: Object.entries(this.exceptionCodeCounts).reduce(
         (acc, [code, count]) => {
           const codeNum = Number(code);
-          const excName = import_constants.EXCEPTION_CODES[codeNum] || "Unknown";
+          const excName = import_constants.MODBUS_EXCEPTION_MESSAGES[codeNum] || "Unknown";
           acc[`${code}/${excName}`] = count;
           return acc;
         },
@@ -451,9 +471,7 @@ class Diagnostics {
       functionCallCounts: Object.entries(this.functionCallCounts).reduce(
         (acc, [code, count]) => {
           const key = Number(code);
-          const name = Object.keys(import_constants.FUNCTION_CODES).find(
-            (k) => import_constants.FUNCTION_CODES[k] === key
-          ) || "Unknown";
+          const name = Diagnostics.FUNCTION_CODE_NAMES.get(key) || "Unknown";
           acc[`${code}/${name}`] = count;
           return acc;
         },

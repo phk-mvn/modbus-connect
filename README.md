@@ -5316,14 +5316,30 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 <br>
 
 # <span id="changelog">CHANGELOG</span>
-### 2.1.28 (2025-10-10)
+
+### 2.1.36 (2025-10-13)
+
+- Updated type declarations in files:
+  - `src/types/client.d.ts`
+- Strong typing improvements in modules:
+  - `ModbusClient`
+- Constants in the file `src/constants/constants.ts` have now been converted to `enum`
+- Fixed usage of enum in modules and files:
+  - `ModbusClient`
+  - `Logger`
+  - `Diagnostics`
+  - `SlaveEmulator`
+  - `src/errors.ts`
+
+### 2.1.29 (2025-10-10)
+
 - The library is fully typed using TypeScript.
 - Added type descriptions for all modules in the form of `.d.ts` files available for import
-  - `class ModbusClient` from ***'modbus-connect/client'***
-  - `class PollingManager` from ***'modbus-connect/polling-manager'***
-  - `class SlaveEmulator` from ***'modbus-connect/slave-emulator'***
-  - `class Logger` from ***'modbus-connect/logger'***
-  - `createTransport()` from ***'modbus-connect/transport'***
+  - `class ModbusClient` from **_'modbus-connect/client'_**
+  - `class PollingManager` from **_'modbus-connect/polling-manager'_**
+  - `class SlaveEmulator` from **_'modbus-connect/slave-emulator'_**
+  - `class Logger` from **_'modbus-connect/logger'_**
+  - `createTransport()` from **_'modbus-connect/transport'_**
 
 - Modules can now be imported into your project using both `require()` and `import`.
 - The library guide has been updated.
@@ -5361,7 +5377,6 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
     - **Graceful shutdown** - Proper resource cleanup
     - **Security** - Overflow and invalid data checks
     - **Modbus standards support** - Protocol restrictions compliance
-
 - PollingManager updated:
     - **Improved Validation** - Added full validation of input parameters with detailed error messages
     - **Better State Management** - Moved global collection to PollingManager class for better encapsulation

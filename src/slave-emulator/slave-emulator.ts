@@ -9,7 +9,7 @@ import {
   SlaveEmulatorOptions,
   RegisterDefinitions,
 } from '../types/modbus-types.js';
-import { FUNCTION_CODES } from '../constants/constants.js';
+import { ModbusFunctionCode, ModbusExceptionCode } from '../constants/constants.js';
 import { ModbusExceptionError } from '../errors.js';
 import { crc16Modbus } from '../utils/crc.js';
 
@@ -318,7 +318,7 @@ class SlaveEmulator {
     } as LoggerContext);
 
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(FUNCTION_CODES.READ_COILS, addr);
+      this._checkException(ModbusFunctionCode.READ_COILS, addr);
     }
 
     const result: boolean[] = [];
@@ -332,7 +332,7 @@ class SlaveEmulator {
     this._validateAddress(address);
     this._validateValue(value, false);
 
-    this._checkException(FUNCTION_CODES.WRITE_SINGLE_COIL, address);
+    this._checkException(ModbusFunctionCode.WRITE_SINGLE_COIL, address);
     this.setCoil(address, value);
     this.logger.info('writeSingleCoil', {
       address,
@@ -356,7 +356,7 @@ class SlaveEmulator {
 
     values.forEach((val, idx) => {
       this._validateValue(val, false);
-      this._checkException(FUNCTION_CODES.WRITE_MULTIPLE_COILS, startAddress + idx);
+      this._checkException(ModbusFunctionCode.WRITE_MULTIPLE_COILS, startAddress + idx);
     });
 
     values.forEach((val, idx) => {
@@ -403,7 +403,7 @@ class SlaveEmulator {
     } as LoggerContext);
 
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(FUNCTION_CODES.READ_DISCRETE_INPUTS, addr);
+      this._checkException(ModbusFunctionCode.READ_DISCRETE_INPUTS, addr);
     }
 
     const result: boolean[] = [];
@@ -447,7 +447,7 @@ class SlaveEmulator {
     } as LoggerContext);
 
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(FUNCTION_CODES.READ_HOLDING_REGISTERS, addr);
+      this._checkException(ModbusFunctionCode.READ_HOLDING_REGISTERS, addr);
     }
 
     const result: number[] = [];
@@ -461,7 +461,7 @@ class SlaveEmulator {
     this._validateAddress(address);
     this._validateValue(value, true);
 
-    this._checkException(FUNCTION_CODES.WRITE_SINGLE_REGISTER, address);
+    this._checkException(ModbusFunctionCode.WRITE_SINGLE_REGISTER, address);
     this.setHoldingRegister(address, value);
     this.logger.info('writeSingleRegister', {
       address,
@@ -485,7 +485,7 @@ class SlaveEmulator {
 
     values.forEach((val, idx) => {
       this._validateValue(val, true);
-      this._checkException(FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS, startAddress + idx);
+      this._checkException(ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS, startAddress + idx);
     });
 
     values.forEach((val, idx) => {
@@ -533,7 +533,7 @@ class SlaveEmulator {
     } as LoggerContext);
 
     for (let addr = startAddress; addr < startAddress + quantity; addr++) {
-      this._checkException(FUNCTION_CODES.READ_INPUT_REGISTERS, addr);
+      this._checkException(ModbusFunctionCode.READ_INPUT_REGISTERS, addr);
     }
 
     const result: number[] = [];
@@ -557,7 +557,7 @@ class SlaveEmulator {
     const result: number[] = [];
     for (let i = 0; i < quantity; i++) {
       const addr = start + i;
-      this._checkException(FUNCTION_CODES.READ_HOLDING_REGISTERS, addr);
+      this._checkException(ModbusFunctionCode.READ_HOLDING_REGISTERS, addr);
       result.push(this.getHoldingRegister(addr));
     }
     return result;
@@ -575,7 +575,7 @@ class SlaveEmulator {
     const result: number[] = [];
     for (let i = 0; i < quantity; i++) {
       const addr = start + i;
-      this._checkException(FUNCTION_CODES.READ_INPUT_REGISTERS, addr);
+      this._checkException(ModbusFunctionCode.READ_INPUT_REGISTERS, addr);
       result.push(this.getInputRegister(addr));
     }
     return result;
@@ -732,7 +732,10 @@ class SlaveEmulator {
         stack: error.stack,
         slaveAddress: this.slaveAddress,
       } as LoggerContext);
-      return this._createExceptionResponse(buffer?.[1] || 0x00, 0x04);
+      return this._createExceptionResponse(
+        buffer?.[1] || 0x00,
+        ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+      );
     }
   }
 
@@ -745,28 +748,28 @@ class SlaveEmulator {
       let responseData: Uint8Array;
 
       switch (functionCode) {
-        case FUNCTION_CODES.READ_COILS:
+        case ModbusFunctionCode.READ_COILS:
           responseData = this._handleReadCoils(data);
           break;
-        case FUNCTION_CODES.READ_DISCRETE_INPUTS:
+        case ModbusFunctionCode.READ_DISCRETE_INPUTS:
           responseData = this._handleReadDiscreteInputs(data);
           break;
-        case FUNCTION_CODES.READ_HOLDING_REGISTERS:
+        case ModbusFunctionCode.READ_HOLDING_REGISTERS:
           responseData = this._handleReadHoldingRegisters(data);
           break;
-        case FUNCTION_CODES.READ_INPUT_REGISTERS:
+        case ModbusFunctionCode.READ_INPUT_REGISTERS:
           responseData = this._handleReadInputRegisters(data);
           break;
-        case FUNCTION_CODES.WRITE_SINGLE_COIL:
+        case ModbusFunctionCode.WRITE_SINGLE_COIL:
           responseData = this._handleWriteSingleCoil(data);
           break;
-        case FUNCTION_CODES.WRITE_SINGLE_REGISTER:
+        case ModbusFunctionCode.WRITE_SINGLE_REGISTER:
           responseData = this._handleWriteSingleRegister(data);
           break;
-        case FUNCTION_CODES.WRITE_MULTIPLE_COILS:
+        case ModbusFunctionCode.WRITE_MULTIPLE_COILS:
           responseData = this._handleWriteMultipleCoils(data);
           break;
-        case FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS:
+        case ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS:
           responseData = this._handleWriteMultipleRegisters(data);
           break;
         default:
@@ -774,7 +777,7 @@ class SlaveEmulator {
             functionCode: `0x${functionCode.toString(16)}`,
             slaveAddress: this.slaveAddress,
           } as LoggerContext);
-          throw new ModbusExceptionError(functionCode, 0x01);
+          throw new ModbusExceptionError(functionCode, ModbusExceptionCode.ILLEGAL_FUNCTION);
       }
 
       return this._createSuccessResponse(slaveAddr, functionCode, responseData);

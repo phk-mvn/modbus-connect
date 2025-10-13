@@ -1,6 +1,6 @@
 // src/errors.ts
 
-import { EXCEPTION_CODES } from './constants/constants.js'; // Import for types (no .js extension in ESM/TS)
+import { ModbusExceptionCode, MODBUS_EXCEPTION_MESSAGES } from './constants/constants.js';
 
 /**
  * Base class for all Modbus errors
@@ -61,7 +61,8 @@ export class ModbusExceptionError extends ModbusError {
 
   constructor(functionCode: number, exceptionCode: number) {
     const exceptionMessage =
-      EXCEPTION_CODES[exceptionCode as keyof typeof EXCEPTION_CODES] || 'Unknown Exception';
+      MODBUS_EXCEPTION_MESSAGES[exceptionCode as ModbusExceptionCode] ||
+      `Unknown exception code: ${exceptionCode}`;
     super(
       `Modbus exception: function 0x${functionCode.toString(16)}, code 0x${exceptionCode.toString(16)} (${exceptionMessage})`
     );

@@ -41,6 +41,28 @@ class Logger {
   watchCallback = null;
   logRateLimit = 100;
   lastLogTime = 0;
+  // Кэшированные значения для производительности
+  static FUNCTION_CODE_NAMES = /* @__PURE__ */ new Map([
+    [import_constants.ModbusFunctionCode.READ_COILS, "READ_COILS"],
+    [import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS, "READ_DISCRETE_INPUTS"],
+    [import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS, "READ_HOLDING_REGISTERS"],
+    [import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS, "READ_INPUT_REGISTERS"],
+    [import_constants.ModbusFunctionCode.WRITE_SINGLE_COIL, "WRITE_SINGLE_COIL"],
+    [import_constants.ModbusFunctionCode.WRITE_SINGLE_REGISTER, "WRITE_SINGLE_REGISTER"],
+    [import_constants.ModbusFunctionCode.WRITE_MULTIPLE_COILS, "WRITE_MULTIPLE_COILS"],
+    [import_constants.ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS, "WRITE_MULTIPLE_REGISTERS"],
+    [import_constants.ModbusFunctionCode.REPORT_SLAVE_ID, "REPORT_SLAVE_ID"],
+    [import_constants.ModbusFunctionCode.READ_DEVICE_COMMENT, "READ_DEVICE_COMMENT"],
+    [import_constants.ModbusFunctionCode.WRITE_DEVICE_COMMENT, "WRITE_DEVICE_COMMENT"],
+    [import_constants.ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, "READ_DEVICE_IDENTIFICATION"],
+    [import_constants.ModbusFunctionCode.READ_FILE_LENGTH, "READ_FILE_LENGTH"],
+    [import_constants.ModbusFunctionCode.READ_FILE_CHUNK, "READ_FILE_CHUNK"],
+    [import_constants.ModbusFunctionCode.OPEN_FILE, "OPEN_FILE"],
+    [import_constants.ModbusFunctionCode.CLOSE_FILE, "CLOSE_FILE"],
+    [import_constants.ModbusFunctionCode.RESTART_CONTROLLER, "RESTART_CONTROLLER"],
+    [import_constants.ModbusFunctionCode.GET_CONTROLLER_TIME, "GET_CONTROLLER_TIME"],
+    [import_constants.ModbusFunctionCode.SET_CONTROLLER_TIME, "SET_CONTROLLER_TIME"]
+  ]);
   getIndent() {
     return "  ".repeat(this.groupLevel);
   }
@@ -75,14 +97,12 @@ class Logger {
     }
     if (this.logFormat.includes("funcCode")) {
       const funcCode = context["funcCode"] != null ? `0x${context["funcCode"].toString(16).padStart(2, "0")}` : "N/A";
-      const funcName = context["funcCode"] != null ? Object.keys(import_constants.FUNCTION_CODES).find(
-        (k) => import_constants.FUNCTION_CODES[k] === context["funcCode"]
-      ) || "Unknown" : "N/A";
+      const funcName = context["funcCode"] != null ? Logger.FUNCTION_CODE_NAMES.get(context["funcCode"]) || "Unknown" : "N/A";
       const formatter = this.customFormatters["funcCode"] || ((v) => `[F:${v}/${funcName}]`);
       headerParts.push(formatter(`${funcCode}`));
     }
     if (this.logFormat.includes("exceptionCode") && context["exceptionCode"] != null) {
-      const exceptionName = import_constants.EXCEPTION_CODES[context["exceptionCode"]] || "Unknown";
+      const exceptionName = import_constants.MODBUS_EXCEPTION_MESSAGES[context["exceptionCode"]] || "Unknown";
       const formatter = this.customFormatters["exceptionCode"] || ((v) => `[E:${v}/${exceptionName}]`);
       headerParts.push(
         `${this.useColors && isHighlighted ? this.COLORS.exception : ""}${formatter(context["exceptionCode"])}${reset}`
@@ -373,9 +393,7 @@ ${arg.stack || ""}`.trim();
       `By Function Code: ${JSON.stringify(
         Object.entries(this.logStats.byFuncCode).reduce(
           (acc, [code, count]) => {
-            const name = Object.keys(import_constants.FUNCTION_CODES).find(
-              (k) => import_constants.FUNCTION_CODES[k] === parseInt(code)
-            ) || "Unknown";
+            const name = Logger.FUNCTION_CODE_NAMES.get(parseInt(code)) || "Unknown";
             acc[`${code}/${name}`] = count;
             return acc;
           },
@@ -389,7 +407,7 @@ ${arg.stack || ""}`.trim();
       `By Exception Code: ${JSON.stringify(
         Object.entries(this.logStats.byExceptionCode).reduce(
           (acc, [code, count]) => {
-            acc[`${code}/${import_constants.EXCEPTION_CODES[parseInt(code)] || "Unknown"}`] = count;
+            acc[`${code}/${import_constants.MODBUS_EXCEPTION_MESSAGES[parseInt(code)] || "Unknown"}`] = count;
             return acc;
           },
           {}
