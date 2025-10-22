@@ -71,7 +71,6 @@ class ModbusClient {
   diagnostics;
   crcFunc;
   _mutex;
-  // Кэшированные значения для производительности
   static FUNCTION_CODE_MAP = /* @__PURE__ */ new Map([
     [1, import_constants.ModbusFunctionCode.READ_COILS],
     [2, import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS],
@@ -106,7 +105,7 @@ class ModbusClient {
   ]);
   constructor(transport, slaveId = 1, options = {}) {
     if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 255) {
-      throw new Error("Invalid slave ID. Must be an integer between 1 and 255");
+      throw new import_errors.ModbusInvalidAddressError(slaveId);
     }
     this.transport = transport;
     this.slaveId = slaveId;
@@ -119,34 +118,34 @@ class ModbusClient {
     const algorithm = options.crcAlgorithm ?? "crc16Modbus";
     const crcFunc = crcAlgorithmMap[algorithm];
     if (!crcFunc) {
-      throw new Error(`Unknown CRC algorithm: ${algorithm}`);
+      throw new import_errors.ModbusConfigError(`Unknown CRC algorithm: ${algorithm}`);
     }
     this.crcFunc = crcFunc;
     this._mutex = new import_async_mutex.Mutex();
     this._setAutoLoggerContext();
   }
   /**
-   * Включает логгер ModbusClient
-   * @param level - Уровень логирования
+   * Enables the ModbusClient logger
+   * @param level - Logging level
    */
   enableLogger(level = "info") {
     logger.setLevel(level);
   }
   /**
-   * Отключает логгер ModbusClient (устанавливает самый высокий уровень - error)
+   * Disables the ModbusClient logger (sets the highest level - error)
    */
   disableLogger() {
     logger.setLevel("error");
   }
   /**
-   * Устанавливает контекст для логгера (slaveId, functionCode и т.д.)
-   * @param context - Контекст для логгера
+   * Sets the context for the logger (slaveId, functionCode, etc.)
+   * @param context - Context for the logger
    */
   setLoggerContext(context) {
     logger.addGlobalContext(context);
   }
   /**
-   * Устанавливает контекст логгера автоматически на основе текущих параметров
+   * Sets the logger context automatically based on the current settings.
    */
   _setAutoLoggerContext(funcCode = null) {
     const context = {
@@ -168,6 +167,19 @@ class ModbusClient {
       await this.transport.connect();
       this._setAutoLoggerContext();
       logger.info("Transport connected", { transport: this.transport.constructor.name });
+    } catch (err) {
+      if (err instanceof import_errors.ModbusConnectionRefusedError) {
+        logger.error("Connection refused");
+      } else if (err instanceof import_errors.ModbusConnectionTimeoutError) {
+        logger.error("Connection timeout");
+      } else if (err instanceof import_errors.ModbusNotConnectedError) {
+        logger.error("Not connected");
+      } else if (err instanceof import_errors.ModbusAlreadyConnectedError) {
+        logger.error("Already connected");
+      } else {
+        logger.error("Connection error", { error: err });
+      }
+      throw err;
     } finally {
       release();
     }
@@ -182,16 +194,20 @@ class ModbusClient {
       await this.transport.disconnect();
       this._setAutoLoggerContext();
       logger.info("Transport disconnected", { transport: this.transport.constructor.name });
+    } catch (err) {
+      if (err instanceof import_errors.ModbusConnectionRefusedError) {
+        logger.error("Connection refused during disconnect");
+      } else if (err instanceof import_errors.ModbusConnectionTimeoutError) {
+        logger.error("Connection timeout during disconnect");
+      } else if (err instanceof import_errors.ModbusNotConnectedError) {
+        logger.error("Not connected during disconnect");
+      } else {
+        logger.error("Disconnection error", { error: err });
+      }
+      throw err;
     } finally {
       release();
     }
-  }
-  setSlaveId(slaveId) {
-    if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 255) {
-      throw new Error("Invalid slave ID. Must be an integer between 1 and 255");
-    }
-    this.slaveId = slaveId;
-    this._setAutoLoggerContext();
   }
   /**
    * Converts a buffer to a hex string.
@@ -221,12 +237,18 @@ class ModbusClient {
       case import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS: {
         if (pdu.length < 5) return null;
         const bitCount = pdu[3] << 8 | pdu[4];
+        if (bitCount < 1 || bitCount > 2e3) {
+          throw new import_errors.ModbusInvalidQuantityError(bitCount, 1, 2e3);
+        }
         return 5 + Math.ceil(bitCount / 8);
       }
       case import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS:
       case import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS: {
         if (pdu.length < 5) return null;
         const regCount = pdu[3] << 8 | pdu[4];
+        if (regCount < 1 || regCount > 125) {
+          throw new import_errors.ModbusInvalidQuantityError(regCount, 1, 125);
+        }
         return 5 + regCount * 2;
       }
       case import_constants.ModbusFunctionCode.WRITE_SINGLE_COIL:
@@ -300,13 +322,82 @@ class ModbusClient {
           (0, import_packet_builder.parsePacket)(buffer, this.crcFunc);
           return buffer;
         } catch (err) {
-          if (err instanceof Error && err.message.startsWith("Invalid packet: too short")) {
+          if (err instanceof import_errors.ModbusCRCError) {
+            logger.error("CRC mismatch detected");
             continue;
-          }
-          if (err instanceof Error && err.message.startsWith("CRC mismatch")) {
+          } else if (err instanceof import_errors.ModbusFramingError) {
+            logger.error("Framing error detected");
             continue;
+          } else if (err instanceof import_errors.ModbusParityError) {
+            logger.error("Parity error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusNoiseError) {
+            logger.error("Noise error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusOverrunError) {
+            logger.error("Overrun error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusCollisionError) {
+            logger.error("Collision error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusSyncError) {
+            logger.error("Sync error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusFrameBoundaryError) {
+            logger.error("Frame boundary error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusLRCError) {
+            logger.error("LRC error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusChecksumError) {
+            logger.error("Checksum error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusMalformedFrameError) {
+            logger.error("Malformed frame error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusInvalidFrameLengthError) {
+            logger.error("Invalid frame length error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusInvalidTransactionIdError) {
+            logger.error("Invalid transaction ID error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
+            logger.error("Unexpected function code error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusTooManyEmptyReadsError) {
+            logger.error("Too many empty reads error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusInterFrameTimeoutError) {
+            logger.error("Inter-frame timeout error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusSilentIntervalError) {
+            logger.error("Silent interval error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusResponseError) {
+            logger.error("Response error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusBufferOverflowError) {
+            logger.error("Buffer overflow error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusBufferUnderrunError) {
+            logger.error("Buffer underrun error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusMemoryError) {
+            logger.error("Memory error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusStackOverflowError) {
+            logger.error("Stack overflow error detected");
+            continue;
+          } else if (err instanceof import_errors.ModbusInsufficientDataError) {
+            logger.error("Insufficient data error detected");
+            continue;
+          } else if (err instanceof Error && err.message.startsWith("Invalid packet: too short")) {
+            continue;
+          } else if (err instanceof Error && err.message.startsWith("CRC mismatch")) {
+            continue;
+          } else {
+            throw err;
           }
-          throw err;
         }
       }
     }
@@ -351,8 +442,9 @@ class ModbusClient {
             logger.debug("Echo enabled, reading echo back...", { slaveId, funcCode });
             const echoResponse = await this.transport.read(packet.length, timeLeft);
             if (!echoResponse || echoResponse.length !== packet.length) {
-              throw new Error(
-                `Echo length mismatch (expected ${packet.length}, got ${echoResponse ? echoResponse.length : 0})`
+              throw new import_errors.ModbusInsufficientDataError(
+                echoResponse ? echoResponse.length : 0,
+                packet.length
               );
             }
             for (let i = 0; i < packet.length; i++) {
@@ -372,6 +464,9 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed2
             });
+            if (this.transport.notifyDeviceConnected) {
+              this.transport.notifyDeviceConnected(slaveId);
+            }
             return void 0;
           }
           const response = await this._readPacket(timeLeft, pdu);
@@ -395,6 +490,9 @@ class ModbusClient {
               exceptionMessage,
               responseTime: elapsed
             });
+            if (this.transport.notifyDeviceDisconnected) {
+              this.transport.notifyDeviceDisconnected(slaveId, "ModbusException", exceptionMessage);
+            }
             throw new import_errors.ModbusExceptionError(responseFuncCode & 127, modbusExceptionCode);
           }
           if (this.diagnosticsEnabled) {
@@ -405,11 +503,28 @@ class ModbusClient {
             funcCode,
             responseTime: elapsed
           });
+          if (this.transport.notifyDeviceConnected) {
+            this.transport.notifyDeviceConnected(slaveId);
+          }
           return responsePdu;
         } catch (err) {
           const elapsed = Date.now() - startTime;
           const isFlushedError = err instanceof import_errors.ModbusFlushError;
           const errorCode = err instanceof Error && err.message.toLowerCase().includes("timeout") ? "timeout" : err instanceof Error && err.message.toLowerCase().includes("crc") ? "crc" : err instanceof import_errors.ModbusExceptionError ? "modbus-exception" : null;
+          if (this.transport.notifyDeviceDisconnected) {
+            let errorType = "unknown";
+            let errorMessage = err instanceof Error ? err.message : String(err);
+            if (err instanceof import_errors.ModbusTimeoutError) {
+              errorType = "ModbusTimeoutError";
+            } else if (err instanceof import_errors.ModbusCRCError) {
+              errorType = "ModbusCRCError";
+            } else if (err instanceof import_errors.ModbusExceptionError) {
+              errorType = "ModbusException";
+            } else if (err instanceof Error) {
+              errorType = err.constructor.name;
+            }
+            this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+          }
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordError(err instanceof Error ? err : new Error(String(err)), {
               code: errorCode,
@@ -488,7 +603,7 @@ class ModbusClient {
    */
   _convertRegisters(registers, type = import_constants.RegisterType.UINT16) {
     if (!registers || !Array.isArray(registers)) {
-      throw new Error("Invalid registers: must be a non-empty array");
+      throw new import_errors.ModbusDataConversionError(registers, "non-empty array");
     }
     const buffer = new ArrayBuffer(registers.length * 2);
     const view = new DataView(buffer);
@@ -669,7 +784,7 @@ class ModbusClient {
           return ((high >> 4) * 10 + (high & 15)) * 100 + (low >> 4) * 10 + (low & 15);
         });
       default:
-        throw new Error(`Unsupported type: ${type}`);
+        throw new import_errors.ModbusDataConversionError(type, "supported type");
     }
   }
   /**
@@ -681,10 +796,10 @@ class ModbusClient {
    */
   async readHoldingRegisters(startAddress, quantity, options = {}) {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
-      throw new Error("Invalid startAddress: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(startAddress);
     }
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 125) {
-      throw new Error("Invalid quantity: must be an integer between 1 and 125");
+      throw new import_errors.ModbusInvalidQuantityError(quantity, 1, 125);
     }
     const pdu = (0, import_read_holding_registers.buildReadHoldingRegistersRequest)(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu);
@@ -704,10 +819,10 @@ class ModbusClient {
    */
   async readInputRegisters(startAddress, quantity, options = {}) {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
-      throw new Error("Invalid startAddress: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(startAddress);
     }
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 125) {
-      throw new Error("Invalid quantity: must be an integer between 1 and 125");
+      throw new import_errors.ModbusInvalidQuantityError(quantity, 1, 125);
     }
     const pdu = (0, import_read_input_registers.buildReadInputRegistersRequest)(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu);
@@ -727,10 +842,10 @@ class ModbusClient {
    */
   async writeSingleRegister(address, value, timeout) {
     if (!Number.isInteger(address) || address < 0 || address > 65535) {
-      throw new Error("Invalid address: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(address);
     }
     if (!Number.isInteger(value) || value < 0 || value > 65535) {
-      throw new Error("Invalid value: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusIllegalDataValueError(value, "integer between 0 and 65535");
     }
     const pdu = (0, import_write_single_register.buildWriteSingleRegisterRequest)(address, value);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -748,13 +863,14 @@ class ModbusClient {
    */
   async writeMultipleRegisters(startAddress, values, timeout) {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
-      throw new Error("Invalid startAddress: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(startAddress);
     }
     if (!Array.isArray(values) || values.length < 1 || values.length > 123) {
-      throw new Error("Invalid values: must be an array of 1 to 123 integers");
+      throw new import_errors.ModbusInvalidQuantityError(values.length, 1, 123);
     }
     if (values.some((v) => !Number.isInteger(v) || v < 0 || v > 65535)) {
-      throw new Error("Invalid values: each value must be an integer between 0 and 65535");
+      const invalidValue = values.find((v) => !Number.isInteger(v) || v < 0 || v > 65535);
+      throw new import_errors.ModbusIllegalDataValueError(invalidValue, "integer between 0 and 65535");
     }
     const pdu = (0, import_write_multiple_registers.buildWriteMultipleRegistersRequest)(startAddress, values);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -772,10 +888,10 @@ class ModbusClient {
    */
   async readCoils(startAddress, quantity, timeout) {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
-      throw new Error("Invalid startAddress: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(startAddress);
     }
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2e3) {
-      throw new Error("Invalid quantity: must be an integer between 1 and 2000");
+      throw new import_errors.ModbusInvalidQuantityError(quantity, 1, 2e3);
     }
     const pdu = (0, import_read_coils.buildReadCoilsRequest)(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -793,10 +909,10 @@ class ModbusClient {
    */
   async readDiscreteInputs(startAddress, quantity, timeout) {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
-      throw new Error("Invalid startAddress: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(startAddress);
     }
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2e3) {
-      throw new Error("Invalid quantity: must be an integer between 1 and 2000");
+      throw new import_errors.ModbusInvalidQuantityError(quantity, 1, 2e3);
     }
     const pdu = (0, import_read_discrete_inputs.buildReadDiscreteInputsRequest)(startAddress, quantity);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -814,10 +930,10 @@ class ModbusClient {
    */
   async writeSingleCoil(address, value, timeout) {
     if (!Number.isInteger(address) || address < 0 || address > 65535) {
-      throw new Error("Invalid address: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(address);
     }
     if (typeof value === "number" && value !== 0 && value !== 1) {
-      throw new Error("Invalid value: must be a boolean or 0/1");
+      throw new import_errors.ModbusIllegalDataValueError(value, "boolean or 0/1");
     }
     const pdu = (0, import_write_single_coil.buildWriteSingleCoilRequest)(address, value);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -835,10 +951,10 @@ class ModbusClient {
    */
   async writeMultipleCoils(startAddress, values, timeout) {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
-      throw new Error("Invalid startAddress: must be an integer between 0 and 65535");
+      throw new import_errors.ModbusInvalidAddressError(startAddress);
     }
     if (!Array.isArray(values) || values.length < 1 || values.length > 1968) {
-      throw new Error("Invalid values: must be an array of 1 to 1968 booleans");
+      throw new import_errors.ModbusInvalidQuantityError(values.length, 1, 1968);
     }
     const pdu = (0, import_write_multiple_coils.buildWriteMultipleCoilsRequest)(startAddress, values);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -899,7 +1015,7 @@ class ModbusClient {
    */
   async openFile(filename, timeout) {
     if (typeof filename !== "string" || filename.length === 0) {
-      throw new Error("Invalid filename: must be a non-empty string");
+      throw new import_errors.ModbusDataConversionError(filename, "non-empty string");
     }
     const pdu = (0, import_openFile.buildOpenFileRequest)(filename);
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -964,7 +1080,7 @@ class ModbusClient {
    */
   async setControllerTime(datetime, timeout) {
     if (!(datetime instanceof Date) || isNaN(datetime.getTime())) {
-      throw new Error("Invalid datetime: must be a valid Date object");
+      throw new import_errors.ModbusDataConversionError(datetime, "valid Date object");
     }
     const time = {
       seconds: datetime.getSeconds(),

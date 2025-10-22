@@ -33,21 +33,17 @@ async function main() {
     const client = new ModbusClient(transport, 13, {
         timeout: 1000,
         crcAlgorithm: 'crc16Modbus',
-        retryCount: 3,
+        retryCount: Infinity,
         retryDelay: 300,
     });
 
     await client.connect();
     client.enableLogger('info')
 
-    // const regs = await client.readHoldingRegisters(0, 2);
-    // console.log(regs)
-
     poll.addTask({
         id: 'modbus-loop',
         resourceId: "asd",
         interval: 1000,
-        immediate: true,
         fn: [
             () => client.readHoldingRegisters(0, 2, { type: 'uint16' }),
         ],
@@ -59,12 +55,16 @@ async function main() {
         },
         onStart: () => testLogger.info('Polling started'),
         onStop: () => testLogger.info('Polling stopped'),
-        maxRetries: 3,
+        maxRetries: Infinity,
         backoffDelay: 300,
         taskTimeout: 2000
     });
 
     poll.startTask('modbus-loop')
+
+    // transport.onDeviceStateChange((connected) => {
+    //     console.log('🌐 Device :', connected ? '🟢 ONLINE' : '🔴 OFFLINE');
+    // })
 }
 
 main().catch(err => {

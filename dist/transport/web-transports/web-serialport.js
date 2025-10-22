@@ -35,7 +35,6 @@ logger.setLevel("info");
 class WebSerialTransport {
   portFactory;
   port = null;
-  // SerialPort (Web Serial API)
   options;
   reader = null;
   writer = null;
@@ -55,6 +54,10 @@ class WebSerialTransport {
   _connectionPromise = null;
   _resolveConnection = null;
   _rejectConnection = null;
+  // Слушатели состояния связи с устройством
+  _deviceConnectionListeners = [];
+  // Карта состояний для каждого slaveId
+  _deviceStates = /* @__PURE__ */ new Map();
   constructor(portFactory, options = {}) {
     if (typeof portFactory !== "function") {
       throw new import_errors.WebSerialTransportError(
@@ -76,6 +79,69 @@ class WebSerialTransport {
     };
     this.readBuffer = new Uint8Array(0);
     this._operationMutex = new import_async_mutex.Mutex();
+  }
+  // Публичный метод для добавления слушателя состояния связи с устройством
+  addDeviceConnectionListener(listener) {
+    this._deviceConnectionListeners.push(listener);
+    for (const state of this._deviceStates.values()) {
+      listener(state);
+    }
+  }
+  // Публичный метод для удаления слушателя состояния связи с устройством
+  removeDeviceConnectionListener(listener) {
+    const index = this._deviceConnectionListeners.indexOf(listener);
+    if (index !== -1) {
+      this._deviceConnectionListeners.splice(index, 1);
+    }
+  }
+  // Приватный метод для уведомления слушателей о смене состояния конкретного slaveId
+  _notifyDeviceConnectionListeners(slaveId, state) {
+    this._deviceStates.set(slaveId, state);
+    logger.debug(`Device connection state changed for slaveId ${slaveId}:`, state);
+    const listeners = [...this._deviceConnectionListeners];
+    for (const listener of listeners) {
+      try {
+        listener(state);
+      } catch (err) {
+        logger.error(
+          `Error in device connection listener for slaveId ${slaveId}: ${err.message}`
+        );
+      }
+    }
+  }
+  // Приватный метод для создания объекта состояния подключения
+  _createState(slaveId, hasConnection, errorType, errorMessage) {
+    if (hasConnection) {
+      return {
+        slaveId,
+        hasConnectionDevice: true,
+        errorType: void 0,
+        errorMessage: void 0
+      };
+    } else {
+      return {
+        slaveId,
+        hasConnectionDevice: false,
+        errorType,
+        errorMessage
+      };
+    }
+  }
+  // Метод для установки состояния устройства как подключенного
+  // Вызывается из ModbusClient при успешном обмене
+  notifyDeviceConnected(slaveId) {
+    const currentState = this._deviceStates.get(slaveId);
+    if (!currentState || !currentState.hasConnectionDevice) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, true));
+    }
+  }
+  // Метод для установки состояния устройства как отключенного
+  // Вызывается из ModbusClient при ошибке обмена
+  notifyDeviceDisconnected(slaveId, errorType, errorMessage) {
+    this._notifyDeviceConnectionListeners(
+      slaveId,
+      this._createState(slaveId, false, errorType, errorMessage)
+    );
   }
   async connect() {
     if (this._isConnecting) {
@@ -110,6 +176,9 @@ class WebSerialTransport {
       }
       logger.debug("New SerialPort instance acquired.");
       this._cleanupResources();
+      if (this.options.baudRate < 300 || this.options.baudRate > 115200) {
+        throw new import_errors.ModbusConfigError(`Invalid baud rate: ${this.options.baudRate}`);
+      }
       await this.port.open({
         baudRate: this.options.baudRate,
         dataBits: this.options.dataBits,
@@ -140,6 +209,11 @@ class WebSerialTransport {
     } catch (err) {
       logger.error(`Failed to open WebSerial port: ${err.message}`);
       this.isOpen = false;
+      if (err instanceof import_errors.ModbusConfigError) {
+        logger.error("Configuration error during connection");
+      } else if (err instanceof import_errors.WebSerialConnectionError) {
+        logger.error("Connection error during port opening");
+      }
       if (this._shouldReconnect && this._reconnectAttempts < this.options.maxReconnectAttempts) {
         logger.info("Auto-reconnect enabled, starting reconnect process...");
         this._scheduleReconnect(err);
@@ -244,6 +318,10 @@ class WebSerialTransport {
             }
             if (value && value.length > 0) {
               this._emptyReadCount = 0;
+              if (this.readBuffer.length + value.length > 65536) {
+                logger.error("Buffer overflow detected");
+                throw new import_errors.ModbusBufferOverflowError(this.readBuffer.length + value.length, 65536);
+              }
               const newBuffer = new Uint8Array(this.readBuffer.length + value.length);
               newBuffer.set(this.readBuffer, 0);
               newBuffer.set(value, this.readBuffer.length);
@@ -263,9 +341,21 @@ class WebSerialTransport {
               logger.debug("Read loop aborted");
               break;
             }
-            logger.warn(`Read operation error: ${readErr.message}`);
-            this._readLoopActive = false;
-            this._onError(readErr);
+            const error = readErr;
+            logger.warn(`Read operation error: ${error.message}`);
+            if (error.message.includes("parity") || error.message.includes("Parity")) {
+              this._onError(new import_errors.ModbusParityError(error.message));
+            } else if (error.message.includes("frame") || error.message.includes("Framing")) {
+              this._onError(new import_errors.ModbusFramingError(error.message));
+            } else if (error.message.includes("overrun")) {
+              this._onError(new import_errors.ModbusOverrunError(error.message));
+            } else if (error.message.includes("collision")) {
+              this._onError(new import_errors.ModbusCollisionError(error.message));
+            } else if (error.message.includes("noise")) {
+              this._onError(new import_errors.ModbusNoiseError(error.message));
+            } else {
+              this._onError(new import_errors.WebSerialReadError(error.message));
+            }
             break;
           }
         }
@@ -275,7 +365,11 @@ class WebSerialTransport {
         } else {
           logger.error(`Unexpected error in read loop: ${loopErr.message}`);
           this._readLoopActive = false;
-          this._onError(loopErr);
+          if (loopErr.message.includes("stack")) {
+            this._onError(new import_errors.ModbusStackOverflowError(loopErr.message));
+          } else {
+            this._onError(loopErr);
+          }
         }
       } finally {
         this._readLoopActive = false;
@@ -285,7 +379,11 @@ class WebSerialTransport {
     loop().catch((err) => {
       logger.error("Read loop promise rejected:", err);
       this._readLoopActive = false;
-      this._onError(err);
+      if (err.message.includes("memory")) {
+        this._onError(new import_errors.ModbusMemoryError(err.message));
+      } else {
+        this._onError(err);
+      }
     });
   }
   async write(buffer) {
@@ -296,6 +394,9 @@ class WebSerialTransport {
     if (!this.isOpen || !this.writer) {
       logger.warn(`Write attempted on closed/unready port`);
       throw new import_errors.WebSerialWriteError("Port is closed or not ready for writing");
+    }
+    if (buffer.length === 0) {
+      throw new import_errors.ModbusBufferUnderrunError(0, 1);
     }
     const release = await this._operationMutex.acquire();
     try {
@@ -308,12 +409,21 @@ class WebSerialTransport {
       } catch (err) {
         if (abort.signal.aborted) {
           logger.warn(`Write timeout on WebSerial port`);
-          this._onError(new import_errors.ModbusTimeoutError("Write timeout"));
-          throw new import_errors.ModbusTimeoutError("Write timeout");
+          const timeoutError = new import_errors.ModbusTimeoutError("Write timeout");
+          this._onError(timeoutError);
+          throw timeoutError;
         } else {
           logger.error(`Write error on WebSerial port: ${err.message}`);
-          this._onError(new import_errors.WebSerialWriteError(err.message));
-          throw err;
+          if (err.message.includes("parity")) {
+            this._onError(new import_errors.ModbusParityError(err.message));
+            throw new import_errors.ModbusParityError(err.message);
+          } else if (err.message.includes("collision")) {
+            this._onError(new import_errors.ModbusCollisionError(err.message));
+            throw new import_errors.ModbusCollisionError(err.message);
+          } else {
+            this._onError(new import_errors.WebSerialWriteError(err.message));
+            throw err;
+          }
         }
       } finally {
         clearTimeout(timer);
@@ -328,6 +438,9 @@ class WebSerialTransport {
       logger.warn("Read attempted on closed port");
       throw new import_errors.WebSerialReadError("Port is closed");
     }
+    if (length <= 0) {
+      throw new import_errors.ModbusDataConversionError(length, "positive integer");
+    }
     const release = await this._operationMutex.acquire();
     try {
       const start = Date.now();
@@ -341,6 +454,9 @@ class WebSerialTransport {
             const data = this.readBuffer.slice(0, length);
             this.readBuffer = this.readBuffer.slice(length);
             logger.debug(`Read ${length} bytes from WebSerial port`);
+            if (data.length !== length) {
+              return reject(new import_errors.ModbusInsufficientDataError(data.length, length));
+            }
             return resolve(data);
           }
           if (Date.now() - start > timeout) {
@@ -377,11 +493,15 @@ class WebSerialTransport {
         this.port = null;
       }
       if (this._rejectConnection) {
-        this._rejectConnection(new Error("Connection manually disconnected"));
+        this._rejectConnection(new import_errors.WebSerialConnectionError("Connection manually disconnected"));
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
       this.isOpen = false;
+      for (const [slaveId] of this._deviceStates) {
+        this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+      }
+      this._deviceStates.clear();
       logger.info("WebSerial transport disconnected successfully");
     } catch (err) {
       logger.error(`Error during WebSerial transport shutdown: ${err.message}`);
@@ -423,16 +543,171 @@ class WebSerialTransport {
     this.isOpen = false;
     this._readLoopActive = false;
     this._cleanupResources();
+    for (const [slaveId] of this._deviceStates) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    }
+    this._deviceStates.clear();
     if (this._shouldReconnect && !this._isDisconnecting) {
       this._scheduleReconnect(new Error(reason));
     }
   }
   _onError(err) {
     logger.error(`WebSerial port error: ${err.message}`);
+    let errorType = "unknown";
+    let errorMessage = err.message;
+    if (err instanceof import_errors.ModbusCRCError) {
+      errorType = "ModbusCRCError";
+      logger.error("CRC error detected");
+    } else if (err instanceof import_errors.ModbusParityError) {
+      errorType = "ModbusParityError";
+      logger.error("Parity error detected");
+    } else if (err instanceof import_errors.ModbusNoiseError) {
+      errorType = "ModbusNoiseError";
+      logger.error("Noise error detected");
+    } else if (err instanceof import_errors.ModbusFramingError) {
+      errorType = "ModbusFramingError";
+      logger.error("Framing error detected");
+    } else if (err instanceof import_errors.ModbusOverrunError) {
+      errorType = "ModbusOverrunError";
+      logger.error("Overrun error detected");
+    } else if (err instanceof import_errors.ModbusCollisionError) {
+      errorType = "ModbusCollisionError";
+      logger.error("Collision error detected");
+    } else if (err instanceof import_errors.ModbusConfigError) {
+      errorType = "ModbusConfigError";
+      logger.error("Configuration error detected");
+    } else if (err instanceof import_errors.ModbusBaudRateError) {
+      errorType = "ModbusBaudRateError";
+      logger.error("Baud rate error detected");
+    } else if (err instanceof import_errors.ModbusSyncError) {
+      errorType = "ModbusSyncError";
+      logger.error("Sync error detected");
+    } else if (err instanceof import_errors.ModbusFrameBoundaryError) {
+      errorType = "ModbusFrameBoundaryError";
+      logger.error("Frame boundary error detected");
+    } else if (err instanceof import_errors.ModbusLRCError) {
+      errorType = "ModbusLRCError";
+      logger.error("LRC error detected");
+    } else if (err instanceof import_errors.ModbusChecksumError) {
+      errorType = "ModbusChecksumError";
+      logger.error("Checksum error detected");
+    } else if (err instanceof import_errors.ModbusDataConversionError) {
+      errorType = "ModbusDataConversionError";
+      logger.error("Data conversion error detected");
+    } else if (err instanceof import_errors.ModbusBufferOverflowError) {
+      errorType = "ModbusBufferOverflowError";
+      logger.error("Buffer overflow error detected");
+    } else if (err instanceof import_errors.ModbusBufferUnderrunError) {
+      errorType = "ModbusBufferUnderrunError";
+      logger.error("Buffer underrun error detected");
+    } else if (err instanceof import_errors.ModbusMemoryError) {
+      errorType = "ModbusMemoryError";
+      logger.error("Memory error detected");
+    } else if (err instanceof import_errors.ModbusStackOverflowError) {
+      errorType = "ModbusStackOverflowError";
+      logger.error("Stack overflow error detected");
+    } else if (err instanceof import_errors.ModbusResponseError) {
+      errorType = "ModbusResponseError";
+      logger.error("Response error detected");
+    } else if (err instanceof import_errors.ModbusInvalidAddressError) {
+      errorType = "ModbusInvalidAddressError";
+      logger.error("Invalid address error detected");
+    } else if (err instanceof import_errors.ModbusInvalidFunctionCodeError) {
+      errorType = "ModbusInvalidFunctionCodeError";
+      logger.error("Invalid function code error detected");
+    } else if (err instanceof import_errors.ModbusInvalidQuantityError) {
+      errorType = "ModbusInvalidQuantityError";
+      logger.error("Invalid quantity error detected");
+    } else if (err instanceof import_errors.ModbusIllegalDataAddressError) {
+      errorType = "ModbusIllegalDataAddressError";
+      logger.error("Illegal data address error detected");
+    } else if (err instanceof import_errors.ModbusIllegalDataValueError) {
+      errorType = "ModbusIllegalDataValueError";
+      logger.error("Illegal data value error detected");
+    } else if (err instanceof import_errors.ModbusSlaveBusyError) {
+      errorType = "ModbusSlaveBusyError";
+      logger.error("Slave busy error detected");
+    } else if (err instanceof import_errors.ModbusAcknowledgeError) {
+      errorType = "ModbusAcknowledgeError";
+      logger.error("Acknowledge error detected");
+    } else if (err instanceof import_errors.ModbusSlaveDeviceFailureError) {
+      errorType = "ModbusSlaveDeviceFailureError";
+      logger.error("Slave device failure error detected");
+    } else if (err instanceof import_errors.ModbusMalformedFrameError) {
+      errorType = "ModbusMalformedFrameError";
+      logger.error("Malformed frame error detected");
+    } else if (err instanceof import_errors.ModbusInvalidFrameLengthError) {
+      errorType = "ModbusInvalidFrameLengthError";
+      logger.error("Invalid frame length error detected");
+    } else if (err instanceof import_errors.ModbusInvalidTransactionIdError) {
+      errorType = "ModbusInvalidTransactionIdError";
+      logger.error("Invalid transaction ID error detected");
+    } else if (err instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
+      errorType = "ModbusUnexpectedFunctionCodeError";
+      logger.error("Unexpected function code error detected");
+    } else if (err instanceof import_errors.ModbusConnectionRefusedError) {
+      errorType = "ModbusConnectionRefusedError";
+      logger.error("Connection refused error detected");
+    } else if (err instanceof import_errors.ModbusConnectionTimeoutError) {
+      errorType = "ModbusConnectionTimeoutError";
+      logger.error("Connection timeout error detected");
+    } else if (err instanceof import_errors.ModbusNotConnectedError) {
+      errorType = "ModbusNotConnectedError";
+      logger.error("Not connected error detected");
+    } else if (err instanceof import_errors.ModbusAlreadyConnectedError) {
+      errorType = "ModbusAlreadyConnectedError";
+      logger.error("Already connected error detected");
+    } else if (err instanceof import_errors.ModbusInsufficientDataError) {
+      errorType = "ModbusInsufficientDataError";
+      logger.error("Insufficient data error detected");
+    } else if (err instanceof import_errors.ModbusGatewayPathUnavailableError) {
+      errorType = "ModbusGatewayPathUnavailableError";
+      logger.error("Gateway path unavailable error detected");
+    } else if (err instanceof import_errors.ModbusGatewayTargetDeviceError) {
+      errorType = "ModbusGatewayTargetDeviceError";
+      logger.error("Gateway target device error detected");
+    } else if (err instanceof import_errors.ModbusInvalidStartingAddressError) {
+      errorType = "ModbusInvalidStartingAddressError";
+      logger.error("Invalid starting address error detected");
+    } else if (err instanceof import_errors.ModbusMemoryParityError) {
+      errorType = "ModbusMemoryParityError";
+      logger.error("Memory parity error detected");
+    } else if (err instanceof import_errors.ModbusBroadcastError) {
+      errorType = "ModbusBroadcastError";
+      logger.error("Broadcast error detected");
+    } else if (err instanceof import_errors.ModbusGatewayBusyError) {
+      errorType = "ModbusGatewayBusyError";
+      logger.error("Gateway busy error detected");
+    } else if (err instanceof import_errors.ModbusDataOverrunError) {
+      errorType = "ModbusDataOverrunError";
+      logger.error("Data overrun error detected");
+    } else if (err instanceof import_errors.ModbusTooManyEmptyReadsError) {
+      errorType = "ModbusTooManyEmptyReadsError";
+      logger.error("Too many empty reads error detected");
+    } else if (err instanceof import_errors.ModbusFlushError) {
+      errorType = "ModbusFlushError";
+      logger.error("Flush error detected");
+    } else if (err instanceof import_errors.WebSerialTransportError) {
+      errorType = "WebSerialTransportError";
+      logger.error("WebSerial transport error detected");
+    } else if (err instanceof import_errors.WebSerialConnectionError) {
+      errorType = "WebSerialConnectionError";
+      logger.error("WebSerial connection error detected");
+    } else if (err instanceof import_errors.WebSerialReadError) {
+      errorType = "WebSerialReadError";
+      logger.error("WebSerial read error detected");
+    } else if (err instanceof import_errors.WebSerialWriteError) {
+      errorType = "WebSerialWriteError";
+      logger.error("WebSerial write error detected");
+    }
     this._handleConnectionLoss(`Error: ${err.message}`);
   }
   _onClose() {
     logger.info(`WebSerial port closed`);
+    for (const [slaveId] of this._deviceStates) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    }
+    this._deviceStates.clear();
     this._handleConnectionLoss("Port closed");
   }
   _scheduleReconnect(err) {
@@ -447,15 +722,21 @@ class WebSerialTransport {
       logger.error(
         `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached for WebSerial port`
       );
+      const maxAttemptsError = new import_errors.WebSerialConnectionError(
+        `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
+      );
       if (this._rejectConnection) {
-        const maxAttemptsError = new Error(
-          `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
-        );
         this._rejectConnection(maxAttemptsError);
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
       this._shouldReconnect = false;
+      for (const [slaveId] of this._deviceStates) {
+        this._notifyDeviceConnectionListeners(
+          slaveId,
+          this._createState(slaveId, false, "MaxReconnectAttemptsReached", maxAttemptsError.message)
+        );
+      }
       return;
     }
     this._reconnectAttempts++;
@@ -497,6 +778,7 @@ class WebSerialTransport {
       this._reconnectAttempts = 0;
       this._startReading();
       logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
+      this._deviceStates.clear();
       if (this._resolveConnection) {
         this._resolveConnection();
         this._resolveConnection = null;
@@ -508,15 +790,26 @@ class WebSerialTransport {
       if (this._shouldReconnect && !this._isDisconnecting && this._reconnectAttempts <= this.options.maxReconnectAttempts) {
         this._scheduleReconnect(err);
       } else {
+        const maxAttemptsError = new import_errors.WebSerialConnectionError(
+          `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
+        );
         if (this._rejectConnection) {
-          const maxAttemptsError = new Error(
-            `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
-          );
           this._rejectConnection(maxAttemptsError);
           this._resolveConnection = null;
           this._rejectConnection = null;
         }
         this._shouldReconnect = false;
+        for (const [slaveId] of this._deviceStates) {
+          this._notifyDeviceConnectionListeners(
+            slaveId,
+            this._createState(
+              slaveId,
+              false,
+              "MaxReconnectAttemptsReached",
+              maxAttemptsError.message
+            )
+          );
+        }
       }
     }
   }
@@ -528,7 +821,7 @@ class WebSerialTransport {
       this._reconnectTimer = null;
     }
     if (this._rejectConnection) {
-      this._rejectConnection(new Error("Transport destroyed"));
+      this._rejectConnection(new import_errors.WebSerialTransportError("Transport destroyed"));
       this._resolveConnection = null;
       this._rejectConnection = null;
     }
@@ -546,6 +839,10 @@ class WebSerialTransport {
     this.isOpen = false;
     this._isConnecting = false;
     this._isDisconnecting = false;
+    for (const [slaveId] of this._deviceStates) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    }
+    this._deviceStates.clear();
   }
 }
 module.exports = WebSerialTransport;

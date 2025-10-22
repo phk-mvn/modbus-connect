@@ -38,7 +38,7 @@ class SlaveEmulator {
   connected;
   constructor(slaveAddress = 1, options = {}) {
     if (typeof slaveAddress !== "number" || slaveAddress < 0 || slaveAddress > 247) {
-      throw new Error("Slave address must be a number between 0 and 247");
+      throw new import_errors.ModbusInvalidAddressError(slaveAddress);
     }
     this.slaveAddress = slaveAddress;
     this.coils = /* @__PURE__ */ new Map();
@@ -87,32 +87,32 @@ class SlaveEmulator {
   // Валидация методов
   _validateAddress(address) {
     if (typeof address !== "number" || address < 0 || address > 65535) {
-      throw new Error(`Invalid address: ${address}. Must be between 0 and 65535`);
+      throw new import_errors.ModbusInvalidAddressError(address);
     }
   }
   _validateQuantity(quantity, max = 125) {
     if (typeof quantity !== "number" || quantity <= 0 || quantity > max) {
-      throw new Error(`Invalid quantity: ${quantity}. Must be between 1 and ${max}`);
+      throw new import_errors.ModbusInvalidQuantityError(quantity, 1, max);
     }
   }
   _validateValue(value, isRegister = false) {
     if (isRegister) {
       if (typeof value !== "number" || value < 0 || value > 65535) {
-        throw new Error(`Invalid register value: ${value}. Must be between 0 and 65535`);
+        throw new import_errors.ModbusIllegalDataValueError(value, "between 0 and 65535");
       }
     } else {
       if (typeof value !== "boolean") {
-        throw new Error(`Invalid coil value: ${value}. Must be boolean`);
+        throw new import_errors.ModbusIllegalDataValueError(value, "boolean");
       }
     }
   }
   infinityChange(params) {
     const { typeRegister, register, range, interval } = params;
     if (!typeRegister || typeof register !== "number" || !Array.isArray(range) || range.length !== 2) {
-      throw new Error("Invalid parameters for infinityChange");
+      throw new import_errors.ModbusDataConversionError(params, "valid InfinityChangeParams");
     }
     if (typeof interval !== "number" || interval <= 0) {
-      throw new Error("Interval must be a positive number");
+      throw new import_errors.ModbusDataConversionError(interval, "positive number");
     }
     const key = `${typeRegister}:${register}`;
     this.stopInfinityChange({ typeRegister, register });
@@ -125,10 +125,10 @@ class SlaveEmulator {
     };
     const setter = setters[typeRegister];
     if (!setter) {
-      throw new Error(`Invalid register type: ${typeRegister}`);
+      throw new import_errors.ModbusDataConversionError(typeRegister, "valid register type");
     }
     if (min > max) {
-      throw new Error("Min value cannot be greater than max value");
+      throw new import_errors.ModbusDataConversionError(range, "valid range (min <= max)");
     }
     const intervalId = setInterval(() => {
       try {
@@ -141,12 +141,352 @@ class SlaveEmulator {
           slaveAddress: this.slaveAddress
         });
       } catch (error) {
-        this.logger.error("Error in infinity change task", {
-          error: error.message,
-          typeRegister,
-          register,
-          slaveAddress: this.slaveAddress
-        });
+        if (error instanceof import_errors.ModbusExceptionError) {
+          this.logger.error("Modbus exception in infinity change task", {
+            error: error.message,
+            functionCode: error.functionCode,
+            exceptionCode: error.exceptionCode,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInvalidAddressError) {
+          this.logger.error("Invalid address in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInvalidQuantityError) {
+          this.logger.error("Invalid quantity in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusIllegalDataValueError) {
+          this.logger.error("Illegal data value in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusIllegalDataAddressError) {
+          this.logger.error("Illegal data address in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusSlaveDeviceFailureError) {
+          this.logger.error("Slave device failure in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusCRCError) {
+          this.logger.error("CRC error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusResponseError) {
+          this.logger.error("Response error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusTimeoutError) {
+          this.logger.error("Timeout error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusFlushError) {
+          this.logger.error("Flush error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusDataConversionError) {
+          this.logger.error("Data conversion error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusBufferOverflowError) {
+          this.logger.error("Buffer overflow error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusBufferUnderrunError) {
+          this.logger.error("Buffer underrun error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusMemoryError) {
+          this.logger.error("Memory error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusStackOverflowError) {
+          this.logger.error("Stack overflow error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInvalidFunctionCodeError) {
+          this.logger.error("Invalid function code error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusSlaveBusyError) {
+          this.logger.error("Slave busy error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusAcknowledgeError) {
+          this.logger.error("Acknowledge error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusMemoryParityError) {
+          this.logger.error("Memory parity error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusGatewayPathUnavailableError) {
+          this.logger.error("Gateway path unavailable error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusGatewayTargetDeviceError) {
+          this.logger.error("Gateway target device error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusGatewayBusyError) {
+          this.logger.error("Gateway busy error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusDataOverrunError) {
+          this.logger.error("Data overrun error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusBroadcastError) {
+          this.logger.error("Broadcast error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusConfigError) {
+          this.logger.error("Config error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusBaudRateError) {
+          this.logger.error("Baud rate error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusSyncError) {
+          this.logger.error("Sync error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusFrameBoundaryError) {
+          this.logger.error("Frame boundary error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusLRCError) {
+          this.logger.error("LRC error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusChecksumError) {
+          this.logger.error("Checksum error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusParityError) {
+          this.logger.error("Parity error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusNoiseError) {
+          this.logger.error("Noise error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusFramingError) {
+          this.logger.error("Framing error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusOverrunError) {
+          this.logger.error("Overrun error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusCollisionError) {
+          this.logger.error("Collision error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusTooManyEmptyReadsError) {
+          this.logger.error("Too many empty reads error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInterFrameTimeoutError) {
+          this.logger.error("Inter-frame timeout error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusSilentIntervalError) {
+          this.logger.error("Silent interval error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInvalidStartingAddressError) {
+          this.logger.error("Invalid starting address error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusMalformedFrameError) {
+          this.logger.error("Malformed frame error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInvalidFrameLengthError) {
+          this.logger.error("Invalid frame length error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInvalidTransactionIdError) {
+          this.logger.error("Invalid transaction ID error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
+          this.logger.error("Unexpected function code error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusConnectionRefusedError) {
+          this.logger.error("Connection refused error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusConnectionTimeoutError) {
+          this.logger.error("Connection timeout error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusNotConnectedError) {
+          this.logger.error("Not connected error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusAlreadyConnectedError) {
+          this.logger.error("Already connected error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else if (error instanceof import_errors.ModbusInsufficientDataError) {
+          this.logger.error("Insufficient data error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        } else {
+          this.logger.error("Error in infinity change task", {
+            error: error.message,
+            typeRegister,
+            register,
+            slaveAddress: this.slaveAddress
+          });
+        }
       }
     }, interval);
     this._infinityTasks.set(key, intervalId);
@@ -205,7 +545,7 @@ class SlaveEmulator {
   }
   addRegisters(definitions) {
     if (!definitions || typeof definitions !== "object") {
-      throw new Error("Definitions must be an object");
+      throw new import_errors.ModbusDataConversionError(definitions, "valid RegisterDefinitions object");
     }
     const stats = { coils: 0, discrete: 0, holding: 0, input: 0 };
     try {
@@ -238,11 +578,303 @@ class SlaveEmulator {
         slaveAddress: this.slaveAddress
       });
     } catch (error) {
-      this.logger.error("Error adding registers", {
-        error: error.message,
-        definitions: JSON.stringify(definitions),
-        slaveAddress: this.slaveAddress
-      });
+      if (error instanceof import_errors.ModbusExceptionError) {
+        this.logger.error("Modbus exception adding registers", {
+          error: error.message,
+          functionCode: error.functionCode,
+          exceptionCode: error.exceptionCode,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInvalidAddressError) {
+        this.logger.error("Invalid address adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInvalidQuantityError) {
+        this.logger.error("Invalid quantity adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusIllegalDataValueError) {
+        this.logger.error("Illegal data value adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusIllegalDataAddressError) {
+        this.logger.error("Illegal data address adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusSlaveDeviceFailureError) {
+        this.logger.error("Slave device failure adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusCRCError) {
+        this.logger.error("CRC error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusResponseError) {
+        this.logger.error("Response error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusTimeoutError) {
+        this.logger.error("Timeout error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusFlushError) {
+        this.logger.error("Flush error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusDataConversionError) {
+        this.logger.error("Data conversion error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusBufferOverflowError) {
+        this.logger.error("Buffer overflow error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusBufferUnderrunError) {
+        this.logger.error("Buffer underrun error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusMemoryError) {
+        this.logger.error("Memory error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusStackOverflowError) {
+        this.logger.error("Stack overflow error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInvalidFunctionCodeError) {
+        this.logger.error("Invalid function code error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusSlaveBusyError) {
+        this.logger.error("Slave busy error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusAcknowledgeError) {
+        this.logger.error("Acknowledge error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusMemoryParityError) {
+        this.logger.error("Memory parity error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusGatewayPathUnavailableError) {
+        this.logger.error("Gateway path unavailable error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusGatewayTargetDeviceError) {
+        this.logger.error("Gateway target device error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusGatewayBusyError) {
+        this.logger.error("Gateway busy error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusDataOverrunError) {
+        this.logger.error("Data overrun error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusBroadcastError) {
+        this.logger.error("Broadcast error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusConfigError) {
+        this.logger.error("Config error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusBaudRateError) {
+        this.logger.error("Baud rate error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusSyncError) {
+        this.logger.error("Sync error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusFrameBoundaryError) {
+        this.logger.error("Frame boundary error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusLRCError) {
+        this.logger.error("LRC error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusChecksumError) {
+        this.logger.error("Checksum error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusParityError) {
+        this.logger.error("Parity error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusNoiseError) {
+        this.logger.error("Noise error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusFramingError) {
+        this.logger.error("Framing error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusOverrunError) {
+        this.logger.error("Overrun error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusCollisionError) {
+        this.logger.error("Collision error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusTooManyEmptyReadsError) {
+        this.logger.error("Too many empty reads error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInterFrameTimeoutError) {
+        this.logger.error("Inter-frame timeout error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusSilentIntervalError) {
+        this.logger.error("Silent interval error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInvalidStartingAddressError) {
+        this.logger.error("Invalid starting address error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusMalformedFrameError) {
+        this.logger.error("Malformed frame error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInvalidFrameLengthError) {
+        this.logger.error("Invalid frame length error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInvalidTransactionIdError) {
+        this.logger.error("Invalid transaction ID error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
+        this.logger.error("Unexpected function code error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusConnectionRefusedError) {
+        this.logger.error("Connection refused error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusConnectionTimeoutError) {
+        this.logger.error("Connection timeout error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusNotConnectedError) {
+        this.logger.error("Not connected error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusAlreadyConnectedError) {
+        this.logger.error("Already connected error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else if (error instanceof import_errors.ModbusInsufficientDataError) {
+        this.logger.error("Insufficient data error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      } else {
+        this.logger.error("Error adding registers", {
+          error: error.message,
+          definitions: JSON.stringify(definitions),
+          slaveAddress: this.slaveAddress
+        });
+      }
       throw error;
     }
   }
@@ -264,7 +896,7 @@ class SlaveEmulator {
     this._validateAddress(startAddress);
     this._validateQuantity(quantity, 2e3);
     if (startAddress + quantity > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(startAddress, quantity);
     }
     this.logger.info("readCoils", {
       startAddress,
@@ -295,10 +927,10 @@ class SlaveEmulator {
     this._validateAddress(startAddress);
     this._validateQuantity(values.length, 1968);
     if (!Array.isArray(values)) {
-      throw new Error("Values must be an array");
+      throw new import_errors.ModbusDataConversionError(values, "array");
     }
     if (startAddress + values.length > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(startAddress, values.length);
     }
     values.forEach((val, idx) => {
       this._validateValue(val, false);
@@ -331,7 +963,7 @@ class SlaveEmulator {
     this._validateAddress(startAddress);
     this._validateQuantity(quantity, 2e3);
     if (startAddress + quantity > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(startAddress, quantity);
     }
     this.logger.info("readDiscreteInputs", {
       startAddress,
@@ -366,7 +998,7 @@ class SlaveEmulator {
     this._validateAddress(startAddress);
     this._validateQuantity(quantity, 125);
     if (startAddress + quantity > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(startAddress, quantity);
     }
     this.logger.info("readHoldingRegisters", {
       startAddress,
@@ -397,10 +1029,10 @@ class SlaveEmulator {
     this._validateAddress(startAddress);
     this._validateQuantity(values.length, 123);
     if (!Array.isArray(values)) {
-      throw new Error("Values must be an array");
+      throw new import_errors.ModbusDataConversionError(values, "array");
     }
     if (startAddress + values.length > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(startAddress, values.length);
     }
     values.forEach((val, idx) => {
       this._validateValue(val, true);
@@ -434,7 +1066,7 @@ class SlaveEmulator {
     this._validateAddress(startAddress);
     this._validateQuantity(quantity, 125);
     if (startAddress + quantity > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(startAddress, quantity);
     }
     this.logger.info("readInputRegisters", {
       startAddress,
@@ -455,7 +1087,7 @@ class SlaveEmulator {
     this._validateAddress(start);
     this._validateQuantity(quantity, 125);
     if (start + quantity > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(start, quantity);
     }
     const result = [];
     for (let i = 0; i < quantity; i++) {
@@ -469,7 +1101,7 @@ class SlaveEmulator {
     this._validateAddress(start);
     this._validateQuantity(quantity, 125);
     if (start + quantity > 65536) {
-      throw new Error("Address range exceeds maximum address space");
+      throw new import_errors.ModbusIllegalDataAddressError(start, quantity);
     }
     const result = [];
     for (let i = 0; i < quantity; i++) {
@@ -548,16 +1180,16 @@ class SlaveEmulator {
         return null;
       }
       if (!(buffer instanceof Uint8Array)) {
-        throw new Error("Input buffer must be Uint8Array or Buffer");
+        throw new import_errors.ModbusDataConversionError(buffer, "Uint8Array");
       }
       if (buffer.length < 5) {
-        throw new Error("Invalid Modbus RTU frame: too short");
+        throw new import_errors.ModbusResponseError("Invalid Modbus RTU frame: too short");
       }
       const crcReceived = (buffer[buffer.length - 2] | buffer[buffer.length - 1] << 8) & 65535;
       const dataForCrc = buffer.subarray(0, buffer.length - 2);
       const crcCalculatedBuffer = (0, import_crc.crc16Modbus)(dataForCrc);
       if (crcCalculatedBuffer.length < 2) {
-        throw new Error("crc16Modbus returned invalid buffer length");
+        throw new import_errors.ModbusCRCError("crc16Modbus returned invalid buffer length");
       }
       const crcCalculated = crcCalculatedBuffer[0] << 8 | crcCalculatedBuffer[1];
       if (crcReceived !== crcCalculated) {
@@ -568,7 +1200,7 @@ class SlaveEmulator {
           // Buffer.from может принимать Uint8Array
           slaveAddress: this.slaveAddress
         });
-        return null;
+        throw new import_errors.ModbusCRCError("CRC mismatch detected");
       }
       const slaveAddr = buffer[0];
       if (slaveAddr !== this.slaveAddress && slaveAddr !== 0) {
@@ -588,15 +1220,445 @@ class SlaveEmulator {
       });
       return this._processFunctionCode(functionCode, data, slaveAddr);
     } catch (error) {
-      this.logger.error("Error processing Modbus request", {
-        error: error.message,
-        stack: error.stack,
-        slaveAddress: this.slaveAddress
-      });
-      return this._createExceptionResponse(
-        buffer?.[1] || 0,
-        import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
-      );
+      if (error instanceof import_errors.ModbusExceptionError) {
+        this.logger.error("Modbus exception processing request", {
+          error: error.message,
+          functionCode: error.functionCode,
+          exceptionCode: error.exceptionCode,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(error.functionCode, error.exceptionCode);
+      } else if (error instanceof import_errors.ModbusInvalidAddressError) {
+        this.logger.error("Invalid address processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.ILLEGAL_DATA_ADDRESS
+        );
+      } else if (error instanceof import_errors.ModbusInvalidQuantityError) {
+        this.logger.error("Invalid quantity processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.ILLEGAL_DATA_VALUE
+        );
+      } else if (error instanceof import_errors.ModbusIllegalDataValueError) {
+        this.logger.error("Illegal data value processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.ILLEGAL_DATA_VALUE
+        );
+      } else if (error instanceof import_errors.ModbusIllegalDataAddressError) {
+        this.logger.error("Illegal data address processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.ILLEGAL_DATA_ADDRESS
+        );
+      } else if (error instanceof import_errors.ModbusSlaveDeviceFailureError) {
+        this.logger.error("Slave device failure processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusCRCError) {
+        this.logger.error("CRC error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusResponseError) {
+        this.logger.error("Response error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusTimeoutError) {
+        this.logger.error("Timeout error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusFlushError) {
+        this.logger.error("Flush error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusDataConversionError) {
+        this.logger.error("Data conversion error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusBufferOverflowError) {
+        this.logger.error("Buffer overflow error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusBufferUnderrunError) {
+        this.logger.error("Buffer underrun error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusMemoryError) {
+        this.logger.error("Memory error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusStackOverflowError) {
+        this.logger.error("Stack overflow error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusInvalidFunctionCodeError) {
+        this.logger.error("Invalid function code error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.ILLEGAL_FUNCTION
+        );
+      } else if (error instanceof import_errors.ModbusSlaveBusyError) {
+        this.logger.error("Slave busy error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_BUSY
+        );
+      } else if (error instanceof import_errors.ModbusAcknowledgeError) {
+        this.logger.error("Acknowledge error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(buffer?.[1] || 0, import_constants.ModbusExceptionCode.ACKNOWLEDGE);
+      } else if (error instanceof import_errors.ModbusMemoryParityError) {
+        this.logger.error("Memory parity error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.MEMORY_PARITY_ERROR
+        );
+      } else if (error instanceof import_errors.ModbusGatewayPathUnavailableError) {
+        this.logger.error("Gateway path unavailable error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.GATEWAY_PATH_UNAVAILABLE
+        );
+      } else if (error instanceof import_errors.ModbusGatewayTargetDeviceError) {
+        this.logger.error("Gateway target device error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.GATEWAY_TARGET_DEVICE_FAILED
+        );
+      } else if (error instanceof import_errors.ModbusGatewayBusyError) {
+        this.logger.error("Gateway busy error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.GATEWAY_TARGET_DEVICE_FAILED
+        );
+      } else if (error instanceof import_errors.ModbusDataOverrunError) {
+        this.logger.error("Data overrun error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusBroadcastError) {
+        this.logger.error("Broadcast error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusConfigError) {
+        this.logger.error("Config error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusBaudRateError) {
+        this.logger.error("Baud rate error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusSyncError) {
+        this.logger.error("Sync error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusFrameBoundaryError) {
+        this.logger.error("Frame boundary error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusLRCError) {
+        this.logger.error("LRC error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusChecksumError) {
+        this.logger.error("Checksum error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusParityError) {
+        this.logger.error("Parity error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusNoiseError) {
+        this.logger.error("Noise error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusFramingError) {
+        this.logger.error("Framing error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusOverrunError) {
+        this.logger.error("Overrun error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusCollisionError) {
+        this.logger.error("Collision error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusTooManyEmptyReadsError) {
+        this.logger.error("Too many empty reads error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusInterFrameTimeoutError) {
+        this.logger.error("Inter-frame timeout error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusSilentIntervalError) {
+        this.logger.error("Silent interval error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusInvalidStartingAddressError) {
+        this.logger.error("Invalid starting address error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.ILLEGAL_DATA_ADDRESS
+        );
+      } else if (error instanceof import_errors.ModbusMalformedFrameError) {
+        this.logger.error("Malformed frame error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusInvalidFrameLengthError) {
+        this.logger.error("Invalid frame length error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusInvalidTransactionIdError) {
+        this.logger.error("Invalid transaction ID error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
+        this.logger.error("Unexpected function code error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusConnectionRefusedError) {
+        this.logger.error("Connection refused error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusConnectionTimeoutError) {
+        this.logger.error("Connection timeout error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusNotConnectedError) {
+        this.logger.error("Not connected error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusAlreadyConnectedError) {
+        this.logger.error("Already connected error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else if (error instanceof import_errors.ModbusInsufficientDataError) {
+        this.logger.error("Insufficient data error processing request", {
+          error: error.message,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      } else {
+        this.logger.error("Error processing Modbus request", {
+          error: error.message,
+          stack: error.stack,
+          slaveAddress: this.slaveAddress
+        });
+        return this._createExceptionResponse(
+          buffer?.[1] || 0,
+          import_constants.ModbusExceptionCode.SLAVE_DEVICE_FAILURE
+        );
+      }
     }
   }
   _processFunctionCode(functionCode, data, slaveAddr) {
@@ -645,7 +1707,7 @@ class SlaveEmulator {
   // Специализированные методы обработки
   _handleReadCoils(data) {
     if (data.length !== 4) {
-      throw new Error("Invalid data length for Read Coils");
+      throw new import_errors.ModbusResponseError("Invalid data length for Read Coils");
     }
     const startAddr = data[0] << 8 | data[1];
     const qty = data[2] << 8 | data[3];
@@ -664,7 +1726,7 @@ class SlaveEmulator {
   }
   _handleReadDiscreteInputs(data) {
     if (data.length !== 4) {
-      throw new Error("Invalid data length for Read Discrete Inputs");
+      throw new import_errors.ModbusResponseError("Invalid data length for Read Discrete Inputs");
     }
     const startAddr = data[0] << 8 | data[1];
     const qty = data[2] << 8 | data[3];
@@ -683,7 +1745,7 @@ class SlaveEmulator {
   }
   _handleReadHoldingRegisters(data) {
     if (data.length !== 4) {
-      throw new Error("Invalid data length for Read Holding Registers");
+      throw new import_errors.ModbusResponseError("Invalid data length for Read Holding Registers");
     }
     const startAddr = data[0] << 8 | data[1];
     const qty = data[2] << 8 | data[3];
@@ -701,7 +1763,7 @@ class SlaveEmulator {
   }
   _handleReadInputRegisters(data) {
     if (data.length !== 4) {
-      throw new Error("Invalid data length for Read Input Registers");
+      throw new import_errors.ModbusResponseError("Invalid data length for Read Input Registers");
     }
     const startAddr = data[0] << 8 | data[1];
     const qty = data[2] << 8 | data[3];
@@ -719,12 +1781,12 @@ class SlaveEmulator {
   }
   _handleWriteSingleCoil(data) {
     if (data.length !== 4) {
-      throw new Error("Invalid data length for Write Single Coil");
+      throw new import_errors.ModbusResponseError("Invalid data length for Write Single Coil");
     }
     const addr = data[0] << 8 | data[1];
     const val = data[2] << 8 | data[3];
     if (val !== 0 && val !== 65280) {
-      throw new Error("Invalid coil value");
+      throw new import_errors.ModbusIllegalDataValueError(val, "0x0000 or 0xff00");
     }
     this._validateAddress(addr);
     this.writeSingleCoil(addr, val === 65280);
@@ -732,7 +1794,7 @@ class SlaveEmulator {
   }
   _handleWriteSingleRegister(data) {
     if (data.length !== 4) {
-      throw new Error("Invalid data length for Write Single Register");
+      throw new import_errors.ModbusResponseError("Invalid data length for Write Single Register");
     }
     const addr = data[0] << 8 | data[1];
     const val = data[2] << 8 | data[3];
@@ -743,7 +1805,7 @@ class SlaveEmulator {
   }
   _handleWriteMultipleCoils(data) {
     if (data.length < 5) {
-      throw new Error("Invalid data length for Write Multiple Coils");
+      throw new import_errors.ModbusResponseError("Invalid data length for Write Multiple Coils");
     }
     const startAddr = data[0] << 8 | data[1];
     const qty = data[2] << 8 | data[3];
@@ -751,7 +1813,7 @@ class SlaveEmulator {
     this._validateAddress(startAddr);
     this._validateQuantity(qty, 1968);
     if (byteCount !== data.length - 5) {
-      throw new Error("Byte count mismatch");
+      throw new import_errors.ModbusResponseError("Byte count mismatch");
     }
     const coilValues = [];
     for (let i = 0; i < qty; i++) {
@@ -764,7 +1826,7 @@ class SlaveEmulator {
   }
   _handleWriteMultipleRegisters(data) {
     if (data.length < 5) {
-      throw new Error("Invalid data length for Write Multiple Registers");
+      throw new import_errors.ModbusResponseError("Invalid data length for Write Multiple Registers");
     }
     const startAddr = data[0] << 8 | data[1];
     const qty = data[2] << 8 | data[3];
@@ -772,7 +1834,7 @@ class SlaveEmulator {
     this._validateAddress(startAddr);
     this._validateQuantity(qty, 123);
     if (byteCount !== qty * 2) {
-      throw new Error("Byte count mismatch");
+      throw new import_errors.ModbusResponseError("Byte count mismatch");
     }
     const regValues = [];
     for (let i = 0; i < qty; i++) {
@@ -788,7 +1850,7 @@ class SlaveEmulator {
     respBuf.set(responseData, 2);
     const crc = (0, import_crc.crc16Modbus)(respBuf.subarray(0, respBuf.length - 2));
     if (crc.length < 2) {
-      throw new Error("crc16Modbus returned invalid buffer length");
+      throw new import_errors.ModbusCRCError("crc16Modbus returned invalid buffer length");
     }
     const crcValue = crc[0] << 8 | crc[1];
     respBuf[respBuf.length - 2] = crcValue & 255;
@@ -807,7 +1869,7 @@ class SlaveEmulator {
     excBuf[2] = exceptionCode;
     const crc = (0, import_crc.crc16Modbus)(excBuf.subarray(0, 3));
     if (crc.length < 2) {
-      throw new Error("crc16Modbus returned invalid buffer length");
+      throw new import_errors.ModbusCRCError("crc16Modbus returned invalid buffer length");
     }
     const crcValue = crc[0] << 8 | crc[1];
     excBuf[3] = crcValue & 255;

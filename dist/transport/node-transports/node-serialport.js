@@ -50,6 +50,10 @@ class NodeSerialTransport {
   _connectionPromise;
   _resolveConnection;
   _rejectConnection;
+  // Слушатели состояния связи с устройством
+  _deviceConnectionListeners = [];
+  // Карта состояний для каждого slaveId
+  _deviceStates = /* @__PURE__ */ new Map();
   /**
    * Создаёт новый экземпляр транспорта для последовательного порта.
    * @param port - Путь к последовательному порту (например, '/dev/ttyUSB0').
@@ -83,6 +87,69 @@ class NodeSerialTransport {
     this._connectionPromise = null;
     this._resolveConnection = null;
     this._rejectConnection = null;
+  }
+  // Публичный метод для добавления слушателя состояния связи с устройством
+  addDeviceConnectionListener(listener) {
+    this._deviceConnectionListeners.push(listener);
+    for (const state of this._deviceStates.values()) {
+      listener(state);
+    }
+  }
+  // Публичный метод для удаления слушателя состояния связи с устройством
+  removeDeviceConnectionListener(listener) {
+    const index = this._deviceConnectionListeners.indexOf(listener);
+    if (index !== -1) {
+      this._deviceConnectionListeners.splice(index, 1);
+    }
+  }
+  // Приватный метод для уведомления слушателей о смене состояния конкретного slaveId
+  _notifyDeviceConnectionListeners(slaveId, state) {
+    this._deviceStates.set(slaveId, state);
+    logger.debug(`Device connection state changed for slaveId ${slaveId}:`, state);
+    const listeners = [...this._deviceConnectionListeners];
+    for (const listener of listeners) {
+      try {
+        listener(state);
+      } catch (err) {
+        logger.error(
+          `Error in device connection listener for slaveId ${slaveId}: ${err.message}`
+        );
+      }
+    }
+  }
+  // Приватный метод для создания объекта состояния подключения
+  _createState(slaveId, hasConnection, errorType, errorMessage) {
+    if (hasConnection) {
+      return {
+        slaveId,
+        hasConnectionDevice: true,
+        errorType: void 0,
+        errorMessage: void 0
+      };
+    } else {
+      return {
+        slaveId,
+        hasConnectionDevice: false,
+        errorType,
+        errorMessage
+      };
+    }
+  }
+  // Метод для установки состояния устройства как подключенного
+  // Вызывается из ModbusClient при успешном обмене
+  notifyDeviceConnected(slaveId) {
+    const currentState = this._deviceStates.get(slaveId);
+    if (!currentState || !currentState.hasConnectionDevice) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, true));
+    }
+  }
+  // Метод для установки состояния устройства как отключенного
+  // Вызывается из ModbusClient при ошибке обмена
+  notifyDeviceDisconnected(slaveId, errorType, errorMessage) {
+    this._notifyDeviceConnectionListeners(
+      slaveId,
+      this._createState(slaveId, false, errorType, errorMessage)
+    );
   }
   /**
    * Устанавливает соединение с последовательным портом.
@@ -123,6 +190,9 @@ class NodeSerialTransport {
           });
         });
       }
+      if (this.options.baudRate < 300 || this.options.baudRate > 115200) {
+        throw new import_errors.ModbusConfigError(`Invalid baud rate: ${this.options.baudRate}`);
+      }
       await this._createAndOpenPort();
       logger.info(`Serial port ${this.path} opened`);
       if (this._resolveConnection) {
@@ -135,6 +205,17 @@ class NodeSerialTransport {
       const error = err instanceof Error ? err : new import_errors.NodeSerialTransportError(String(err));
       logger.error(`Failed to open serial port ${this.path}: ${error.message}`);
       this.isOpen = false;
+      if (error instanceof import_errors.ModbusConfigError) {
+        logger.error("Configuration error during connection");
+      } else if (error instanceof import_errors.NodeSerialConnectionError) {
+        logger.error("Connection error during port opening");
+      }
+      for (const [slaveId] of this._deviceStates) {
+        this._notifyDeviceConnectionListeners(
+          slaveId,
+          this._createState(slaveId, false, error.constructor.name, error.message)
+        );
+      }
       if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
         const maxAttemptsError = new import_errors.NodeSerialConnectionError(
           `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
@@ -183,7 +264,16 @@ class NodeSerialTransport {
           if (err) {
             logger.error(`Failed to open serial port ${this.path}: ${err.message}`);
             this.isOpen = false;
-            return reject(new import_errors.NodeSerialConnectionError(err.message));
+            if (err.message.includes("permission")) {
+              reject(new import_errors.NodeSerialConnectionError("Permission denied to access serial port"));
+            } else if (err.message.includes("busy")) {
+              reject(new import_errors.NodeSerialConnectionError("Serial port is busy"));
+            } else if (err.message.includes("no such file")) {
+              reject(new import_errors.NodeSerialConnectionError("Serial port does not exist"));
+            } else {
+              reject(new import_errors.NodeSerialConnectionError(err.message));
+            }
+            return;
           }
           this.isOpen = true;
           this._reconnectAttempts = 0;
@@ -217,10 +307,25 @@ class NodeSerialTransport {
    */
   _onData(data) {
     if (!this.isOpen) return;
-    const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    this.readBuffer = (0, import_utils.concatUint8Arrays)([this.readBuffer, chunk]);
-    if (this.readBuffer.length > this.options.maxBufferSize) {
-      this.readBuffer = (0, import_utils.sliceUint8Array)(this.readBuffer, -this.options.maxBufferSize);
+    try {
+      const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      if (this.readBuffer.length + chunk.length > this.options.maxBufferSize) {
+        logger.error("Buffer overflow detected");
+        this._handleError(
+          new import_errors.ModbusBufferOverflowError(
+            this.readBuffer.length + chunk.length,
+            this.options.maxBufferSize
+          )
+        );
+        return;
+      }
+      this.readBuffer = (0, import_utils.concatUint8Arrays)([this.readBuffer, chunk]);
+      if (this.readBuffer.length > this.options.maxBufferSize) {
+        this.readBuffer = (0, import_utils.sliceUint8Array)(this.readBuffer, -this.options.maxBufferSize);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new import_errors.NodeSerialTransportError(String(err));
+      this._handleError(error);
     }
   }
   /**
@@ -230,10 +335,20 @@ class NodeSerialTransport {
    */
   _onError(err) {
     logger.error(`Serial port ${this.path} error: ${err.message}`);
-    this.readBuffer = (0, import_utils.allocUint8Array)(0);
-    if (this.isOpen) {
-      this.isOpen = false;
-      this._removeAllListeners();
+    if (err.message.includes("parity") || err.message.includes("Parity")) {
+      this._handleError(new import_errors.ModbusParityError(err.message));
+    } else if (err.message.includes("frame") || err.message.includes("Framing")) {
+      this._handleError(new import_errors.ModbusFramingError(err.message));
+    } else if (err.message.includes("overrun")) {
+      this._handleError(new import_errors.ModbusOverrunError(err.message));
+    } else if (err.message.includes("collision")) {
+      this._handleError(new import_errors.ModbusCollisionError(err.message));
+    } else if (err.message.includes("noise")) {
+      this._handleError(new import_errors.ModbusNoiseError(err.message));
+    } else if (err.message.includes("buffer")) {
+      this._handleError(new import_errors.ModbusBufferOverflowError(0, 0));
+    } else {
+      this._handleError(new import_errors.NodeSerialTransportError(err.message));
     }
   }
   /**
@@ -244,6 +359,10 @@ class NodeSerialTransport {
     logger.info(`Serial port ${this.path} closed`);
     this.isOpen = false;
     this._removeAllListeners();
+    for (const [slaveId] of this._deviceStates) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    }
+    this._deviceStates.clear();
     if (this._shouldReconnect && !this._isDisconnecting) {
       this._scheduleReconnect(new import_errors.NodeSerialConnectionError("Port closed"));
     }
@@ -275,6 +394,16 @@ class NodeSerialTransport {
         this._rejectConnection = null;
       }
       this._shouldReconnect = false;
+      for (const [slaveId] of this._deviceStates) {
+        const maxAttemptsError = new import_errors.NodeSerialConnectionError(
+          `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
+        );
+        this._notifyDeviceConnectionListeners(
+          slaveId,
+          this._createState(slaveId, false, "MaxReconnectAttemptsReached", maxAttemptsError.message)
+        );
+      }
+      this._deviceStates.clear();
       return;
     }
     this._reconnectAttempts++;
@@ -300,6 +429,7 @@ class NodeSerialTransport {
       await this._createAndOpenPort();
       logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
       this._reconnectAttempts = 0;
+      this._deviceStates.clear();
       if (this._resolveConnection) {
         this._resolveConnection();
         this._resolveConnection = null;
@@ -321,6 +451,21 @@ class NodeSerialTransport {
           this._rejectConnection = null;
         }
         this._shouldReconnect = false;
+        for (const [slaveId] of this._deviceStates) {
+          const maxAttemptsError = new import_errors.NodeSerialConnectionError(
+            `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
+          );
+          this._notifyDeviceConnectionListeners(
+            slaveId,
+            this._createState(
+              slaveId,
+              false,
+              "MaxReconnectAttemptsReached",
+              maxAttemptsError.message
+            )
+          );
+        }
+        this._deviceStates.clear();
       }
     }
   }
@@ -361,18 +506,34 @@ class NodeSerialTransport {
       logger.info(`Write attempted on closed port ${this.path}`);
       throw new import_errors.NodeSerialWriteError("Port is closed");
     }
+    if (buffer.length === 0) {
+      throw new import_errors.ModbusBufferUnderrunError(0, 1);
+    }
     const release = await this._operationMutex.acquire();
     try {
       return new Promise((resolve, reject) => {
         this.port.write(buffer, (err) => {
           if (err) {
             logger.error(`Write error on port ${this.path}: ${err.message}`);
-            return reject(new import_errors.NodeSerialWriteError(err.message));
+            if (err.message.includes("parity")) {
+              const parityError = new import_errors.ModbusParityError(err.message);
+              this._handleError(parityError);
+              return reject(parityError);
+            } else if (err.message.includes("collision")) {
+              const collisionError = new import_errors.ModbusCollisionError(err.message);
+              this._handleError(collisionError);
+              return reject(collisionError);
+            } else {
+              const writeError = new import_errors.NodeSerialWriteError(err.message);
+              this._handleError(writeError);
+              return reject(writeError);
+            }
           }
           this.port.drain((drainErr) => {
             if (drainErr) {
               logger.info(`Drain error on port ${this.path}: ${drainErr.message}`);
-              return reject(new import_errors.NodeSerialWriteError(drainErr.message));
+              const drainError = new import_errors.NodeSerialWriteError(drainErr.message);
+              return reject(drainError);
             }
             resolve();
           });
@@ -391,6 +552,9 @@ class NodeSerialTransport {
    * @throws ModbusFlushError - Если операция чтения прервана очисткой буфера.
    */
   async read(length, timeout = this.options.readTimeout) {
+    if (length <= 0) {
+      throw new import_errors.ModbusDataConversionError(length, "positive integer");
+    }
     const start = Date.now();
     const release = await this._operationMutex.acquire();
     try {
@@ -398,21 +562,28 @@ class NodeSerialTransport {
         const checkData = () => {
           if (!this.isOpen || !this.port || !this.port.isOpen) {
             logger.info("Read operation interrupted: port is not open");
-            return reject(new import_errors.NodeSerialReadError("Port is closed"));
+            const readError = new import_errors.NodeSerialReadError("Port is closed");
+            return reject(readError);
           }
           if (this._isFlushing) {
             logger.info("Read operation interrupted by flush");
-            return reject(new import_errors.ModbusFlushError());
+            const flushError = new import_errors.ModbusFlushError();
+            return reject(flushError);
           }
           if (this.readBuffer.length >= length) {
             const data = (0, import_utils.sliceUint8Array)(this.readBuffer, 0, length);
             this.readBuffer = (0, import_utils.sliceUint8Array)(this.readBuffer, length);
             logger.trace(`Read ${length} bytes from ${this.path}`);
+            if (data.length !== length) {
+              const insufficientDataError = new import_errors.ModbusInsufficientDataError(data.length, length);
+              return reject(insufficientDataError);
+            }
             return resolve(data);
           }
           if (Date.now() - start > timeout) {
-            logger.error(`Read timeout on ${this.path}`);
-            return reject(new import_errors.NodeSerialReadError("Read timeout"));
+            logger.warn(`Read timeout on NodeSerial port`);
+            const timeoutError = new import_errors.ModbusTimeoutError("Read timeout");
+            return reject(timeoutError);
           }
           setTimeout(checkData, 10);
         };
@@ -441,6 +612,10 @@ class NodeSerialTransport {
     }
     if (!this.isOpen || !this.port) {
       this._isDisconnecting = false;
+      for (const [slaveId] of this._deviceStates) {
+        this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+      }
+      this._deviceStates.clear();
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
@@ -450,9 +625,21 @@ class NodeSerialTransport {
         this.isOpen = false;
         if (err) {
           logger.error(`Error closing port ${this.path}: ${err.message}`);
-          return reject(new import_errors.NodeSerialConnectionError(err.message));
+          const closeError = new import_errors.NodeSerialConnectionError(err.message);
+          for (const [slaveId] of this._deviceStates) {
+            this._notifyDeviceConnectionListeners(
+              slaveId,
+              this._createState(slaveId, false, "NodeSerialConnectionError", closeError.message)
+            );
+          }
+          this._deviceStates.clear();
+          return reject(closeError);
         }
         logger.info(`Serial port ${this.path} closed`);
+        for (const [slaveId] of this._deviceStates) {
+          this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+        }
+        this._deviceStates.clear();
         resolve();
       });
     });
@@ -484,6 +671,171 @@ class NodeSerialTransport {
     }
     this.isOpen = false;
     this.port = null;
+    for (const [slaveId] of this._deviceStates) {
+      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    }
+    this._deviceStates.clear();
+  }
+  /**
+   * Обрабатывает ошибки и логирует их.
+   * @private
+   * @param err - Ошибка для обработки.
+   */
+  _handleError(err) {
+    logger.error(`NodeSerial port error: ${err.message}`);
+    let errorType = "unknown";
+    let errorMessage = err.message;
+    if (err instanceof import_errors.ModbusCRCError) {
+      errorType = "ModbusCRCError";
+      logger.error("CRC error detected");
+    } else if (err instanceof import_errors.ModbusParityError) {
+      errorType = "ModbusParityError";
+      logger.error("Parity error detected");
+    } else if (err instanceof import_errors.ModbusNoiseError) {
+      errorType = "ModbusNoiseError";
+      logger.error("Noise error detected");
+    } else if (err instanceof import_errors.ModbusFramingError) {
+      errorType = "ModbusFramingError";
+      logger.error("Framing error detected");
+    } else if (err instanceof import_errors.ModbusOverrunError) {
+      errorType = "ModbusOverrunError";
+      logger.error("Overrun error detected");
+    } else if (err instanceof import_errors.ModbusCollisionError) {
+      errorType = "ModbusCollisionError";
+      logger.error("Collision error detected");
+    } else if (err instanceof import_errors.ModbusConfigError) {
+      errorType = "ModbusConfigError";
+      logger.error("Configuration error detected");
+    } else if (err instanceof import_errors.ModbusBaudRateError) {
+      errorType = "ModbusBaudRateError";
+      logger.error("Baud rate error detected");
+    } else if (err instanceof import_errors.ModbusSyncError) {
+      errorType = "ModbusSyncError";
+      logger.error("Sync error detected");
+    } else if (err instanceof import_errors.ModbusFrameBoundaryError) {
+      errorType = "ModbusFrameBoundaryError";
+      logger.error("Frame boundary error detected");
+    } else if (err instanceof import_errors.ModbusLRCError) {
+      errorType = "ModbusLRCError";
+      logger.error("LRC error detected");
+    } else if (err instanceof import_errors.ModbusChecksumError) {
+      errorType = "ModbusChecksumError";
+      logger.error("Checksum error detected");
+    } else if (err instanceof import_errors.ModbusDataConversionError) {
+      errorType = "ModbusDataConversionError";
+      logger.error("Data conversion error detected");
+    } else if (err instanceof import_errors.ModbusBufferOverflowError) {
+      errorType = "ModbusBufferOverflowError";
+      logger.error("Buffer overflow error detected");
+    } else if (err instanceof import_errors.ModbusBufferUnderrunError) {
+      errorType = "ModbusBufferUnderrunError";
+      logger.error("Buffer underrun error detected");
+    } else if (err instanceof import_errors.ModbusMemoryError) {
+      errorType = "ModbusMemoryError";
+      logger.error("Memory error detected");
+    } else if (err instanceof import_errors.ModbusStackOverflowError) {
+      errorType = "ModbusStackOverflowError";
+      logger.error("Stack overflow error detected");
+    } else if (err instanceof import_errors.ModbusResponseError) {
+      errorType = "ModbusResponseError";
+      logger.error("Response error detected");
+    } else if (err instanceof import_errors.ModbusInvalidAddressError) {
+      errorType = "ModbusInvalidAddressError";
+      logger.error("Invalid address error detected");
+    } else if (err instanceof import_errors.ModbusInvalidFunctionCodeError) {
+      errorType = "ModbusInvalidFunctionCodeError";
+      logger.error("Invalid function code error detected");
+    } else if (err instanceof import_errors.ModbusInvalidQuantityError) {
+      errorType = "ModbusInvalidQuantityError";
+      logger.error("Invalid quantity error detected");
+    } else if (err instanceof import_errors.ModbusIllegalDataAddressError) {
+      errorType = "ModbusIllegalDataAddressError";
+      logger.error("Illegal data address error detected");
+    } else if (err instanceof import_errors.ModbusIllegalDataValueError) {
+      errorType = "ModbusIllegalDataValueError";
+      logger.error("Illegal data value error detected");
+    } else if (err instanceof import_errors.ModbusSlaveBusyError) {
+      errorType = "ModbusSlaveBusyError";
+      logger.error("Slave busy error detected");
+    } else if (err instanceof import_errors.ModbusAcknowledgeError) {
+      errorType = "ModbusAcknowledgeError";
+      logger.error("Acknowledge error detected");
+    } else if (err instanceof import_errors.ModbusSlaveDeviceFailureError) {
+      errorType = "ModbusSlaveDeviceFailureError";
+      logger.error("Slave device failure error detected");
+    } else if (err instanceof import_errors.ModbusMalformedFrameError) {
+      errorType = "ModbusMalformedFrameError";
+      logger.error("Malformed frame error detected");
+    } else if (err instanceof import_errors.ModbusInvalidFrameLengthError) {
+      errorType = "ModbusInvalidFrameLengthError";
+      logger.error("Invalid frame length error detected");
+    } else if (err instanceof import_errors.ModbusInvalidTransactionIdError) {
+      errorType = "ModbusInvalidTransactionIdError";
+      logger.error("Invalid transaction ID error detected");
+    } else if (err instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
+      errorType = "ModbusUnexpectedFunctionCodeError";
+      logger.error("Unexpected function code error detected");
+    } else if (err instanceof import_errors.ModbusConnectionRefusedError) {
+      errorType = "ModbusConnectionRefusedError";
+      logger.error("Connection refused error detected");
+    } else if (err instanceof import_errors.ModbusConnectionTimeoutError) {
+      errorType = "ModbusConnectionTimeoutError";
+      logger.error("Connection timeout error detected");
+    } else if (err instanceof import_errors.ModbusNotConnectedError) {
+      errorType = "ModbusNotConnectedError";
+      logger.error("Not connected error detected");
+    } else if (err instanceof import_errors.ModbusAlreadyConnectedError) {
+      errorType = "ModbusAlreadyConnectedError";
+      logger.error("Already connected error detected");
+    } else if (err instanceof import_errors.ModbusInsufficientDataError) {
+      errorType = "ModbusInsufficientDataError";
+      logger.error("Insufficient data error detected");
+    } else if (err instanceof import_errors.ModbusGatewayPathUnavailableError) {
+      errorType = "ModbusGatewayPathUnavailableError";
+      logger.error("Gateway path unavailable error detected");
+    } else if (err instanceof import_errors.ModbusGatewayTargetDeviceError) {
+      errorType = "ModbusGatewayTargetDeviceError";
+      logger.error("Gateway target device error detected");
+    } else if (err instanceof import_errors.ModbusInvalidStartingAddressError) {
+      errorType = "ModbusInvalidStartingAddressError";
+      logger.error("Invalid starting address error detected");
+    } else if (err instanceof import_errors.ModbusMemoryParityError) {
+      errorType = "ModbusMemoryParityError";
+      logger.error("Memory parity error detected");
+    } else if (err instanceof import_errors.ModbusBroadcastError) {
+      errorType = "ModbusBroadcastError";
+      logger.error("Broadcast error detected");
+    } else if (err instanceof import_errors.ModbusGatewayBusyError) {
+      errorType = "ModbusGatewayBusyError";
+      logger.error("Gateway busy error detected");
+    } else if (err instanceof import_errors.ModbusDataOverrunError) {
+      errorType = "ModbusDataOverrunError";
+      logger.error("Data overrun error detected");
+    } else if (err instanceof import_errors.ModbusTooManyEmptyReadsError) {
+      errorType = "ModbusTooManyEmptyReadsError";
+      logger.error("Too many empty reads error detected");
+    } else if (err instanceof import_errors.ModbusFlushError) {
+      errorType = "ModbusFlushError";
+      logger.error("Flush error detected");
+    } else if (err instanceof import_errors.NodeSerialTransportError) {
+      errorType = "NodeSerialTransportError";
+      logger.error("NodeSerial transport error detected");
+    } else if (err instanceof import_errors.NodeSerialConnectionError) {
+      errorType = "NodeSerialConnectionError";
+      logger.error("NodeSerial connection error detected");
+    } else if (err instanceof import_errors.NodeSerialReadError) {
+      errorType = "NodeSerialReadError";
+      logger.error("NodeSerial read error detected");
+    } else if (err instanceof import_errors.NodeSerialWriteError) {
+      errorType = "NodeSerialWriteError";
+      logger.error("NodeSerial write error detected");
+    } else if (err instanceof import_errors.ModbusInterFrameTimeoutError) {
+      errorType = "ModbusInterFrameTimeoutError";
+      logger.error("Inter-frame timeout error detected");
+    } else if (err instanceof import_errors.ModbusSilentIntervalError) {
+      errorType = "ModbusSilentIntervalError";
+      logger.error("Silent interval error detected");
+    }
   }
 }
 module.exports = NodeSerialTransport;

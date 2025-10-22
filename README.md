@@ -1484,6 +1484,23 @@ async function modbusExample() {
       baudRate: 9600,
     });
 
+    // It's recommended to add the listener once to the transport, not from each client.
+    const deviceStates = new Map(); // Store state for each slaveId
+
+    transport.addDeviceConnectionListener(state => {
+      console.log(
+        `Device ${state.slaveId} state:`,
+        state.hasConnectionDevice ? 'Connected' : 'Disconnected'
+      );
+      if (state.errorType) {
+        console.log(`  Error Type: ${state.errorType}`);
+        console.log(`  Error Message: ${state.errorMessage}`);
+      }
+      // Update internal state or UI
+      deviceStates.set(state.slaveId, state);
+    });
+    // -------------------------------------------------------
+
     const client = new ModbusClient(transport, 1, { timeout: 2000 });
     await client.connect();
 
@@ -1506,6 +1523,8 @@ modbusExample();
 [14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' }
 [14:30:15][INFO] Response received { slaveId: 1, funcCode: 3, responseTime: 50 }
 Registers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+Device 1 state: Connected
+State for slaveId 1: { slaveId: 1, hasConnectionDevice: true, errorType: undefined, errorMessage: undefined }
 [14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' }
 ```
 
@@ -1763,6 +1782,603 @@ try {
 
 ```bash
 Modbus error caught: ModbusTimeoutError
+```
+
+## Data Validation Errors
+
+### 9. ModbusInvalidAddressError(address)
+
+Invalid Modbus slave address (must be 0-247).
+
+**Parameters:**
+
+- `address (number):` Invalid address value.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusInvalidAddressError(300);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusInvalidAddressError
+  console.log('Message:', err.message); // Invalid Modbus address: 300. Address must be between 0-247 for RTU/TCP.
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusInvalidAddressError
+Message: Invalid Modbus address: 300. Address must be between 0-247 for RTU/TCP.
+```
+
+### 10. ModbusInvalidFunctionCodeError(functionCode)
+
+Invalid Modbus function code.
+
+**Parameters:**
+
+- `functionCode (number):` Invalid function code.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusInvalidFunctionCodeError(0xff);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusInvalidFunctionCodeError
+  console.log('Message:', err.message); // Invalid Modbus function code: 0xff
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusInvalidFunctionCodeError
+Message: Invalid Modbus function code: 0xff
+```
+
+### 11. ModbusInvalidQuantityError(quantity, min, max)
+
+Invalid register/coil quantity.
+
+**Parameters:**
+
+- `quantity (number):` Invalid quantity.
+- `min (number):` Minimum allowed.
+- `max (number):` Maximum allowed.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusInvalidQuantityError(2000, 1, 125);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusInvalidQuantityError
+  console.log('Message:', err.message); // Invalid quantity: 2000. Must be between 1-125.
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusInvalidQuantityError
+Message: Invalid quantity: 2000. Must be between 1-125.
+```
+
+## Modbus Exception Errors
+
+### 12. ModbusIllegalDataAddressError(address, quantity)
+
+Modbus exception 0x02 - Illegal Data Address.
+
+**Parameters:**
+
+- `address (number):` Starting address.
+- `quantity (number):` Quantity requested.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusIllegalDataAddressError(50000, 10);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusIllegalDataAddressError
+  console.log('Message:', err.message); // Illegal data address: start=50000, quantity=10
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusIllegalDataAddressError
+Message: Illegal data address: start=50000, quantity=10
+```
+
+### 13. ModbusIllegalDataValueError(value, expected)
+
+Modbus exception 0x03 - Illegal Data Value.
+
+**Parameters:**
+
+- `value (any):` Invalid value.
+- `expected (string):` Expected format.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusIllegalDataValueError(65536, '0-65535');
+} catch (err) {
+  console.log('Name:', err.name); // ModbusIllegalDataValueError
+  console.log('Message:', err.message); // Illegal data value: 65536, expected 0-65535
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusIllegalDataValueError
+Message: Illegal data value: 65536, expected 0-65535
+```
+
+### 14. ModbusSlaveBusyError()
+
+Modbus exception 0x04 - Slave Device Busy.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusSlaveBusyError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusSlaveBusyError
+  console.log('Message:', err.message); // Slave device is busy
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusSlaveBusyError
+Message: Slave device is busy
+```
+
+### 15. ModbusAcknowledgeError()
+
+Modbus exception 0x05 - Acknowledge.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusAcknowledgeError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusAcknowledgeError
+  console.log('Message:', err.message); // Acknowledge received - device needs continued polling
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusAcknowledgeError
+Message: Acknowledge received - device needs continued polling
+```
+
+### 16. ModbusSlaveDeviceFailureError()
+
+Modbus exception 0x06 - Slave Device Failure.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusSlaveDeviceFailureError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusSlaveDeviceFailureError
+  console.log('Message:', err.message); // Slave device failure
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusSlaveDeviceFailureError
+Message: Slave device failure
+```
+
+## Message Format Errors
+
+### 17. ModbusMalformedFrameError(rawData)
+
+Malformed Modbus frame received.
+
+**Parameters:**
+
+- `rawData (Buffer | Uint8Array):` Raw received data.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusMalformedFrameError(Buffer.from('ff00aa', 'hex'));
+} catch (err) {
+  console.log('Name:', err.name); // ModbusMalformedFrameError
+  console.log('Message:', err.message); // Malformed Modbus frame received: ff00aa
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusMalformedFrameError
+Message: Malformed Modbus frame received: ff00aa
+```
+
+### 18. ModbusInvalidFrameLengthError(received, expected)
+
+Invalid frame length.
+
+**Parameters:**
+
+- `received (number):` Bytes received.
+- `expected (number):` Expected bytes.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusInvalidFrameLengthError(5, 8);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusInvalidFrameLengthError
+  console.log('Message:', err.message); // Invalid frame length: received 5, expected 8
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusInvalidFrameLengthError
+Message: Invalid frame length: received 5, expected 8
+```
+
+### 19. ModbusInvalidTransactionIdError(received, expected)
+
+Invalid transaction ID mismatch.
+
+**Parameters:**
+
+- `received (number):` Received ID.
+- `expected (number):` Expected ID.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusInvalidTransactionIdError(123, 456);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusInvalidTransactionIdError
+  console.log('Message:', err.message); // Invalid transaction ID: received 123, expected 456
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusInvalidTransactionIdError
+Message: Invalid transaction ID: received 123, expected 456
+```
+
+### 20. ModbusUnexpectedFunctionCodeError(sent, received)
+
+Unexpected function code in response.
+
+**Parameters:**
+
+- `sent (number):` Sent function code.
+- `received (number):` Received function code.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusUnexpectedFunctionCodeError(0x03, 0x04);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusUnexpectedFunctionCodeError
+  console.log('Message:', err.message); // Unexpected function code: sent 0x3, received 0x4
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusUnexpectedFunctionCodeError
+Message: Unexpected function code: sent 0x3, received 0x4
+```
+
+## Connection Errors
+
+### 21. ModbusConnectionRefusedError(host, port)
+
+Connection refused by device.
+
+**Parameters:**
+
+- `host (string):` Target host.
+- `port (number):` Target port.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusConnectionRefusedError('192.168.1.100', 502);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusConnectionRefusedError
+  console.log('Message:', err.message); // Connection refused to 192.168.1.100:502
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusConnectionRefusedError
+Message: Connection refused to 192.168.1.100:502
+```
+
+### 22. ModbusConnectionTimeoutError(host, port, timeout)
+
+Connection timeout.
+
+**Parameters:**
+
+- `host (string):` Target host.
+- `port (number):` Target port.
+- `timeout (number):` Timeout in ms.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusConnectionTimeoutError('192.168.1.100', 502, 5000);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusConnectionTimeoutError
+  console.log('Message:', err.message); // Connection timeout to 192.168.1.100:502 after 5000ms
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusConnectionTimeoutError
+Message: Connection timeout to 192.168.1.100:502 after 5000ms
+```
+
+### 23. ModbusNotConnectedError()
+
+Operation attempted without connection.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusNotConnectedError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusNotConnectedError
+  console.log('Message:', err.message); // Not connected to Modbus device
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusNotConnectedError
+Message: Not connected to Modbus device
+```
+
+### 24. ModbusAlreadyConnectedError()
+
+Attempt to connect when already connected.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusAlreadyConnectedError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusAlreadyConnectedError
+  console.log('Message:', err.message); // Already connected to Modbus device
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusAlreadyConnectedError
+Message: Already connected to Modbus device
+```
+
+## Buffer & Data Errors
+
+### 25. ModbusBufferOverflowError(size, max)
+
+Buffer exceeds maximum size.
+
+**Parameters:**
+
+- `size (number):` Current size.
+- `max (number):` Maximum allowed.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusBufferOverflowError(260, 255);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusBufferOverflowError
+  console.log('Message:', err.message); // Buffer overflow: 260 bytes exceeds maximum 255 bytes
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusBufferOverflowError
+Message: Buffer overflow: 260 bytes exceeds maximum 255 bytes
+```
+
+### 26. ModbusInsufficientDataError(received, required)
+
+Not enough data received.
+
+**Parameters:**
+
+- `received (number):` Bytes received.
+- `required (number):` Bytes needed.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusInsufficientDataError(3, 8);
+} catch (err) {
+  console.log('Name:', err.name); // ModbusInsufficientDataError
+  console.log('Message:', err.message); // Insufficient data: received 3 bytes, required 8 bytes
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusInsufficientDataError
+Message: Insufficient data: received 3 bytes, required 8 bytes
+```
+
+### 27. ModbusDataConversionError(data, expectedType)
+
+Data type conversion failure.
+
+**Parameters:**
+
+- `data (any):` Invalid data.
+- `expectedType (string):` Expected type.
+
+**Example:**
+
+```js
+try {
+  throw new ModbusDataConversionError('abc', 'number');
+} catch (err) {
+  console.log('Name:', err.name); // ModbusDataConversionError
+  console.log('Message:', err.message); // Cannot convert data "abc" to number
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusDataConversionError
+Message: Cannot convert data "abc" to number
+```
+
+## Gateway Errors
+
+### 28. ModbusGatewayPathUnavailableError()
+
+Gateway path unavailable (exception 0x0A).
+
+**Example:**
+
+```js
+try {
+  throw new ModbusGatewayPathUnavailableError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusGatewayPathUnavailableError
+  console.log('Message:', err.message); // Gateway path unavailable
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusGatewayPathUnavailableError
+Message: Gateway path unavailable
+```
+
+### 29. ModbusGatewayTargetDeviceError()
+
+Gateway target device failed to respond (exception 0x0B).
+
+**Example:**
+
+```js
+try {
+  throw new ModbusGatewayTargetDeviceError();
+} catch (err) {
+  console.log('Name:', err.name); // ModbusGatewayTargetDeviceError
+  console.log('Message:', err.message); // Gateway target device failed to respond
+}
+```
+
+**Output:**
+
+```bash
+Name: ModbusGatewayTargetDeviceError
+Message: Gateway target device failed to respond
+```
+
+## Polling Errors
+
+### 30. PollingTaskAlreadyExistsError(id)
+
+Polling task ID already registered.
+
+**Parameters:**
+
+- `id (string):` Task ID.
+
+**Example:**
+
+```js
+try {
+  throw new PollingTaskAlreadyExistsError('read_temp');
+} catch (err) {
+  console.log('Name:', err.name); // PollingTaskAlreadyExistsError
+  console.log('Message:', err.message); // Polling task with id "read_temp" already exists.
+}
+```
+
+**Output:**
+
+```bash
+Name: PollingTaskAlreadyExistsError
+Message: Polling task with id "read_temp" already exists.
+```
+
+### 31. PollingTaskNotFoundError(id)
+
+Polling task ID not found.
+
+**Parameters:**
+
+- `id (string):` Task ID.
+
+**Example:**
+
+```js
+try {
+  throw new PollingTaskNotFoundError('read_temp');
+} catch (err) {
+  console.log('Name:', err.name); // PollingTaskNotFoundError
+  console.log('Message:', err.message); // Polling task with id "read_temp" does not exist.
+}
+```
+
+**Output:**
+
+```bash
+Name: PollingTaskNotFoundError
+Message: Polling task with id "read_temp" does not exist.
 ```
 
 ## Full usage example
@@ -5317,6 +5933,12 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.3.18 (2025-10-22)
+
+- Added many handlers for various Modbus errors
+- Added listeners to `WebSerialTransports` and `NodeSerialTransports`
+  > see more details in [Factory Transport's](#factory-transports)
+
 ### 2.1.49 (2025-10-13)
 
 - Fixed type declaration for `modbus-connect/transport`
@@ -5359,47 +5981,3 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 - Loggers in `PollingManager`, `ModbusClient`, and `SlaveEmulator` are disabled by default.
 - Methods have been added to enable loggers in `PollingManager`, `ModbusClient`, and `SlaveEmulator`.
 - The library documentation has been completely revised.
-
-### 2.0.2 (2025-10-03)
-
-- Fixed `file opening` function for **SGM130**
-- Fixed `file closing` function for **SGM130**
-- Fixed **autoreconnect** for `WebSerialTransport` and `NodeSerialTransport`
-  > **TCP/IP connection capability is being tested and improved**
-
-### **2.0.1 (2025-9-29)**
-
-> **TCP/IP connectivity is expected to be added in the next version.**
-
-- Added full Github support
-
-### **1.9.2 (2025-8-16)**
-
-- SlaveEmulator updated:
-    - **Full validation** - All input parameters are checked for correctness
-    - **Improved error** handling - Structured errors with context
-    - **Better logging** - More informative messages with context
-    - **Performance optimization** - Separation of logic into specialized methods
-    - **Diagnostic methods** - Methods for monitoring the state
-    - **Graceful shutdown** - Proper resource cleanup
-    - **Security** - Overflow and invalid data checks
-    - **Modbus standards support** - Protocol restrictions compliance
-- PollingManager updated:
-    - **Improved Validation** - Added full validation of input parameters with detailed error messages
-    - **Better State Management** - Moved global collection to PollingManager class for better encapsulation
-    - **Performance Optimization** - Added "processing" flag to prevent duplication of processing queue.
-    - **Improved error handling** - structured errors with logging and context
-    - **Configuration** - Added support for configuration with default settings
-    - **Diagnostic methods** - Added methods for getting information about the system state
-    - **Improved logging** - Contextual logging with different levels of detail
-    - **Security** - Checks for existence of objects before use
-
-### **1.9.1 (2025-8-15)**
-
-- Added `async-mutex` to `connect()` method for `ModbusClient`, as this method is critical in the sequence of operations on the COM port
-- Improved [logger](#logger)
-- Improved [Diagnostics](#diagnostics-and-error-handling)
-
-### **1.9.0 (2025-8-13)**
-
-- Implemented `async-mutex` in `PollingManager`, which stabilizes work via Web Serial API

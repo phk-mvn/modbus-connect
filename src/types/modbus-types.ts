@@ -116,6 +116,14 @@ export type SetControllerTimeResponse = boolean;
 // =============================================================================
 // Интерфейсы для транспорта
 // =============================================================================
+// Типы для состояния связи с устройством
+interface DeviceConnectionStateObject {
+  hasConnectionDevice: boolean;
+  errorType?: string;
+  errorMessage?: string;
+}
+
+type DeviceConnectionListener = (state: DeviceConnectionStateObject) => void;
 
 /** Интерфейс для транспорта Modbus */
 export interface Transport {
@@ -124,6 +132,9 @@ export interface Transport {
   write(buffer: Uint8Array): Promise<void>;
   read(length: number, timeout?: number): Promise<Uint8Array>;
   flush?(): Promise<void>;
+  // Методы для работы с слушателем состояния связи с устройством
+  addDeviceConnectionListener(listener: DeviceConnectionListener): void;
+  removeDeviceConnectionListener(listener: DeviceConnectionListener): void;
 }
 
 // =============================================================================
