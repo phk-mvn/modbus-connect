@@ -5933,6 +5933,11 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.3.53 (2025-10-23)
+
+- Improved device connection state listener handling for `WebSerialTransports` and `NodeSerialTransports`
+- Improved the reconnect algorithm in conjunction with the device connection state listener
+
 ### 2.3.18 (2025-10-22)
 
 - Added many handlers for various Modbus errors

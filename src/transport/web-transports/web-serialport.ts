@@ -63,20 +63,84 @@ import {
   WebSerialTransportOptions,
 } from '../../types/modbus-types.js';
 
-const loggerInstance = new Logger();
+const WEB_SERIAL_CONSTANTS = {
+  MIN_BAUD_RATE: 300,
+  MAX_BAUD_RATE: 115200,
+  MAX_READ_BUFFER_SIZE: 65536,
+  POLL_INTERVAL_MS: 10,
+  VALID_BAUD_RATES: [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200] as const,
+} as const;
 
-// Настраиваем формат лога
+const loggerInstance = new Logger();
 loggerInstance.setLogFormat(['timestamp', 'level', 'logger']);
 loggerInstance.setCustomFormatter('logger', value => {
   return value ? `[${value}]` : '';
 });
-
 const logger = loggerInstance.createLogger('WebSerialTransport');
 logger.setLevel('info');
 
-// Типы для состояния связи с устройством
+const ERROR_HANDLERS: Record<string, () => void> = {
+  [ModbusTimeoutError.name]: () => logger.error('Timeout error detected'),
+  [ModbusCRCError.name]: () => logger.error('CRC error detected'),
+  [ModbusParityError.name]: () => logger.error('Parity error detected'),
+  [ModbusNoiseError.name]: () => logger.error('Noise error detected'),
+  [ModbusFramingError.name]: () => logger.error('Framing error detected'),
+  [ModbusOverrunError.name]: () => logger.error('Overrun error detected'),
+  [ModbusCollisionError.name]: () => logger.error('Collision error detected'),
+  [ModbusConfigError.name]: () => logger.error('Configuration error detected'),
+  [ModbusBaudRateError.name]: () => logger.error('Baud rate error detected'),
+  [ModbusSyncError.name]: () => logger.error('Sync error detected'),
+  [ModbusFrameBoundaryError.name]: () => logger.error('Frame boundary error detected'),
+  [ModbusLRCError.name]: () => logger.error('LRC error detected'),
+  [ModbusChecksumError.name]: () => logger.error('Checksum error detected'),
+  [ModbusDataConversionError.name]: () => logger.error('Data conversion error detected'),
+  [ModbusBufferOverflowError.name]: () => logger.error('Buffer overflow error detected'),
+  [ModbusBufferUnderrunError.name]: () => logger.error('Buffer underrun error detected'),
+  [ModbusMemoryError.name]: () => logger.error('Memory error detected'),
+  [ModbusStackOverflowError.name]: () => logger.error('Stack overflow error detected'),
+  [ModbusResponseError.name]: () => logger.error('Response error detected'),
+  [ModbusInvalidAddressError.name]: () => logger.error('Invalid address error detected'),
+  [ModbusInvalidFunctionCodeError.name]: () => logger.error('Invalid function code error detected'),
+  [ModbusInvalidQuantityError.name]: () => logger.error('Invalid quantity error detected'),
+  [ModbusIllegalDataAddressError.name]: () => logger.error('Illegal data address error detected'),
+  [ModbusIllegalDataValueError.name]: () => logger.error('Illegal data value error detected'),
+  [ModbusSlaveBusyError.name]: () => logger.error('Slave busy error detected'),
+  [ModbusAcknowledgeError.name]: () => logger.error('Acknowledge error detected'),
+  [ModbusSlaveDeviceFailureError.name]: () => logger.error('Slave device failure error detected'),
+  [ModbusMalformedFrameError.name]: () => logger.error('Malformed frame error detected'),
+  [ModbusInvalidFrameLengthError.name]: () => logger.error('Invalid frame length error detected'),
+  [ModbusInvalidTransactionIdError.name]: () =>
+    logger.error('Invalid transaction ID error detected'),
+  [ModbusUnexpectedFunctionCodeError.name]: () =>
+    logger.error('Unexpected function code error detected'),
+  [ModbusConnectionRefusedError.name]: () => logger.error('Connection refused error detected'),
+  [ModbusConnectionTimeoutError.name]: () => logger.error('Connection timeout error detected'),
+  [ModbusNotConnectedError.name]: () => logger.error('Not connected error detected'),
+  [ModbusAlreadyConnectedError.name]: () => logger.error('Already connected error detected'),
+  [ModbusInsufficientDataError.name]: () => logger.error('Insufficient data error detected'),
+  [ModbusGatewayPathUnavailableError.name]: () =>
+    logger.error('Gateway path unavailable error detected'),
+  [ModbusGatewayTargetDeviceError.name]: () => logger.error('Gateway target device error detected'),
+  [ModbusInvalidStartingAddressError.name]: () =>
+    logger.error('Invalid starting address error detected'),
+  [ModbusMemoryParityError.name]: () => logger.error('Memory parity error detected'),
+  [ModbusBroadcastError.name]: () => logger.error('Broadcast error detected'),
+  [ModbusGatewayBusyError.name]: () => logger.error('Gateway busy error detected'),
+  [ModbusDataOverrunError.name]: () => logger.error('Data overrun error detected'),
+  [ModbusTooManyEmptyReadsError.name]: () => logger.error('Too many empty reads error detected'),
+  [ModbusFlushError.name]: () => logger.error('Flush error detected'),
+  [WebSerialTransportError.name]: () => logger.error('WebSerial transport error detected'),
+  [WebSerialConnectionError.name]: () => logger.error('WebSerial connection error detected'),
+  [WebSerialReadError.name]: () => logger.error('WebSerial read error detected'),
+  [WebSerialWriteError.name]: () => logger.error('WebSerial write error detected'),
+};
+
+const handleModbusError = (err: Error): void => {
+  ERROR_HANDLERS[err.constructor.name]?.() || logger.error(`Unknown error: ${err.message}`);
+};
+
 interface DeviceConnectionStateObject {
-  slaveId: number; // Добавляем slaveId
+  slaveId: number;
   hasConnectionDevice: boolean;
   errorType?: string;
   errorMessage?: string;
@@ -110,9 +174,7 @@ class WebSerialTransport implements Transport {
   private _resolveConnection: (() => void) | null = null;
   private _rejectConnection: ((reason?: Error | string | null) => void) | null = null;
 
-  // Слушатели состояния связи с устройством
   private _deviceConnectionListeners: DeviceConnectionListener[] = [];
-  // Карта состояний для каждого slaveId
   private _deviceStates: Map<number, DeviceConnectionStateObject> = new Map();
 
   constructor(portFactory: () => Promise<WebSerialPort>, options: WebSerialTransportOptions = {}) {
@@ -138,16 +200,13 @@ class WebSerialTransport implements Transport {
     this._operationMutex = new Mutex();
   }
 
-  // Публичный метод для добавления слушателя состояния связи с устройством
   addDeviceConnectionListener(listener: DeviceConnectionListener): void {
     this._deviceConnectionListeners.push(listener);
-    // Вызываем слушатель для всех текущих состояний
     for (const state of this._deviceStates.values()) {
       listener(state);
     }
   }
 
-  // Публичный метод для удаления слушателя состояния связи с устройством
   removeDeviceConnectionListener(listener: DeviceConnectionListener): void {
     const index = this._deviceConnectionListeners.indexOf(listener);
     if (index !== -1) {
@@ -155,16 +214,13 @@ class WebSerialTransport implements Transport {
     }
   }
 
-  // Приватный метод для уведомления слушателей о смене состояния конкретного slaveId
   private _notifyDeviceConnectionListeners(
     slaveId: number,
     state: DeviceConnectionStateObject
   ): void {
-    // Обновляем состояние в карте
     this._deviceStates.set(slaveId, state);
     logger.debug(`Device connection state changed for slaveId ${slaveId}:`, state);
 
-    // Копируем массив слушателей, чтобы избежать проблем при изменении во время итерации
     const listeners = [...this._deviceConnectionListeners];
     for (const listener of listeners) {
       try {
@@ -177,7 +233,6 @@ class WebSerialTransport implements Transport {
     }
   }
 
-  // Приватный метод для создания объекта состояния подключения
   private _createState(
     slaveId: number,
     hasConnection: boolean,
@@ -201,8 +256,6 @@ class WebSerialTransport implements Transport {
     }
   }
 
-  // Метод для установки состояния устройства как подключенного
-  // Вызывается из ModbusClient при успешном обмене
   notifyDeviceConnected(slaveId: number): void {
     const currentState = this._deviceStates.get(slaveId);
     if (!currentState || !currentState.hasConnectionDevice) {
@@ -210,13 +263,55 @@ class WebSerialTransport implements Transport {
     }
   }
 
-  // Метод для установки состояния устройства как отключенного
-  // Вызывается из ModbusClient при ошибке обмена
   notifyDeviceDisconnected(slaveId: number, errorType?: string, errorMessage?: string): void {
     this._notifyDeviceConnectionListeners(
       slaveId,
       this._createState(slaveId, false, errorType, errorMessage)
     );
+  }
+
+  private async _releaseAllResources(hardClose = false): Promise<void> {
+    logger.debug('Releasing WebSerial resources');
+
+    this._readLoopActive = false;
+    if (this._readLoopAbortController) {
+      this._readLoopAbortController.abort();
+      this._readLoopAbortController = null;
+    }
+
+    if (this.reader) {
+      try {
+        await this.reader.cancel();
+        this.reader.releaseLock();
+      } catch (err: unknown) {
+        logger.debug('Error cancelling reader:', (err as Error).message);
+      }
+      this.reader = null;
+    }
+
+    if (this.writer) {
+      try {
+        this.writer.releaseLock();
+        await this.writer.close().catch(() => {});
+      } catch (err: unknown) {
+        logger.debug('Error releasing writer:', (err as Error).message);
+      }
+      this.writer = null;
+    }
+
+    if (hardClose && this.port) {
+      try {
+        await this.port.close();
+        logger.debug('Port closed successfully');
+      } catch (err: unknown) {
+        logger.warn(`Error closing port: ${(err as Error).message}`);
+      }
+      this.port = null;
+    }
+
+    this.isOpen = false;
+    this.readBuffer = allocUint8Array(0);
+    this._emptyReadCount = 0;
   }
 
   async connect(): Promise<void> {
@@ -247,8 +342,8 @@ class WebSerialTransport implements Transport {
       logger.debug('Requesting new SerialPort instance from factory...');
 
       if (this.port && this.isOpen) {
-        logger.warn('Closing existing port before reconnecting');
-        await this._forceCloseCurrentPort();
+        logger.debug('Closing existing port before reconnecting');
+        await this._releaseAllResources(true);
       }
 
       this.port = await this.portFactory();
@@ -259,10 +354,10 @@ class WebSerialTransport implements Transport {
       }
       logger.debug('New SerialPort instance acquired.');
 
-      this._cleanupResources();
-
-      // Validate port configuration
-      if (this.options.baudRate < 300 || this.options.baudRate > 115200) {
+      if (
+        this.options.baudRate < WEB_SERIAL_CONSTANTS.MIN_BAUD_RATE ||
+        this.options.baudRate > WEB_SERIAL_CONSTANTS.MAX_BAUD_RATE
+      ) {
         throw new ModbusConfigError(`Invalid baud rate: ${this.options.baudRate}`);
       }
 
@@ -280,7 +375,7 @@ class WebSerialTransport implements Transport {
       if (!readable || !writable) {
         const errorMsg = 'Serial port not readable/writable after open';
         logger.error(errorMsg);
-        await this._forceCloseCurrentPort();
+        await this._releaseAllResources(true);
         throw new WebSerialConnectionError(errorMsg);
       }
 
@@ -291,10 +386,6 @@ class WebSerialTransport implements Transport {
 
       this._startReading();
       logger.info('WebSerial port opened successfully with new instance');
-
-      // Уведомляем слушателей о подключении к порту (но не о связи с конкретными устройствами)
-      // Это может быть полезно, но не отражает состояние конкретных slaveId
-      // Можно добавить общее состояние порта, если нужно
 
       if (this._resolveConnection) {
         this._resolveConnection();
@@ -307,12 +398,6 @@ class WebSerialTransport implements Transport {
       logger.error(`Failed to open WebSerial port: ${(err as Error).message}`);
 
       this.isOpen = false;
-
-      if (err instanceof ModbusConfigError) {
-        logger.error('Configuration error during connection');
-      } else if (err instanceof WebSerialConnectionError) {
-        logger.error('Connection error during port opening');
-      }
 
       if (this._shouldReconnect && this._reconnectAttempts < this.options.maxReconnectAttempts) {
         logger.info('Auto-reconnect enabled, starting reconnect process...');
@@ -329,84 +414,6 @@ class WebSerialTransport implements Transport {
     } finally {
       this._isConnecting = false;
     }
-  }
-
-  private async _forceCloseCurrentPort(): Promise<void> {
-    if (!this.port) return;
-
-    logger.debug('Force closing current port...');
-
-    this._readLoopActive = false;
-    if (this._readLoopAbortController) {
-      this._readLoopAbortController.abort();
-      this._readLoopAbortController = null;
-    }
-
-    if (this.reader) {
-      try {
-        await this.reader.cancel();
-        this.reader.releaseLock();
-      } catch (err: unknown) {
-        logger.debug('Error cancelling reader:', (err as Error).message);
-      }
-      this.reader = null;
-    }
-
-    if (this.writer) {
-      try {
-        this.writer.releaseLock();
-        await this.writer.close().catch(() => {});
-      } catch (err: unknown) {
-        logger.debug('Error releasing writer:', (err as Error).message);
-      }
-      this.writer = null;
-    }
-
-    if (this.port && (this.port as WebSerialPort).opened) {
-      try {
-        await this.port.close();
-        logger.debug('Port closed successfully');
-      } catch (err: unknown) {
-        logger.warn(`Error closing port: ${(err as Error).message}`);
-      }
-    }
-
-    this.port = null;
-    this.isOpen = false;
-    this.readBuffer = allocUint8Array(0);
-  }
-
-  private _cleanupResources(): void {
-    logger.debug('Cleaning up WebSerial resources');
-
-    this._readLoopActive = false;
-    if (this._readLoopAbortController) {
-      this._readLoopAbortController.abort();
-      this._readLoopAbortController = null;
-    }
-
-    if (this.reader) {
-      try {
-        this.reader.cancel();
-        this.reader.releaseLock();
-      } catch (e: unknown) {
-        logger.debug('Error releasing reader:', (e as Error).message);
-      }
-      this.reader = null;
-    }
-
-    if (this.writer) {
-      try {
-        this.writer.releaseLock();
-      } catch (e: unknown) {
-        logger.debug('Error releasing writer:', (e as Error).message);
-      }
-      this.writer = null;
-    }
-
-    this.readBuffer = allocUint8Array(0);
-    this._readLoopActive = false;
-    this._emptyReadCount = 0;
   }
 
   private _startReading(): void {
@@ -440,20 +447,21 @@ class WebSerialTransport implements Transport {
             if (value && value.length > 0) {
               this._emptyReadCount = 0;
 
-              // Check for buffer overflow
-              if (this.readBuffer.length + value.length > 65536) {
-                // 64KB max buffer
+              if (
+                this.readBuffer.length + value.length >
+                WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE
+              ) {
                 logger.error('Buffer overflow detected');
-                throw new ModbusBufferOverflowError(this.readBuffer.length + value.length, 65536);
+                throw new ModbusBufferOverflowError(
+                  this.readBuffer.length + value.length,
+                  WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE
+                );
               }
 
               const newBuffer = new Uint8Array(this.readBuffer.length + value.length);
               newBuffer.set(this.readBuffer, 0);
               newBuffer.set(value, this.readBuffer.length);
               this.readBuffer = newBuffer;
-
-              // НЕ уведомляем о получении данных от устройства здесь
-              // Это делается на уровне клиента при успешной обработке ответа
             } else {
               this._emptyReadCount++;
               if (this._emptyReadCount >= this.options.maxEmptyReadsBeforeReconnect) {
@@ -473,7 +481,6 @@ class WebSerialTransport implements Transport {
             const error = readErr as Error;
             logger.warn(`Read operation error: ${error.message}`);
 
-            // Check for specific error types
             if (error.message.includes('parity') || error.message.includes('Parity')) {
               this._onError(new ModbusParityError(error.message));
             } else if (error.message.includes('frame') || error.message.includes('Framing')) {
@@ -497,7 +504,6 @@ class WebSerialTransport implements Transport {
           logger.error(`Unexpected error in read loop: ${(loopErr as Error).message}`);
           this._readLoopActive = false;
 
-          // Check for stack overflow
           if ((loopErr as Error).message.includes('stack')) {
             this._onError(new ModbusStackOverflowError((loopErr as Error).message));
           } else {
@@ -533,7 +539,6 @@ class WebSerialTransport implements Transport {
       throw new WebSerialWriteError('Port is closed or not ready for writing');
     }
 
-    // Check for buffer underrun
     if (buffer.length === 0) {
       throw new ModbusBufferUnderrunError(0, 1);
     }
@@ -547,22 +552,15 @@ class WebSerialTransport implements Transport {
       try {
         await this.writer.write(buffer);
         logger.debug(`Wrote ${buffer.length} bytes to WebSerial port`);
-
-        // НЕ уведомляем о связи с устройством при отправке запроса
-        // Связь устанавливается только при получении ответа от устройства
-        // Это делается на уровне клиента
       } catch (err: unknown) {
         if (abort.signal.aborted) {
           logger.warn(`Write timeout on WebSerial port`);
-          // Для таймаута также меняем состояние на отключено
           const timeoutError = new ModbusTimeoutError('Write timeout');
-          // НЕ уведомляем тут, т.к. не знаем slaveId
           this._onError(timeoutError);
           throw timeoutError;
         } else {
           logger.error(`Write error on WebSerial port: ${(err as Error).message}`);
 
-          // Check for specific error types
           if ((err as Error).message.includes('parity')) {
             this._onError(new ModbusParityError((err as Error).message));
             throw new ModbusParityError((err as Error).message);
@@ -594,6 +592,7 @@ class WebSerialTransport implements Transport {
     }
 
     const release = await this._operationMutex.acquire();
+    let emptyReadAttempts = 0;
     try {
       const start = Date.now();
 
@@ -608,24 +607,37 @@ class WebSerialTransport implements Transport {
             const data = this.readBuffer.slice(0, length);
             this.readBuffer = this.readBuffer.slice(length);
             logger.debug(`Read ${length} bytes from WebSerial port`);
+            emptyReadAttempts = 0;
 
-            // Validate data integrity
             if (data.length !== length) {
               return reject(new ModbusInsufficientDataError(data.length, length));
             }
 
-            // НЕ уведомляем тут, т.к. не знаем slaveId
-            // Это делается на уровне клиента при успешной обработке ответа
-
             return resolve(data);
+          }
+
+          if (this.readBuffer.length === 0) {
+            emptyReadAttempts++;
+            if (emptyReadAttempts >= 3) {
+              logger.debug('Scheduling auto-reconnect - 3 empty reads detected', {
+                timeout,
+                emptyAttempts: emptyReadAttempts,
+              });
+              emptyReadAttempts = 0;
+
+              this._scheduleReconnect(new ModbusTooManyEmptyReadsError('3 empty reads in read()'));
+            }
+          } else {
+            emptyReadAttempts = 0;
           }
 
           if (Date.now() - start > timeout) {
             logger.warn(`Read timeout on WebSerial port`);
+            this.flush().catch(() => {});
             return reject(new ModbusTimeoutError('Read timeout'));
           }
 
-          setTimeout(check, 10);
+          setTimeout(check, WEB_SERIAL_CONSTANTS.POLL_INTERVAL_MS);
         };
         check();
       });
@@ -645,19 +657,7 @@ class WebSerialTransport implements Transport {
         this._reconnectTimer = null;
       }
 
-      this._readLoopActive = false;
-      this._cleanupResources();
-
-      if (this.port) {
-        try {
-          logger.debug('Closing port...');
-          await (this.port as WebSerialPort).close();
-          logger.debug('Port closed successfully.');
-        } catch (err: unknown) {
-          logger.warn(`Error closing port (might be already closed): ${(err as Error).message}`);
-        }
-        this.port = null;
-      }
+      await this._releaseAllResources(true);
 
       if (this._rejectConnection) {
         this._rejectConnection(new WebSerialConnectionError('Connection manually disconnected'));
@@ -665,9 +665,6 @@ class WebSerialTransport implements Transport {
         this._rejectConnection = null;
       }
 
-      this.isOpen = false;
-
-      // Очищаем все состояния устройств при отключении порта
       for (const [slaveId] of this._deviceStates) {
         this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
       }
@@ -713,6 +710,11 @@ class WebSerialTransport implements Transport {
     return flushPromise;
   }
 
+  private _onError(err: Error): void {
+    handleModbusError(err);
+    this._handleConnectionLoss(`Error: ${err.message}`);
+  }
+
   private _handleConnectionLoss(reason: string): void {
     if (!this.isOpen && !this._isConnecting) return;
 
@@ -721,9 +723,6 @@ class WebSerialTransport implements Transport {
     this.isOpen = false;
     this._readLoopActive = false;
 
-    this._cleanupResources();
-
-    // Очищаем все состояния устройств при потере связи с портом
     for (const [slaveId] of this._deviceStates) {
       this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
     }
@@ -734,171 +733,9 @@ class WebSerialTransport implements Transport {
     }
   }
 
-  private _onError(err: Error): void {
-    logger.error(`WebSerial port error: ${err.message}`);
-
-    // Определяем тип ошибки для отображения
-    let errorType = 'unknown';
-    let errorMessage = err.message;
-
-    // Handle specific error types
-    if (err instanceof ModbusCRCError) {
-      errorType = 'ModbusCRCError';
-      logger.error('CRC error detected');
-    } else if (err instanceof ModbusParityError) {
-      errorType = 'ModbusParityError';
-      logger.error('Parity error detected');
-    } else if (err instanceof ModbusNoiseError) {
-      errorType = 'ModbusNoiseError';
-      logger.error('Noise error detected');
-    } else if (err instanceof ModbusFramingError) {
-      errorType = 'ModbusFramingError';
-      logger.error('Framing error detected');
-    } else if (err instanceof ModbusOverrunError) {
-      errorType = 'ModbusOverrunError';
-      logger.error('Overrun error detected');
-    } else if (err instanceof ModbusCollisionError) {
-      errorType = 'ModbusCollisionError';
-      logger.error('Collision error detected');
-    } else if (err instanceof ModbusConfigError) {
-      errorType = 'ModbusConfigError';
-      logger.error('Configuration error detected');
-    } else if (err instanceof ModbusBaudRateError) {
-      errorType = 'ModbusBaudRateError';
-      logger.error('Baud rate error detected');
-    } else if (err instanceof ModbusSyncError) {
-      errorType = 'ModbusSyncError';
-      logger.error('Sync error detected');
-    } else if (err instanceof ModbusFrameBoundaryError) {
-      errorType = 'ModbusFrameBoundaryError';
-      logger.error('Frame boundary error detected');
-    } else if (err instanceof ModbusLRCError) {
-      errorType = 'ModbusLRCError';
-      logger.error('LRC error detected');
-    } else if (err instanceof ModbusChecksumError) {
-      errorType = 'ModbusChecksumError';
-      logger.error('Checksum error detected');
-    } else if (err instanceof ModbusDataConversionError) {
-      errorType = 'ModbusDataConversionError';
-      logger.error('Data conversion error detected');
-    } else if (err instanceof ModbusBufferOverflowError) {
-      errorType = 'ModbusBufferOverflowError';
-      logger.error('Buffer overflow error detected');
-    } else if (err instanceof ModbusBufferUnderrunError) {
-      errorType = 'ModbusBufferUnderrunError';
-      logger.error('Buffer underrun error detected');
-    } else if (err instanceof ModbusMemoryError) {
-      errorType = 'ModbusMemoryError';
-      logger.error('Memory error detected');
-    } else if (err instanceof ModbusStackOverflowError) {
-      errorType = 'ModbusStackOverflowError';
-      logger.error('Stack overflow error detected');
-    } else if (err instanceof ModbusResponseError) {
-      errorType = 'ModbusResponseError';
-      logger.error('Response error detected');
-    } else if (err instanceof ModbusInvalidAddressError) {
-      errorType = 'ModbusInvalidAddressError';
-      logger.error('Invalid address error detected');
-    } else if (err instanceof ModbusInvalidFunctionCodeError) {
-      errorType = 'ModbusInvalidFunctionCodeError';
-      logger.error('Invalid function code error detected');
-    } else if (err instanceof ModbusInvalidQuantityError) {
-      errorType = 'ModbusInvalidQuantityError';
-      logger.error('Invalid quantity error detected');
-    } else if (err instanceof ModbusIllegalDataAddressError) {
-      errorType = 'ModbusIllegalDataAddressError';
-      logger.error('Illegal data address error detected');
-    } else if (err instanceof ModbusIllegalDataValueError) {
-      errorType = 'ModbusIllegalDataValueError';
-      logger.error('Illegal data value error detected');
-    } else if (err instanceof ModbusSlaveBusyError) {
-      errorType = 'ModbusSlaveBusyError';
-      logger.error('Slave busy error detected');
-    } else if (err instanceof ModbusAcknowledgeError) {
-      errorType = 'ModbusAcknowledgeError';
-      logger.error('Acknowledge error detected');
-    } else if (err instanceof ModbusSlaveDeviceFailureError) {
-      errorType = 'ModbusSlaveDeviceFailureError';
-      logger.error('Slave device failure error detected');
-    } else if (err instanceof ModbusMalformedFrameError) {
-      errorType = 'ModbusMalformedFrameError';
-      logger.error('Malformed frame error detected');
-    } else if (err instanceof ModbusInvalidFrameLengthError) {
-      errorType = 'ModbusInvalidFrameLengthError';
-      logger.error('Invalid frame length error detected');
-    } else if (err instanceof ModbusInvalidTransactionIdError) {
-      errorType = 'ModbusInvalidTransactionIdError';
-      logger.error('Invalid transaction ID error detected');
-    } else if (err instanceof ModbusUnexpectedFunctionCodeError) {
-      errorType = 'ModbusUnexpectedFunctionCodeError';
-      logger.error('Unexpected function code error detected');
-    } else if (err instanceof ModbusConnectionRefusedError) {
-      errorType = 'ModbusConnectionRefusedError';
-      logger.error('Connection refused error detected');
-    } else if (err instanceof ModbusConnectionTimeoutError) {
-      errorType = 'ModbusConnectionTimeoutError';
-      logger.error('Connection timeout error detected');
-    } else if (err instanceof ModbusNotConnectedError) {
-      errorType = 'ModbusNotConnectedError';
-      logger.error('Not connected error detected');
-    } else if (err instanceof ModbusAlreadyConnectedError) {
-      errorType = 'ModbusAlreadyConnectedError';
-      logger.error('Already connected error detected');
-    } else if (err instanceof ModbusInsufficientDataError) {
-      errorType = 'ModbusInsufficientDataError';
-      logger.error('Insufficient data error detected');
-    } else if (err instanceof ModbusGatewayPathUnavailableError) {
-      errorType = 'ModbusGatewayPathUnavailableError';
-      logger.error('Gateway path unavailable error detected');
-    } else if (err instanceof ModbusGatewayTargetDeviceError) {
-      errorType = 'ModbusGatewayTargetDeviceError';
-      logger.error('Gateway target device error detected');
-    } else if (err instanceof ModbusInvalidStartingAddressError) {
-      errorType = 'ModbusInvalidStartingAddressError';
-      logger.error('Invalid starting address error detected');
-    } else if (err instanceof ModbusMemoryParityError) {
-      errorType = 'ModbusMemoryParityError';
-      logger.error('Memory parity error detected');
-    } else if (err instanceof ModbusBroadcastError) {
-      errorType = 'ModbusBroadcastError';
-      logger.error('Broadcast error detected');
-    } else if (err instanceof ModbusGatewayBusyError) {
-      errorType = 'ModbusGatewayBusyError';
-      logger.error('Gateway busy error detected');
-    } else if (err instanceof ModbusDataOverrunError) {
-      errorType = 'ModbusDataOverrunError';
-      logger.error('Data overrun error detected');
-    } else if (err instanceof ModbusTooManyEmptyReadsError) {
-      errorType = 'ModbusTooManyEmptyReadsError';
-      logger.error('Too many empty reads error detected');
-    } else if (err instanceof ModbusFlushError) {
-      errorType = 'ModbusFlushError';
-      logger.error('Flush error detected');
-    } else if (err instanceof WebSerialTransportError) {
-      errorType = 'WebSerialTransportError';
-      logger.error('WebSerial transport error detected');
-    } else if (err instanceof WebSerialConnectionError) {
-      errorType = 'WebSerialConnectionError';
-      logger.error('WebSerial connection error detected');
-    } else if (err instanceof WebSerialReadError) {
-      errorType = 'WebSerialReadError';
-      logger.error('WebSerial read error detected');
-    } else if (err instanceof WebSerialWriteError) {
-      errorType = 'WebSerialWriteError';
-      logger.error('WebSerial write error detected');
-    }
-
-    // Уведомляем слушателей об ошибке связи с устройством
-    // НЕ уведомляем тут, т.к. не знаем slaveId
-    // Это делается на уровне клиента при обработке ошибки
-
-    this._handleConnectionLoss(`Error: ${err.message}`);
-  }
-
   private _onClose(): void {
     logger.info(`WebSerial port closed`);
 
-    // Очищаем все состояния устройств при закрытии порта
     for (const [slaveId] of this._deviceStates) {
       this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
     }
@@ -931,7 +768,6 @@ class WebSerialTransport implements Transport {
       }
       this._shouldReconnect = false;
 
-      // Очищаем все состояния устройств при достижении максимального количества попыток
       for (const [slaveId] of this._deviceStates) {
         this._notifyDeviceConnectionListeners(
           slaveId,
@@ -956,7 +792,7 @@ class WebSerialTransport implements Transport {
   private async _attemptReconnect(): Promise<void> {
     try {
       if (this.port && this.isOpen) {
-        await this._forceCloseCurrentPort();
+        await this._releaseAllResources(true);
       }
 
       this.port = await this.portFactory();
@@ -965,8 +801,6 @@ class WebSerialTransport implements Transport {
           'Port factory did not return a valid SerialPort object.'
         );
       }
-
-      this._cleanupResources();
 
       await this.port.open({
         baudRate: this.options.baudRate,
@@ -991,8 +825,6 @@ class WebSerialTransport implements Transport {
       this._startReading();
       logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
 
-      // Очищаем все состояния устройств при успешном переподключении
-      // Они будут восстановлены при следующих обменах
       this._deviceStates.clear();
 
       if (this._resolveConnection) {
@@ -1021,7 +853,6 @@ class WebSerialTransport implements Transport {
         }
         this._shouldReconnect = false;
 
-        // Очищаем все состояния устройств при достижении максимального количества попыток
         for (const [slaveId] of this._deviceStates) {
           this._notifyDeviceConnectionListeners(
             slaveId,
@@ -1053,26 +884,16 @@ class WebSerialTransport implements Transport {
     }
 
     this._readLoopActive = false;
-    this._cleanupResources();
+    this._releaseAllResources(true).catch(() => {});
 
-    if (this.port) {
-      try {
-        (this.port as WebSerialPort).close().catch(() => {});
-      } catch (err: unknown) {
-        logger.debug('Error closing port during destroy:', (err as Error).message);
-      }
-      this.port = null;
-    }
-
-    this.isOpen = false;
-    this._isConnecting = false;
-    this._isDisconnecting = false;
-
-    // Очищаем все состояния устройств при уничтожении транспорта
     for (const [slaveId] of this._deviceStates) {
       this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
     }
     this._deviceStates.clear();
+
+    this.isOpen = false;
+    this._isConnecting = false;
+    this._isDisconnecting = false;
   }
 }
 

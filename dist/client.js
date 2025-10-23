@@ -511,19 +511,22 @@ class ModbusClient {
           const elapsed = Date.now() - startTime;
           const isFlushedError = err instanceof import_errors.ModbusFlushError;
           const errorCode = err instanceof Error && err.message.toLowerCase().includes("timeout") ? "timeout" : err instanceof Error && err.message.toLowerCase().includes("crc") ? "crc" : err instanceof import_errors.ModbusExceptionError ? "modbus-exception" : null;
-          if (this.transport.notifyDeviceDisconnected) {
-            let errorType = "unknown";
+          const isCriticalError = err instanceof import_errors.ModbusTimeoutError || err instanceof import_errors.ModbusConnectionTimeoutError || err instanceof import_errors.ModbusNotConnectedError || err instanceof import_errors.ModbusConnectionRefusedError;
+          if (isCriticalError && this.transport.notifyDeviceDisconnected) {
+            let errorType = err.constructor.name;
             let errorMessage = err instanceof Error ? err.message : String(err);
-            if (err instanceof import_errors.ModbusTimeoutError) {
-              errorType = "ModbusTimeoutError";
-            } else if (err instanceof import_errors.ModbusCRCError) {
-              errorType = "ModbusCRCError";
-            } else if (err instanceof import_errors.ModbusExceptionError) {
-              errorType = "ModbusException";
-            } else if (err instanceof Error) {
-              errorType = err.constructor.name;
-            }
             this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+            if (this.transport.flush) {
+              try {
+                await this.transport.flush();
+                logger.debug("Transport flushed after critical error", { slaveId });
+              } catch (flushErr) {
+                logger.warn("Failed to flush transport after error", {
+                  slaveId,
+                  flushError: flushErr
+                });
+              }
+            }
           }
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordError(err instanceof Error ? err : new Error(String(err)), {
@@ -562,6 +565,9 @@ class ModbusClient {
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
             }
+            if (this.transport.notifyDeviceConnected) {
+              this.transport.notifyDeviceConnected(slaveId);
+            }
             return void 0;
           }
           if (attempt < this.retryCount) {
@@ -580,6 +586,19 @@ class ModbusClient {
             }
             await new Promise((resolve) => setTimeout(resolve, delay));
           } else {
+            if (!isCriticalError && this.transport.notifyDeviceDisconnected) {
+              let errorType = err.constructor.name;
+              let errorMessage = err instanceof Error ? err.message : String(err);
+              this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+            }
+            if (this.transport.flush) {
+              try {
+                await this.transport.flush();
+                logger.debug("Final transport flush after all retries failed", { slaveId });
+              } catch (flushErr) {
+                logger.warn("Failed to final flush transport", { slaveId, flushError: flushErr });
+              }
+            }
             logger.error(`All ${this.retryCount + 1} attempts exhausted`, {
               error: lastError,
               slaveId,

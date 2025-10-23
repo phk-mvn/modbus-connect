@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "2.3.18",
+  "version": "2.3.53",
   "description": "Modbus RTU over Web Serial and Node.js SerialPort",
   "main": "./client.js",
   "type": "commonjs",

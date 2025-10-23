@@ -59,9 +59,89 @@ import {
 } from '../../errors.js';
 import { Transport, NodeSerialTransportOptions } from '../../types/modbus-types.js';
 
+// ========== CONSTANTS ==========
+const NODE_SERIAL_CONSTANTS = {
+  MIN_BAUD_RATE: 300,
+  MAX_BAUD_RATE: 115200,
+  DEFAULT_MAX_BUFFER_SIZE: 4096,
+  POLL_INTERVAL_MS: 10,
+  VALID_BAUD_RATES: [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200] as const,
+} as const;
+
+// ========== ERROR HANDLERS ==========
+const loggerInstance = new Logger();
+loggerInstance.setLogFormat(['timestamp', 'level', 'logger']);
+loggerInstance.setCustomFormatter('logger', (value: unknown) => {
+  return typeof value === 'string' ? `[${value}]` : '';
+});
+const logger = loggerInstance.createLogger('NodeSerialTransport');
+logger.setLevel('info');
+
+const ERROR_HANDLERS: Record<string, () => void> = {
+  [ModbusTimeoutError.name]: () => logger.error('Timeout error detected'),
+  [ModbusCRCError.name]: () => logger.error('CRC error detected'),
+  [ModbusParityError.name]: () => logger.error('Parity error detected'),
+  [ModbusNoiseError.name]: () => logger.error('Noise error detected'),
+  [ModbusFramingError.name]: () => logger.error('Framing error detected'),
+  [ModbusOverrunError.name]: () => logger.error('Overrun error detected'),
+  [ModbusCollisionError.name]: () => logger.error('Collision error detected'),
+  [ModbusConfigError.name]: () => logger.error('Configuration error detected'),
+  [ModbusBaudRateError.name]: () => logger.error('Baud rate error detected'),
+  [ModbusSyncError.name]: () => logger.error('Sync error detected'),
+  [ModbusFrameBoundaryError.name]: () => logger.error('Frame boundary error detected'),
+  [ModbusLRCError.name]: () => logger.error('LRC error detected'),
+  [ModbusChecksumError.name]: () => logger.error('Checksum error detected'),
+  [ModbusDataConversionError.name]: () => logger.error('Data conversion error detected'),
+  [ModbusBufferOverflowError.name]: () => logger.error('Buffer overflow error detected'),
+  [ModbusBufferUnderrunError.name]: () => logger.error('Buffer underrun error detected'),
+  [ModbusMemoryError.name]: () => logger.error('Memory error detected'),
+  [ModbusStackOverflowError.name]: () => logger.error('Stack overflow error detected'),
+  [ModbusResponseError.name]: () => logger.error('Response error detected'),
+  [ModbusInvalidAddressError.name]: () => logger.error('Invalid address error detected'),
+  [ModbusInvalidFunctionCodeError.name]: () => logger.error('Invalid function code error detected'),
+  [ModbusInvalidQuantityError.name]: () => logger.error('Invalid quantity error detected'),
+  [ModbusIllegalDataAddressError.name]: () => logger.error('Illegal data address error detected'),
+  [ModbusIllegalDataValueError.name]: () => logger.error('Illegal data value error detected'),
+  [ModbusSlaveBusyError.name]: () => logger.error('Slave busy error detected'),
+  [ModbusAcknowledgeError.name]: () => logger.error('Acknowledge error detected'),
+  [ModbusSlaveDeviceFailureError.name]: () => logger.error('Slave device failure error detected'),
+  [ModbusMalformedFrameError.name]: () => logger.error('Malformed frame error detected'),
+  [ModbusInvalidFrameLengthError.name]: () => logger.error('Invalid frame length error detected'),
+  [ModbusInvalidTransactionIdError.name]: () =>
+    logger.error('Invalid transaction ID error detected'),
+  [ModbusUnexpectedFunctionCodeError.name]: () =>
+    logger.error('Unexpected function code error detected'),
+  [ModbusConnectionRefusedError.name]: () => logger.error('Connection refused error detected'),
+  [ModbusConnectionTimeoutError.name]: () => logger.error('Connection timeout error detected'),
+  [ModbusNotConnectedError.name]: () => logger.error('Not connected error detected'),
+  [ModbusAlreadyConnectedError.name]: () => logger.error('Already connected error detected'),
+  [ModbusInsufficientDataError.name]: () => logger.error('Insufficient data error detected'),
+  [ModbusGatewayPathUnavailableError.name]: () =>
+    logger.error('Gateway path unavailable error detected'),
+  [ModbusGatewayTargetDeviceError.name]: () => logger.error('Gateway target device error detected'),
+  [ModbusInvalidStartingAddressError.name]: () =>
+    logger.error('Invalid starting address error detected'),
+  [ModbusMemoryParityError.name]: () => logger.error('Memory parity error detected'),
+  [ModbusBroadcastError.name]: () => logger.error('Broadcast error detected'),
+  [ModbusGatewayBusyError.name]: () => logger.error('Gateway busy error detected'),
+  [ModbusDataOverrunError.name]: () => logger.error('Data overrun error detected'),
+  [ModbusInterFrameTimeoutError.name]: () => logger.error('Inter-frame timeout error detected'),
+  [ModbusSilentIntervalError.name]: () => logger.error('Silent interval error detected'),
+  [ModbusTooManyEmptyReadsError.name]: () => logger.error('Too many empty reads error detected'),
+  [ModbusFlushError.name]: () => logger.error('Flush error detected'),
+  [NodeSerialTransportError.name]: () => logger.error('NodeSerial transport error detected'),
+  [NodeSerialConnectionError.name]: () => logger.error('NodeSerial connection error detected'),
+  [NodeSerialReadError.name]: () => logger.error('NodeSerial read error detected'),
+  [NodeSerialWriteError.name]: () => logger.error('NodeSerial write error detected'),
+};
+
+const handleModbusError = (err: Error): void => {
+  ERROR_HANDLERS[err.constructor.name]?.() || logger.error(`Unknown error: ${err.message}`);
+};
+
 // Типы для состояния связи с устройством
 interface DeviceConnectionStateObject {
-  slaveId: number; // Добавляем slaveId
+  slaveId: number;
   hasConnectionDevice: boolean;
   errorType?: string;
   errorMessage?: string;
@@ -74,15 +154,6 @@ interface ExtendedTransport extends Transport {
   notifyDeviceConnected?(slaveId: number): void;
   notifyDeviceDisconnected?(slaveId: number, errorType?: string, errorMessage?: string): void;
 }
-
-// Инициализация логгера
-const loggerInstance = new Logger();
-loggerInstance.setLogFormat(['timestamp', 'level', 'logger']);
-loggerInstance.setCustomFormatter('logger', (value: unknown) => {
-  return typeof value === 'string' ? `[${value}]` : '';
-});
-const logger = loggerInstance.createLogger('NodeSerialTransport');
-logger.setLevel('info');
 
 /**
  * Реализация транспорта для работы с последовательным портом через библиотеку `serialport`.
@@ -125,7 +196,7 @@ class NodeSerialTransport implements ExtendedTransport {
       parity: 'none',
       readTimeout: 1000,
       writeTimeout: 1000,
-      maxBufferSize: 4096,
+      maxBufferSize: NODE_SERIAL_CONSTANTS.DEFAULT_MAX_BUFFER_SIZE,
       reconnectInterval: 3000,
       maxReconnectAttempts: Infinity,
       ...options,
@@ -227,6 +298,26 @@ class NodeSerialTransport implements ExtendedTransport {
     );
   }
 
+  // ========== ЕДИНЫЙ МЕТОД ОЧИСТКИ ==========
+  private async _releaseAllResources(): Promise<void> {
+    logger.debug('Releasing NodeSerial resources');
+
+    this._removeAllListeners();
+
+    if (this.port && this.port.isOpen) {
+      await new Promise<void>(resolve => {
+        this.port!.close(() => {
+          logger.debug('Port closed successfully');
+          resolve();
+        });
+      });
+    }
+
+    this.port = null;
+    this.isOpen = false;
+    this.readBuffer = allocUint8Array(0);
+  }
+
   /**
    * Устанавливает соединение с последовательным портом.
    * @throws NodeSerialConnectionError - Если не удалось открыть порт или превышено количество попыток подключения.
@@ -258,30 +349,20 @@ class NodeSerialTransport implements ExtendedTransport {
       }
 
       if (this.port && this.port.isOpen) {
-        logger.warn(`Closing existing port before reconnecting to ${this.path}`);
-        await new Promise<void>((resolve, reject) => {
-          this.port?.close(err => {
-            if (err) {
-              logger.error(`Error closing existing port: ${err.message}`);
-              reject(err);
-            } else {
-              resolve();
-            }
-          });
-        });
+        logger.debug(`Closing existing port before reconnecting to ${this.path}`);
+        await this._releaseAllResources();
       }
 
       // Validate port configuration
-      if (this.options.baudRate < 300 || this.options.baudRate > 115200) {
+      if (
+        this.options.baudRate < NODE_SERIAL_CONSTANTS.MIN_BAUD_RATE ||
+        this.options.baudRate > NODE_SERIAL_CONSTANTS.MAX_BAUD_RATE
+      ) {
         throw new ModbusConfigError(`Invalid baud rate: ${this.options.baudRate}`);
       }
 
       await this._createAndOpenPort();
       logger.info(`Serial port ${this.path} opened`);
-
-      // Уведомляем слушателей о подключении к порту (но не о связи с конкретными устройствами)
-      // Это может быть полезно, но не отражает состояние конкретных slaveId
-      // Можно добавить общее состояние порта, если нужно
 
       if (this._resolveConnection) {
         this._resolveConnection();
@@ -301,8 +382,6 @@ class NodeSerialTransport implements ExtendedTransport {
       }
 
       // Уведомляем слушателей об ошибке подключения
-      // Это может быть общая ошибка порта, не связанная с конкретным slaveId
-      // Для каждого отслеживаемого slaveId устанавливаем состояние "отключен"
       for (const [slaveId] of this._deviceStates) {
         this._notifyDeviceConnectionListeners(
           slaveId,
@@ -470,7 +549,6 @@ class NodeSerialTransport implements ExtendedTransport {
   private _onClose(): void {
     logger.info(`Serial port ${this.path} closed`);
     this.isOpen = false;
-    this._removeAllListeners();
 
     // Очищаем все состояния устройств при закрытии порта
     for (const [slaveId] of this._deviceStates) {
@@ -513,7 +591,6 @@ class NodeSerialTransport implements ExtendedTransport {
 
       // Очищаем все состояния устройств при достижении максимального количества попыток
       for (const [slaveId] of this._deviceStates) {
-        // Создаем переменную maxAttemptsError перед использованием
         const maxAttemptsError = new NodeSerialConnectionError(
           `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
         );
@@ -543,9 +620,7 @@ class NodeSerialTransport implements ExtendedTransport {
   private async _attemptReconnect(): Promise<void> {
     try {
       if (this.port && this.port.isOpen) {
-        await new Promise<void>(resolve => {
-          this.port?.close(() => resolve());
-        });
+        await this._releaseAllResources();
       }
       await this._createAndOpenPort();
       logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
@@ -584,7 +659,6 @@ class NodeSerialTransport implements ExtendedTransport {
 
         // Очищаем все состояния устройств при достижении максимального количества попыток
         for (const [slaveId] of this._deviceStates) {
-          // Создаем переменную maxAttemptsError перед использованием
           const maxAttemptsError = new NodeSerialConnectionError(
             `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
           );
@@ -656,17 +730,14 @@ class NodeSerialTransport implements ExtendedTransport {
             // Check for specific error types
             if (err.message.includes('parity')) {
               const parityError = new ModbusParityError(err.message);
-              // НЕ уведомляем тут, т.к. не знаем slaveId
               this._handleError(parityError);
               return reject(parityError);
             } else if (err.message.includes('collision')) {
               const collisionError = new ModbusCollisionError(err.message);
-              // НЕ уведомляем тут, т.к. не знаем slaveId
               this._handleError(collisionError);
               return reject(collisionError);
             } else {
               const writeError = new NodeSerialWriteError(err.message);
-              // НЕ уведомляем тут, т.к. не знаем slaveId
               this._handleError(writeError);
               return reject(writeError);
             }
@@ -675,7 +746,7 @@ class NodeSerialTransport implements ExtendedTransport {
             if (drainErr) {
               logger.info(`Drain error on port ${this.path}: ${drainErr.message}`);
               const drainError = new NodeSerialWriteError(drainErr.message);
-              // НЕ уведомляем тут, т.к. не знаем slaveId
+              this._handleError(drainError);
               return reject(drainError);
             }
             // НЕ уведомляем о связи при отправке запроса - связь устанавливается только при получении ответа
@@ -703,30 +774,29 @@ class NodeSerialTransport implements ExtendedTransport {
 
     const start = Date.now();
     const release = await this._operationMutex.acquire();
+    let emptyReadAttempts = 0;
     try {
       return await new Promise<Uint8Array>((resolve, reject) => {
         const checkData = () => {
           if (!this.isOpen || !this.port || !this.port.isOpen) {
             logger.info('Read operation interrupted: port is not open');
             const readError = new NodeSerialReadError('Port is closed');
-            // НЕ уведомляем тут, т.к. не знаем slaveId
             return reject(readError);
           }
           if (this._isFlushing) {
             logger.info('Read operation interrupted by flush');
             const flushError = new ModbusFlushError();
-            // НЕ уведомляем тут, т.к. не знаем slaveId
             return reject(flushError);
           }
           if (this.readBuffer.length >= length) {
             const data = sliceUint8Array(this.readBuffer, 0, length);
             this.readBuffer = sliceUint8Array(this.readBuffer, length);
             logger.trace(`Read ${length} bytes from ${this.path}`);
+            emptyReadAttempts = 0;
 
             // Validate data integrity
             if (data.length !== length) {
               const insufficientDataError = new ModbusInsufficientDataError(data.length, length);
-              // НЕ уведомляем тут, т.к. не знаем slaveId
               return reject(insufficientDataError);
             }
 
@@ -735,13 +805,34 @@ class NodeSerialTransport implements ExtendedTransport {
 
             return resolve(data);
           }
+
+          if (this.readBuffer.length === 0) {
+            emptyReadAttempts++;
+            if (emptyReadAttempts >= 3) {
+              logger.debug('Auto-reconnecting NodeSerialTransport - 3 empty reads detected', {
+                path: this.path,
+                timeout,
+                emptyAttempts: emptyReadAttempts,
+              });
+              emptyReadAttempts = 0;
+
+              this.connect().catch(reconnectErr => {
+                logger.error('Auto-reconnect failed during read', {
+                  path: this.path,
+                  error: reconnectErr,
+                });
+              });
+            }
+          } else {
+            emptyReadAttempts = 0;
+          }
+
           if (Date.now() - start > timeout) {
             logger.warn(`Read timeout on NodeSerial port`);
             const timeoutError = new ModbusTimeoutError('Read timeout');
-            // НЕ уведомляем тут, т.к. не знаем slaveId
             return reject(timeoutError);
           }
-          setTimeout(checkData, 10);
+          setTimeout(checkData, NODE_SERIAL_CONSTANTS.POLL_INTERVAL_MS);
         };
         checkData();
       });
@@ -777,12 +868,19 @@ class NodeSerialTransport implements ExtendedTransport {
       return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
-      this._removeAllListeners();
-      this.port!.close(err => {
-        this._isDisconnecting = false;
-        this.isOpen = false;
-        if (err) {
-          logger.error(`Error closing port ${this.path}: ${err.message}`);
+      this._releaseAllResources()
+        .then(() => {
+          this._isDisconnecting = false;
+          logger.info(`Serial port ${this.path} closed`);
+          // Очищаем все состояния устройств при успешном закрытии порта
+          for (const [slaveId] of this._deviceStates) {
+            this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+          }
+          this._deviceStates.clear();
+          resolve();
+        })
+        .catch(err => {
+          this._isDisconnecting = false;
           const closeError = new NodeSerialConnectionError(err.message);
           // Очищаем все состояния устройств при ошибке закрытия порта
           for (const [slaveId] of this._deviceStates) {
@@ -792,16 +890,8 @@ class NodeSerialTransport implements ExtendedTransport {
             );
           }
           this._deviceStates.clear();
-          return reject(closeError);
-        }
-        logger.info(`Serial port ${this.path} closed`);
-        // Очищаем все состояния устройств при успешном закрытии порта
-        for (const [slaveId] of this._deviceStates) {
-          this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
-        }
-        this._deviceStates.clear();
-        resolve();
-      });
+          reject(closeError);
+        });
     });
   }
 
@@ -819,19 +909,8 @@ class NodeSerialTransport implements ExtendedTransport {
       this._resolveConnection = null;
       this._rejectConnection = null;
     }
-    if (this.port && this.port.isOpen) {
-      try {
-        this._removeAllListeners();
-        this.port.close(() => {
-          logger.info(`Port ${this.path} destroyed`);
-        });
-      } catch (err: unknown) {
-        const error = err instanceof Error ? err : new NodeSerialTransportError(String(err));
-        logger.error(`Error destroying port ${this.path}: ${error.message}`);
-      }
-    }
-    this.isOpen = false;
-    this.port = null;
+
+    this._releaseAllResources().catch(() => {});
 
     // Очищаем все состояния устройств при уничтожении транспорта
     for (const [slaveId] of this._deviceStates) {
@@ -840,173 +919,8 @@ class NodeSerialTransport implements ExtendedTransport {
     this._deviceStates.clear();
   }
 
-  /**
-   * Обрабатывает ошибки и логирует их.
-   * @private
-   * @param err - Ошибка для обработки.
-   */
   private _handleError(err: Error): void {
-    logger.error(`NodeSerial port error: ${err.message}`);
-
-    // Определяем тип ошибки для отображения
-    let errorType = 'unknown';
-    let errorMessage = err.message;
-
-    // Handle specific error types
-    if (err instanceof ModbusCRCError) {
-      errorType = 'ModbusCRCError';
-      logger.error('CRC error detected');
-    } else if (err instanceof ModbusParityError) {
-      errorType = 'ModbusParityError';
-      logger.error('Parity error detected');
-    } else if (err instanceof ModbusNoiseError) {
-      errorType = 'ModbusNoiseError';
-      logger.error('Noise error detected');
-    } else if (err instanceof ModbusFramingError) {
-      errorType = 'ModbusFramingError';
-      logger.error('Framing error detected');
-    } else if (err instanceof ModbusOverrunError) {
-      errorType = 'ModbusOverrunError';
-      logger.error('Overrun error detected');
-    } else if (err instanceof ModbusCollisionError) {
-      errorType = 'ModbusCollisionError';
-      logger.error('Collision error detected');
-    } else if (err instanceof ModbusConfigError) {
-      errorType = 'ModbusConfigError';
-      logger.error('Configuration error detected');
-    } else if (err instanceof ModbusBaudRateError) {
-      errorType = 'ModbusBaudRateError';
-      logger.error('Baud rate error detected');
-    } else if (err instanceof ModbusSyncError) {
-      errorType = 'ModbusSyncError';
-      logger.error('Sync error detected');
-    } else if (err instanceof ModbusFrameBoundaryError) {
-      errorType = 'ModbusFrameBoundaryError';
-      logger.error('Frame boundary error detected');
-    } else if (err instanceof ModbusLRCError) {
-      errorType = 'ModbusLRCError';
-      logger.error('LRC error detected');
-    } else if (err instanceof ModbusChecksumError) {
-      errorType = 'ModbusChecksumError';
-      logger.error('Checksum error detected');
-    } else if (err instanceof ModbusDataConversionError) {
-      errorType = 'ModbusDataConversionError';
-      logger.error('Data conversion error detected');
-    } else if (err instanceof ModbusBufferOverflowError) {
-      errorType = 'ModbusBufferOverflowError';
-      logger.error('Buffer overflow error detected');
-    } else if (err instanceof ModbusBufferUnderrunError) {
-      errorType = 'ModbusBufferUnderrunError';
-      logger.error('Buffer underrun error detected');
-    } else if (err instanceof ModbusMemoryError) {
-      errorType = 'ModbusMemoryError';
-      logger.error('Memory error detected');
-    } else if (err instanceof ModbusStackOverflowError) {
-      errorType = 'ModbusStackOverflowError';
-      logger.error('Stack overflow error detected');
-    } else if (err instanceof ModbusResponseError) {
-      errorType = 'ModbusResponseError';
-      logger.error('Response error detected');
-    } else if (err instanceof ModbusInvalidAddressError) {
-      errorType = 'ModbusInvalidAddressError';
-      logger.error('Invalid address error detected');
-    } else if (err instanceof ModbusInvalidFunctionCodeError) {
-      errorType = 'ModbusInvalidFunctionCodeError';
-      logger.error('Invalid function code error detected');
-    } else if (err instanceof ModbusInvalidQuantityError) {
-      errorType = 'ModbusInvalidQuantityError';
-      logger.error('Invalid quantity error detected');
-    } else if (err instanceof ModbusIllegalDataAddressError) {
-      errorType = 'ModbusIllegalDataAddressError';
-      logger.error('Illegal data address error detected');
-    } else if (err instanceof ModbusIllegalDataValueError) {
-      errorType = 'ModbusIllegalDataValueError';
-      logger.error('Illegal data value error detected');
-    } else if (err instanceof ModbusSlaveBusyError) {
-      errorType = 'ModbusSlaveBusyError';
-      logger.error('Slave busy error detected');
-    } else if (err instanceof ModbusAcknowledgeError) {
-      errorType = 'ModbusAcknowledgeError';
-      logger.error('Acknowledge error detected');
-    } else if (err instanceof ModbusSlaveDeviceFailureError) {
-      errorType = 'ModbusSlaveDeviceFailureError';
-      logger.error('Slave device failure error detected');
-    } else if (err instanceof ModbusMalformedFrameError) {
-      errorType = 'ModbusMalformedFrameError';
-      logger.error('Malformed frame error detected');
-    } else if (err instanceof ModbusInvalidFrameLengthError) {
-      errorType = 'ModbusInvalidFrameLengthError';
-      logger.error('Invalid frame length error detected');
-    } else if (err instanceof ModbusInvalidTransactionIdError) {
-      errorType = 'ModbusInvalidTransactionIdError';
-      logger.error('Invalid transaction ID error detected');
-    } else if (err instanceof ModbusUnexpectedFunctionCodeError) {
-      errorType = 'ModbusUnexpectedFunctionCodeError';
-      logger.error('Unexpected function code error detected');
-    } else if (err instanceof ModbusConnectionRefusedError) {
-      errorType = 'ModbusConnectionRefusedError';
-      logger.error('Connection refused error detected');
-    } else if (err instanceof ModbusConnectionTimeoutError) {
-      errorType = 'ModbusConnectionTimeoutError';
-      logger.error('Connection timeout error detected');
-    } else if (err instanceof ModbusNotConnectedError) {
-      errorType = 'ModbusNotConnectedError';
-      logger.error('Not connected error detected');
-    } else if (err instanceof ModbusAlreadyConnectedError) {
-      errorType = 'ModbusAlreadyConnectedError';
-      logger.error('Already connected error detected');
-    } else if (err instanceof ModbusInsufficientDataError) {
-      errorType = 'ModbusInsufficientDataError';
-      logger.error('Insufficient data error detected');
-    } else if (err instanceof ModbusGatewayPathUnavailableError) {
-      errorType = 'ModbusGatewayPathUnavailableError';
-      logger.error('Gateway path unavailable error detected');
-    } else if (err instanceof ModbusGatewayTargetDeviceError) {
-      errorType = 'ModbusGatewayTargetDeviceError';
-      logger.error('Gateway target device error detected');
-    } else if (err instanceof ModbusInvalidStartingAddressError) {
-      errorType = 'ModbusInvalidStartingAddressError';
-      logger.error('Invalid starting address error detected');
-    } else if (err instanceof ModbusMemoryParityError) {
-      errorType = 'ModbusMemoryParityError';
-      logger.error('Memory parity error detected');
-    } else if (err instanceof ModbusBroadcastError) {
-      errorType = 'ModbusBroadcastError';
-      logger.error('Broadcast error detected');
-    } else if (err instanceof ModbusGatewayBusyError) {
-      errorType = 'ModbusGatewayBusyError';
-      logger.error('Gateway busy error detected');
-    } else if (err instanceof ModbusDataOverrunError) {
-      errorType = 'ModbusDataOverrunError';
-      logger.error('Data overrun error detected');
-    } else if (err instanceof ModbusTooManyEmptyReadsError) {
-      errorType = 'ModbusTooManyEmptyReadsError';
-      logger.error('Too many empty reads error detected');
-    } else if (err instanceof ModbusFlushError) {
-      errorType = 'ModbusFlushError';
-      logger.error('Flush error detected');
-    } else if (err instanceof NodeSerialTransportError) {
-      errorType = 'NodeSerialTransportError';
-      logger.error('NodeSerial transport error detected');
-    } else if (err instanceof NodeSerialConnectionError) {
-      errorType = 'NodeSerialConnectionError';
-      logger.error('NodeSerial connection error detected');
-    } else if (err instanceof NodeSerialReadError) {
-      errorType = 'NodeSerialReadError';
-      logger.error('NodeSerial read error detected');
-    } else if (err instanceof NodeSerialWriteError) {
-      errorType = 'NodeSerialWriteError';
-      logger.error('NodeSerial write error detected');
-    } else if (err instanceof ModbusInterFrameTimeoutError) {
-      errorType = 'ModbusInterFrameTimeoutError';
-      logger.error('Inter-frame timeout error detected');
-    } else if (err instanceof ModbusSilentIntervalError) {
-      errorType = 'ModbusSilentIntervalError';
-      logger.error('Silent interval error detected');
-    }
-
-    // НЕ уведомляем тут, т.к. не знаем slaveId
-    // Это делается на уровне клиента при обработке ошибки
+    handleModbusError(err);
   }
 }
 

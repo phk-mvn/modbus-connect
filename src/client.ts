@@ -614,7 +614,6 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed,
             });
-            // Уведомляем транспорт о подключении при успешной отправке запроса
             if (this.transport.notifyDeviceConnected) {
               this.transport.notifyDeviceConnected(slaveId);
             }
@@ -645,7 +644,6 @@ class ModbusClient {
               exceptionMessage,
               responseTime: elapsed,
             });
-            // Уведомляем транспорт о проблеме связи при исключении
             if (this.transport.notifyDeviceDisconnected) {
               this.transport.notifyDeviceDisconnected(slaveId, 'ModbusException', exceptionMessage);
             }
@@ -660,7 +658,6 @@ class ModbusClient {
             funcCode,
             responseTime: elapsed,
           });
-          // Уведомляем транспорт о подключении при успешном получении ответа
           if (this.transport.notifyDeviceConnected) {
             this.transport.notifyDeviceConnected(slaveId);
           }
@@ -677,20 +674,28 @@ class ModbusClient {
                   ? 'modbus-exception'
                   : null;
 
-          // Уведомляем транспорт о проблеме связи при ошибке
-          if (this.transport.notifyDeviceDisconnected) {
-            let errorType = 'unknown';
+          const isCriticalError =
+            err instanceof ModbusTimeoutError ||
+            err instanceof ModbusConnectionTimeoutError ||
+            err instanceof ModbusNotConnectedError ||
+            err instanceof ModbusConnectionRefusedError;
+
+          if (isCriticalError && this.transport.notifyDeviceDisconnected) {
+            let errorType = err.constructor.name;
             let errorMessage = err instanceof Error ? err.message : String(err);
-            if (err instanceof ModbusTimeoutError) {
-              errorType = 'ModbusTimeoutError';
-            } else if (err instanceof ModbusCRCError) {
-              errorType = 'ModbusCRCError';
-            } else if (err instanceof ModbusExceptionError) {
-              errorType = 'ModbusException';
-            } else if (err instanceof Error) {
-              errorType = err.constructor.name;
-            }
             this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+
+            if (this.transport.flush) {
+              try {
+                await this.transport.flush();
+                logger.debug('Transport flushed after critical error', { slaveId });
+              } catch (flushErr) {
+                logger.warn('Failed to flush transport after error', {
+                  slaveId,
+                  flushError: flushErr,
+                });
+              }
+            }
           }
 
           if (this.diagnosticsEnabled) {
@@ -735,6 +740,9 @@ class ModbusClient {
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
             }
+            if (this.transport.notifyDeviceConnected) {
+              this.transport.notifyDeviceConnected(slaveId);
+            }
             return undefined;
           }
           if (attempt < this.retryCount) {
@@ -753,6 +761,21 @@ class ModbusClient {
             }
             await new Promise(resolve => setTimeout(resolve, delay));
           } else {
+            if (!isCriticalError && this.transport.notifyDeviceDisconnected) {
+              let errorType = err!.constructor.name;
+              let errorMessage = err instanceof Error ? err.message : String(err);
+              this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+            }
+
+            if (this.transport.flush) {
+              try {
+                await this.transport.flush();
+                logger.debug('Final transport flush after all retries failed', { slaveId });
+              } catch (flushErr) {
+                logger.warn('Failed to final flush transport', { slaveId, flushError: flushErr });
+              }
+            }
+
             logger.error(`All ${this.retryCount + 1} attempts exhausted`, {
               error: lastError,
               slaveId,
