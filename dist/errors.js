@@ -134,7 +134,7 @@ class ModbusFlushError extends ModbusError {
 }
 class ModbusInvalidAddressError extends ModbusError {
   constructor(address) {
-    super(`Invalid Modbus address: ${address}. Address must be between 0-247 for RTU/TCP.`);
+    super(`Invalid Modbus address: ${address}. Address must be between 1-255 for RTU/TCP.`);
     this.name = "ModbusInvalidAddressError";
   }
 }

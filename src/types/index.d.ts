@@ -9,3 +9,5 @@ export * from './errors.d.js';
 export * from '../transport/web-transports/web-serialport.d.js';
 export * from '../transport/node-transports/node-serialport.d.js';
 export * from '../slave-emulator/slave-emulator.d.js';
+export * from '../transport/trackers/DeviceConnectionTracker.d.js';
+export * from '../transport/trackers/PortConnectionTracker.d.js';

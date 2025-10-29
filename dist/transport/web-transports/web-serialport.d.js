@@ -18,8 +18,10 @@ var __copyProps = (to, from, except, desc) => {
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var web_serialport_d_exports = {};
 __export(web_serialport_d_exports, {
-  DeviceConnectionListener: () => import_modbus_types.DeviceConnectionListener,
+  ConnectionErrorType: () => import_modbus_types.ConnectionErrorType,
   DeviceConnectionStateObject: () => import_modbus_types.DeviceConnectionStateObject,
+  DeviceStateHandler: () => import_modbus_types.DeviceStateHandler,
+  PortStateHandler: () => import_modbus_types.PortStateHandler,
   WebSerialPort: () => import_modbus_types.WebSerialPort,
   WebSerialTransportOptions: () => import_modbus_types.WebSerialTransportOptions
 });
@@ -27,8 +29,10 @@ module.exports = __toCommonJS(web_serialport_d_exports);
 var import_modbus_types = require("../../types/modbus-types.js");
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  DeviceConnectionListener,
+  ConnectionErrorType,
   DeviceConnectionStateObject,
+  DeviceStateHandler,
+  PortStateHandler,
   WebSerialPort,
   WebSerialTransportOptions
 });

@@ -20,10 +20,6 @@ declare class NodeSerialTransport implements Transport {
   read(length: number, timeout?: number): Promise<Uint8Array>;
   flush(): Promise<void>;
   destroy(): void;
-
-  // Методы для работы с слушателем состояния связи с устройством
-  addDeviceConnectionListener(listener: DeviceConnectionListener): void;
-  removeDeviceConnectionListener(listener: DeviceConnectionListener): void;
 }
 
 export {

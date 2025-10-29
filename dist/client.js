@@ -44,6 +44,7 @@ var import_packet_builder = require("./packet-builder.js");
 var import_logger = __toESM(require("./logger.js"));
 var import_diagnostics = require("./utils/diagnostics.js");
 var import_crc = require("./utils/crc.js");
+var import_transport_controller = __toESM(require("./transport/transport-controller.js"));
 const crcAlgorithmMap = {
   crc16Modbus: import_crc.crc16Modbus,
   crc16CcittFalse: import_crc.crc16CcittFalse,
@@ -62,6 +63,7 @@ const logger = new import_logger.default();
 logger.setLevel("error");
 class ModbusClient {
   transport;
+  transportController;
   slaveId;
   defaultTimeout;
   retryCount;
@@ -103,11 +105,17 @@ class ModbusClient {
     [10, import_constants.ModbusExceptionCode.GATEWAY_PATH_UNAVAILABLE],
     [11, import_constants.ModbusExceptionCode.GATEWAY_TARGET_DEVICE_FAILED]
   ]);
-  constructor(transport, slaveId = 1, options = {}) {
+  constructor(transportOrController, slaveId = 1, options = {}) {
     if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 255) {
       throw new import_errors.ModbusInvalidAddressError(slaveId);
     }
-    this.transport = transport;
+    if (transportOrController instanceof import_transport_controller.default) {
+      this.transportController = transportOrController;
+      this.transport = null;
+    } else {
+      this.transport = transportOrController;
+      this.transportController = null;
+    }
     this.slaveId = slaveId;
     this.defaultTimeout = options.timeout ?? 2e3;
     this.retryCount = options.retryCount ?? 0;
@@ -123,6 +131,17 @@ class ModbusClient {
     this.crcFunc = crcFunc;
     this._mutex = new import_async_mutex.Mutex();
     this._setAutoLoggerContext();
+  }
+  /**
+   * Returns the effective transport for the client
+   */
+  get _effectiveTransport() {
+    if (this.transportController) {
+      return this.transportController.getTransportForSlave(
+        this.slaveId
+      );
+    }
+    return this.transport;
   }
   /**
    * Enables the ModbusClient logger
@@ -147,13 +166,15 @@ class ModbusClient {
   /**
    * Sets the logger context automatically based on the current settings.
    */
-  _setAutoLoggerContext(funcCode = null) {
+  _setAutoLoggerContext(funcCode) {
+    const transport = this._effectiveTransport;
+    const transportName = transport ? transport.constructor.name : "Unknown";
     const context = {
       slaveId: this.slaveId,
-      transport: this.transport.constructor.name
+      transport: transportName
     };
-    if (funcCode !== null) {
-      context.funcCode = typeof funcCode === "number" ? funcCode : funcCode;
+    if (funcCode !== void 0) {
+      context.funcCode = funcCode;
     }
     logger.addGlobalContext(context);
   }
@@ -164,9 +185,13 @@ class ModbusClient {
   async connect() {
     const release = await this._mutex.acquire();
     try {
-      await this.transport.connect();
+      const transport = this._effectiveTransport;
+      if (!transport) {
+        throw new Error(`No transport available for slaveId ${this.slaveId}`);
+      }
+      await transport.connect();
       this._setAutoLoggerContext();
-      logger.info("Transport connected", { transport: this.transport.constructor.name });
+      logger.info("Transport connected", { transport: transport.constructor.name });
     } catch (err) {
       if (err instanceof import_errors.ModbusConnectionRefusedError) {
         logger.error("Connection refused");
@@ -191,9 +216,14 @@ class ModbusClient {
   async disconnect() {
     const release = await this._mutex.acquire();
     try {
-      await this.transport.disconnect();
+      const transport = this._effectiveTransport;
+      if (!transport) {
+        logger.warn("No transport available to disconnect");
+        return;
+      }
+      await transport.disconnect();
       this._setAutoLoggerContext();
-      logger.info("Transport disconnected", { transport: this.transport.constructor.name });
+      logger.info("Transport disconnected", { transport: transport.constructor.name });
     } catch (err) {
       if (err instanceof import_errors.ModbusConnectionRefusedError) {
         logger.error("Connection refused during disconnect");
@@ -308,13 +338,17 @@ class ModbusClient {
       if (timeLeft <= 0) throw new import_errors.ModbusTimeoutError("Read timeout");
       const minPacketLength = 5;
       const bytesToRead = expectedLength ? Math.max(1, expectedLength - buffer.length) : Math.max(1, minPacketLength - buffer.length);
-      const chunk = await this.transport.read(bytesToRead, timeLeft);
+      const transport = this._effectiveTransport;
+      if (!transport) {
+        throw new Error(`No transport available for slaveId ${this.slaveId}`);
+      }
+      const chunk = await transport.read(bytesToRead, timeLeft);
       if (!chunk || chunk.length === 0) continue;
       const newBuffer = new Uint8Array(buffer.length + chunk.length);
       newBuffer.set(buffer, 0);
       newBuffer.set(chunk, buffer.length);
       buffer = newBuffer;
-      const funcCode = requestPdu ? requestPdu[0] : null;
+      const funcCode = requestPdu ? requestPdu[0] : void 0;
       this._setAutoLoggerContext(funcCode);
       logger.debug("Received chunk:", { bytes: chunk.length, total: buffer.length });
       if (buffer.length >= minPacketLength) {
@@ -436,11 +470,15 @@ class ModbusClient {
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
           }
-          await this.transport.write(packet);
+          const transport = this._effectiveTransport;
+          if (!transport) {
+            throw new Error(`No transport available for slaveId ${this.slaveId}`);
+          }
+          await transport.write(packet);
           logger.debug("Packet written to transport", { bytes: packet.length, slaveId, funcCode });
           if (this.echoEnabled) {
             logger.debug("Echo enabled, reading echo back...", { slaveId, funcCode });
-            const echoResponse = await this.transport.read(packet.length, timeLeft);
+            const echoResponse = await transport.read(packet.length, timeLeft);
             if (!echoResponse || echoResponse.length !== packet.length) {
               throw new import_errors.ModbusInsufficientDataError(
                 echoResponse ? echoResponse.length : 0,
@@ -464,8 +502,8 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed2
             });
-            if (this.transport.notifyDeviceConnected) {
-              this.transport.notifyDeviceConnected(slaveId);
+            if (transport.notifyDeviceConnected) {
+              transport.notifyDeviceConnected(slaveId);
             }
             return void 0;
           }
@@ -490,8 +528,8 @@ class ModbusClient {
               exceptionMessage,
               responseTime: elapsed
             });
-            if (this.transport.notifyDeviceDisconnected) {
-              this.transport.notifyDeviceDisconnected(slaveId, "ModbusException", exceptionMessage);
+            if (transport.notifyDeviceDisconnected) {
+              transport.notifyDeviceDisconnected(slaveId, "ModbusException", exceptionMessage);
             }
             throw new import_errors.ModbusExceptionError(responseFuncCode & 127, modbusExceptionCode);
           }
@@ -503,8 +541,8 @@ class ModbusClient {
             funcCode,
             responseTime: elapsed
           });
-          if (this.transport.notifyDeviceConnected) {
-            this.transport.notifyDeviceConnected(slaveId);
+          if (transport.notifyDeviceConnected) {
+            transport.notifyDeviceConnected(slaveId);
           }
           return responsePdu;
         } catch (err) {
@@ -512,13 +550,14 @@ class ModbusClient {
           const isFlushedError = err instanceof import_errors.ModbusFlushError;
           const errorCode = err instanceof Error && err.message.toLowerCase().includes("timeout") ? "timeout" : err instanceof Error && err.message.toLowerCase().includes("crc") ? "crc" : err instanceof import_errors.ModbusExceptionError ? "modbus-exception" : null;
           const isCriticalError = err instanceof import_errors.ModbusTimeoutError || err instanceof import_errors.ModbusConnectionTimeoutError || err instanceof import_errors.ModbusNotConnectedError || err instanceof import_errors.ModbusConnectionRefusedError;
-          if (isCriticalError && this.transport.notifyDeviceDisconnected) {
-            let errorType = err.constructor.name;
-            let errorMessage = err instanceof Error ? err.message : String(err);
-            this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
-            if (this.transport.flush) {
+          const transport = this._effectiveTransport;
+          if (isCriticalError && transport && transport.notifyDeviceDisconnected) {
+            const errorType = err.constructor.name;
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+            if (transport.flush) {
               try {
-                await this.transport.flush();
+                await transport.flush();
                 logger.debug("Transport flushed after critical error", { slaveId });
               } catch (flushErr) {
                 logger.warn("Failed to flush transport after error", {
@@ -565,8 +604,8 @@ class ModbusClient {
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
             }
-            if (this.transport.notifyDeviceConnected) {
-              this.transport.notifyDeviceConnected(slaveId);
+            if (transport && transport.notifyDeviceConnected) {
+              transport.notifyDeviceConnected(slaveId);
             }
             return void 0;
           }
@@ -586,14 +625,14 @@ class ModbusClient {
             }
             await new Promise((resolve) => setTimeout(resolve, delay));
           } else {
-            if (!isCriticalError && this.transport.notifyDeviceDisconnected) {
-              let errorType = err.constructor.name;
-              let errorMessage = err instanceof Error ? err.message : String(err);
-              this.transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+            if (!isCriticalError && transport && transport.notifyDeviceDisconnected) {
+              const errorType = err.constructor.name;
+              const errorMessage = err instanceof Error ? err.message : String(err);
+              transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
             }
-            if (this.transport.flush) {
+            if (transport && transport.flush) {
               try {
-                await this.transport.flush();
+                await transport.flush();
                 logger.debug("Final transport flush after all retries failed", { slaveId });
               } catch (flushErr) {
                 logger.warn("Failed to final flush transport", { slaveId, flushError: flushErr });
@@ -1053,15 +1092,17 @@ class ModbusClient {
     const responsePdu = await this._sendRequest(pdu, timeout, true);
     if (responsePdu === void 0) {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      if (this.transport.flush) {
-        await this.transport.flush();
+      const transport2 = this._effectiveTransport;
+      if (transport2 && transport2.flush) {
+        await transport2.flush();
       }
       return true;
     }
     const result = (0, import_closeFile.parseCloseFileResponse)(responsePdu);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    if (this.transport.flush) {
-      await this.transport.flush();
+    const transport = this._effectiveTransport;
+    if (transport && transport.flush) {
+      await transport.flush();
     }
     return result;
   }

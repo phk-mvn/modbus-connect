@@ -25,18 +25,18 @@ var import_logger = __toESM(require("../../logger.js"));
 var import_utils = require("../../utils/utils.js");
 var import_async_mutex = require("async-mutex");
 var import_errors = require("../../errors.js");
+var import_modbus_types = require("../../types/modbus-types.js");
+var import_DeviceConnectionTracker = require("../trackers/DeviceConnectionTracker.js");
+var import_PortConnectionTracker = require("../trackers/PortConnectionTracker.js");
 const WEB_SERIAL_CONSTANTS = {
   MIN_BAUD_RATE: 300,
   MAX_BAUD_RATE: 115200,
   MAX_READ_BUFFER_SIZE: 65536,
-  POLL_INTERVAL_MS: 10,
-  VALID_BAUD_RATES: [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200]
+  POLL_INTERVAL_MS: 10
 };
 const loggerInstance = new import_logger.default();
 loggerInstance.setLogFormat(["timestamp", "level", "logger"]);
-loggerInstance.setCustomFormatter("logger", (value) => {
-  return value ? `[${value}]` : "";
-});
+loggerInstance.setCustomFormatter("logger", (value) => value ? `[${value}]` : "");
 const logger = loggerInstance.createLogger("WebSerialTransport");
 logger.setLevel("info");
 const ERROR_HANDLERS = {
@@ -91,7 +91,12 @@ const ERROR_HANDLERS = {
   [import_errors.WebSerialWriteError.name]: () => logger.error("WebSerial write error detected")
 };
 const handleModbusError = (err) => {
-  ERROR_HANDLERS[err.constructor.name]?.() || logger.error(`Unknown error: ${err.message}`);
+  const handler = ERROR_HANDLERS[err.constructor.name];
+  if (handler) {
+    handler();
+  } else {
+    logger.error(`Unknown error: ${err.message}`);
+  }
 };
 class WebSerialTransport {
   portFactory;
@@ -101,6 +106,7 @@ class WebSerialTransport {
   writer = null;
   readBuffer;
   isOpen = false;
+  _isPortReady = false;
   _reconnectAttempts = 0;
   _shouldReconnect = true;
   _isConnecting = false;
@@ -115,8 +121,11 @@ class WebSerialTransport {
   _connectionPromise = null;
   _resolveConnection = null;
   _rejectConnection = null;
-  _deviceConnectionListeners = [];
-  _deviceStates = /* @__PURE__ */ new Map();
+  _portClosePromise = null;
+  _portCloseResolve = null;
+  connectionTracker = new import_DeviceConnectionTracker.DeviceConnectionTracker();
+  portConnectionTracker = new import_PortConnectionTracker.PortConnectionTracker({ debounceMs: 300 });
+  _wasEverConnected = false;
   constructor(portFactory, options = {}) {
     if (typeof portFactory !== "function") {
       throw new import_errors.WebSerialTransportError(
@@ -139,60 +148,67 @@ class WebSerialTransport {
     this.readBuffer = new Uint8Array(0);
     this._operationMutex = new import_async_mutex.Mutex();
   }
-  addDeviceConnectionListener(listener) {
-    this._deviceConnectionListeners.push(listener);
-    for (const state of this._deviceStates.values()) {
-      listener(state);
-    }
+  setDeviceStateHandler(handler) {
+    this.connectionTracker.setHandler(handler);
   }
-  removeDeviceConnectionListener(listener) {
-    const index = this._deviceConnectionListeners.indexOf(listener);
-    if (index !== -1) {
-      this._deviceConnectionListeners.splice(index, 1);
-    }
+  async disableDeviceTracking() {
+    await this.connectionTracker.removeHandler();
+    logger.debug("Device connection tracking disabled");
   }
-  _notifyDeviceConnectionListeners(slaveId, state) {
-    this._deviceStates.set(slaveId, state);
-    logger.debug(`Device connection state changed for slaveId ${slaveId}:`, state);
-    const listeners = [...this._deviceConnectionListeners];
-    for (const listener of listeners) {
-      try {
-        listener(state);
-      } catch (err) {
-        logger.error(
-          `Error in device connection listener for slaveId ${slaveId}: ${err.message}`
-        );
-      }
+  async enableDeviceTracking(handler) {
+    if (handler) {
+      await this.connectionTracker.setHandler(handler);
     }
-  }
-  _createState(slaveId, hasConnection, errorType, errorMessage) {
-    if (hasConnection) {
-      return {
-        slaveId,
-        hasConnectionDevice: true,
-        errorType: void 0,
-        errorMessage: void 0
-      };
-    } else {
-      return {
-        slaveId,
-        hasConnectionDevice: false,
-        errorType,
-        errorMessage
-      };
-    }
+    logger.debug("Device connection tracking enabled");
   }
   notifyDeviceConnected(slaveId) {
-    const currentState = this._deviceStates.get(slaveId);
-    if (!currentState || !currentState.hasConnectionDevice) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, true));
-    }
+    this.connectionTracker.notifyConnected(slaveId);
   }
   notifyDeviceDisconnected(slaveId, errorType, errorMessage) {
-    this._notifyDeviceConnectionListeners(
-      slaveId,
-      this._createState(slaveId, false, errorType, errorMessage)
+    this.connectionTracker.notifyDisconnected(slaveId, errorType, errorMessage);
+  }
+  setPortStateHandler(handler) {
+    this.portConnectionTracker.setHandler(handler);
+  }
+  isPortReady() {
+    const ready = this.isOpen && this._isPortReady && this.writer !== null;
+    logger.debug(
+      `isPortReady check: isOpen=${this.isOpen}, _isPortReady=${this._isPortReady}, writer=${this.writer !== null}, result=${ready}`
     );
+    return ready;
+  }
+  setPortReady(ready) {
+    this._isPortReady = ready;
+  }
+  async _notifyPortConnected() {
+    this.setPortReady(true);
+    this._wasEverConnected = true;
+    const slaveIds = await this.connectionTracker.getConnectedSlaveIds();
+    this.portConnectionTracker.notifyConnected(slaveIds);
+  }
+  async _notifyPortDisconnected(errorType = import_modbus_types.ConnectionErrorType.UnknownError, errorMessage = "Port disconnected") {
+    this.setPortReady(false);
+    if (!this._wasEverConnected) {
+      logger.debug("Skipping DISCONNECTED \u2014 port was never connected");
+      return;
+    }
+    const slaveIds = await this.connectionTracker.getConnectedSlaveIds();
+    this.portConnectionTracker.notifyDisconnected(errorType, errorMessage, slaveIds);
+  }
+  _handlePortClose() {
+    logger.info("WebSerial port physically closed (via close())");
+    if (this._portCloseResolve) {
+      this._portCloseResolve();
+      this._portCloseResolve = null;
+    }
+    this._handleConnectionLoss("Port closed via close()");
+  }
+  _watchForPortClose() {
+    if (!this._portClosePromise) return;
+    this._portClosePromise.then(() => {
+      this._handlePortClose();
+    }).catch(() => {
+    });
   }
   async _releaseAllResources(hardClose = false) {
     logger.debug("Releasing WebSerial resources");
@@ -213,8 +229,10 @@ class WebSerialTransport {
     if (this.writer) {
       try {
         this.writer.releaseLock();
-        await this.writer.close().catch(() => {
-        });
+        if (hardClose && this.port && this.port.writable) {
+          await this.writer.close().catch(() => {
+          });
+        }
       } catch (err) {
         logger.debug("Error releasing writer:", err.message);
       }
@@ -224,6 +242,10 @@ class WebSerialTransport {
       try {
         await this.port.close();
         logger.debug("Port closed successfully");
+        if (this._portCloseResolve) {
+          this._portCloseResolve();
+          this._portCloseResolve = null;
+        }
       } catch (err) {
         logger.warn(`Error closing port: ${err.message}`);
       }
@@ -235,11 +257,12 @@ class WebSerialTransport {
   }
   async connect() {
     if (this._isConnecting) {
-      logger.warn("Connection attempt already in progress, waiting for it to complete");
-      if (this._connectionPromise) {
-        return this._connectionPromise;
-      }
-      return Promise.resolve();
+      logger.warn("Connection had already started, waiting...");
+      return this._connectionPromise ?? Promise.resolve();
+    }
+    if (!this.isOpen && !this._isConnecting && !this._isDisconnecting) {
+      logger.debug("Transport in disconnected state, resetting resources");
+      await this._releaseAllResources(false);
     }
     this._isConnecting = true;
     this._connectionPromise = new Promise((resolve, reject) => {
@@ -252,6 +275,7 @@ class WebSerialTransport {
         this._reconnectTimer = null;
       }
       this._shouldReconnect = true;
+      this._reconnectAttempts = 0;
       this._emptyReadCount = 0;
       logger.debug("Requesting new SerialPort instance from factory...");
       if (this.port && this.isOpen) {
@@ -283,25 +307,51 @@ class WebSerialTransport {
         await this._releaseAllResources(true);
         throw new import_errors.WebSerialConnectionError(errorMsg);
       }
+      if (this.reader) {
+        try {
+          await this.reader.cancel();
+          this.reader.releaseLock();
+        } catch {
+        }
+        this.reader = null;
+      }
+      if (this.writer) {
+        try {
+          this.writer.releaseLock();
+        } catch {
+        }
+        this.writer = null;
+      }
       this.reader = readable.getReader();
       this.writer = writable.getWriter();
+      logger.debug(`New writer created: ${this.writer !== null}, reader: ${this.reader !== null}`);
       this.isOpen = true;
       this._reconnectAttempts = 0;
+      this._portClosePromise = new Promise((resolve) => {
+        this._portCloseResolve = resolve;
+      });
+      this._watchForPortClose();
       this._startReading();
       logger.info("WebSerial port opened successfully with new instance");
+      await this._notifyPortConnected();
       if (this._resolveConnection) {
         this._resolveConnection();
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
-      return this._connectionPromise;
     } catch (err) {
       logger.error(`Failed to open WebSerial port: ${err.message}`);
       this.isOpen = false;
+      this._isConnecting = false;
+      if (this._wasEverConnected) {
+        await this._notifyPortDisconnected(
+          import_modbus_types.ConnectionErrorType.ConnectionLost,
+          err.message
+        );
+      }
       if (this._shouldReconnect && this._reconnectAttempts < this.options.maxReconnectAttempts) {
         logger.info("Auto-reconnect enabled, starting reconnect process...");
         this._scheduleReconnect(err);
-        return this._connectionPromise;
       } else {
         if (this._rejectConnection) {
           this._rejectConnection(err);
@@ -328,9 +378,11 @@ class WebSerialTransport {
           try {
             const { value, done } = await this.reader.read();
             if (done || this._readLoopAbortController.signal.aborted) {
-              logger.warn("WebSerial read stream closed (done=" + done + ")");
+              logger.debug("Read stream ended \u2014 restarting loop");
               this._readLoopActive = false;
-              this._onClose();
+              if (this.isOpen) {
+                setTimeout(() => this._startReading(), 100);
+              }
               break;
             }
             if (value && value.length > 0) {
@@ -349,10 +401,14 @@ class WebSerialTransport {
             } else {
               this._emptyReadCount++;
               if (this._emptyReadCount >= this.options.maxEmptyReadsBeforeReconnect) {
-                logger.warn(`Too many empty reads (${this._emptyReadCount}), triggering reconnect`);
+                logger.warn(
+                  `Too many empty reads (${this._emptyReadCount}) \u2014 device may be offline`
+                );
                 this._emptyReadCount = 0;
-                this._readLoopActive = false;
-                this._onError(new import_errors.ModbusTooManyEmptyReadsError());
+                await this._notifyPortDisconnected(
+                  import_modbus_types.ConnectionErrorType.DeviceOffline,
+                  "Too many empty reads"
+                );
                 break;
               }
             }
@@ -362,7 +418,33 @@ class WebSerialTransport {
               break;
             }
             const error = readErr;
-            logger.warn(`Read operation error: ${error.message}`);
+            logger.warn(`Read error: ${error.message}`);
+            const physicalMsgs = [
+              "failed to read",
+              "device disconnected",
+              "The device has been lost",
+              "Framing",
+              "Break condition",
+              "Parity",
+              "Overrun"
+            ];
+            const isPhysical = physicalMsgs.some((m) => error.message.includes(m));
+            if (isPhysical) {
+              logger.error("Physical port disconnection detected");
+              if (this.writer) {
+                try {
+                  this.writer.releaseLock();
+                } catch {
+                }
+                this.writer = null;
+              }
+              if (this.port && this.isOpen) {
+                this.port.close().catch(() => {
+                });
+              }
+              this._handleConnectionLoss("Port unplugged or lost");
+              break;
+            }
             if (error.message.includes("parity") || error.message.includes("Parity")) {
               this._onError(new import_errors.ModbusParityError(error.message));
             } else if (error.message.includes("frame") || error.message.includes("Framing")) {
@@ -385,11 +467,14 @@ class WebSerialTransport {
         } else {
           logger.error(`Unexpected error in read loop: ${loopErr.message}`);
           this._readLoopActive = false;
-          if (loopErr.message.includes("stack")) {
-            this._onError(new import_errors.ModbusStackOverflowError(loopErr.message));
-          } else {
-            this._onError(loopErr);
+          if (this.writer) {
+            try {
+              this.writer.releaseLock();
+            } catch {
+            }
+            this.writer = null;
           }
+          this._onError(loopErr);
         }
       } finally {
         this._readLoopActive = false;
@@ -399,11 +484,14 @@ class WebSerialTransport {
     loop().catch((err) => {
       logger.error("Read loop promise rejected:", err);
       this._readLoopActive = false;
-      if (err.message.includes("memory")) {
-        this._onError(new import_errors.ModbusMemoryError(err.message));
-      } else {
-        this._onError(err);
+      if (this.writer) {
+        try {
+          this.writer.releaseLock();
+        } catch {
+        }
+        this.writer = null;
       }
+      this._handleConnectionLoss(`Read loop failed: ${err.message}`);
     });
   }
   async write(buffer) {
@@ -411,9 +499,9 @@ class WebSerialTransport {
       logger.debug("Write operation aborted due to ongoing flush");
       throw new import_errors.ModbusFlushError();
     }
-    if (!this.isOpen || !this.writer) {
-      logger.warn(`Write attempted on closed/unready port`);
-      throw new import_errors.WebSerialWriteError("Port is closed or not ready for writing");
+    if (!this.isPortReady()) {
+      logger.warn(`Write attempted on disconnected port`);
+      throw new import_errors.WebSerialWriteError("Port is not ready for writing");
     }
     if (buffer.length === 0) {
       throw new import_errors.ModbusBufferUnderrunError(0, 1);
@@ -434,16 +522,24 @@ class WebSerialTransport {
           throw timeoutError;
         } else {
           logger.error(`Write error on WebSerial port: ${err.message}`);
-          if (err.message.includes("parity")) {
-            this._onError(new import_errors.ModbusParityError(err.message));
-            throw new import_errors.ModbusParityError(err.message);
-          } else if (err.message.includes("collision")) {
-            this._onError(new import_errors.ModbusCollisionError(err.message));
-            throw new import_errors.ModbusCollisionError(err.message);
+          const isPhysical = err.message.includes("failed to write") || err.message.includes("device disconnected") || err.message.includes("The device has been lost");
+          if (isPhysical) {
+            if (this.writer) {
+              try {
+                this.writer.releaseLock();
+              } catch {
+              }
+              this.writer = null;
+            }
+            if (this.port && this.isOpen) {
+              this.port.close().catch(() => {
+              });
+            }
+            this._handleConnectionLoss("Write failed \u2014 port unplugged");
           } else {
-            this._onError(new import_errors.WebSerialWriteError(err.message));
-            throw err;
+            this._onError(err);
           }
+          throw err;
         }
       } finally {
         clearTimeout(timer);
@@ -454,9 +550,9 @@ class WebSerialTransport {
     }
   }
   async read(length, timeout = this.options.readTimeout) {
-    if (!this.isOpen) {
-      logger.warn("Read attempted on closed port");
-      throw new import_errors.WebSerialReadError("Port is closed");
+    if (!this.isPortReady()) {
+      logger.warn("Read attempted on disconnected port");
+      throw new import_errors.WebSerialReadError("Port is not ready");
     }
     if (length <= 0) {
       throw new import_errors.ModbusDataConversionError(length, "positive integer");
@@ -484,12 +580,8 @@ class WebSerialTransport {
           if (this.readBuffer.length === 0) {
             emptyReadAttempts++;
             if (emptyReadAttempts >= 3) {
-              logger.debug("Scheduling auto-reconnect - 3 empty reads detected", {
-                timeout,
-                emptyAttempts: emptyReadAttempts
-              });
+              logger.debug("3 empty reads in read() \u2014 device may be offline");
               emptyReadAttempts = 0;
-              this._scheduleReconnect(new import_errors.ModbusTooManyEmptyReadsError("3 empty reads in read()"));
             }
           } else {
             emptyReadAttempts = 0;
@@ -518,15 +610,24 @@ class WebSerialTransport {
         this._reconnectTimer = null;
       }
       await this._releaseAllResources(true);
+      await this._notifyPortDisconnected(
+        import_modbus_types.ConnectionErrorType.ManualDisconnect,
+        "Port closed by user"
+      );
       if (this._rejectConnection) {
         this._rejectConnection(new import_errors.WebSerialConnectionError("Connection manually disconnected"));
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
-      for (const [slaveId] of this._deviceStates) {
-        this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          import_modbus_types.ConnectionErrorType.ManualDisconnect,
+          "Port closed by user"
+        );
       }
-      this._deviceStates.clear();
+      this.connectionTracker.clear();
       logger.info("WebSerial transport disconnected successfully");
     } catch (err) {
       logger.error(`Error during WebSerial transport shutdown: ${err.message}`);
@@ -564,28 +665,60 @@ class WebSerialTransport {
   }
   _onError(err) {
     handleModbusError(err);
-    this._handleConnectionLoss(`Error: ${err.message}`);
+    logger.warn(`Modbus error: ${err.message}`);
   }
   _handleConnectionLoss(reason) {
     if (!this.isOpen && !this._isConnecting) return;
     logger.warn(`Connection loss detected: ${reason}`);
+    if (this._isConnecting && this._rejectConnection) {
+      const err = new import_errors.WebSerialConnectionError(`Connection lost during connect: ${reason}`);
+      this._rejectConnection(err);
+      this._resolveConnection = null;
+      this._rejectConnection = null;
+    }
+    const isPhysicalDisconnect = reason.includes("unplugged") || reason.includes("lost") || reason.includes("device has been lost") || reason.includes("physically closed") || reason.includes("Port closed via close()");
+    if (isPhysicalDisconnect && this.port && this.isOpen) {
+      logger.info("Physical disconnect \u2014 closing port explicitly");
+      this.port.close().catch((err) => {
+        logger.debug(`Port already closed: ${err.message}`);
+      });
+      this.port = null;
+    }
     this.isOpen = false;
     this._readLoopActive = false;
-    for (const [slaveId] of this._deviceStates) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    if (this.writer) {
+      try {
+        this.writer.releaseLock();
+      } catch {
+      }
+      this.writer = null;
     }
-    this._deviceStates.clear();
-    if (this._shouldReconnect && !this._isDisconnecting) {
+    if (this.reader) {
+      try {
+        this.reader.cancel();
+      } catch {
+      }
+      this.reader.releaseLock();
+      this.reader = null;
+    }
+    this._notifyPortDisconnected(import_modbus_types.ConnectionErrorType.ConnectionLost, reason);
+    (async () => {
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          import_modbus_types.ConnectionErrorType.ConnectionLost,
+          reason
+        );
+      }
+      this.connectionTracker.clear();
+    })();
+    if (isPhysicalDisconnect) {
+      this._shouldReconnect = false;
+      logger.info("Auto-reconnect disabled due to physical disconnect");
+    } else if (this._shouldReconnect && !this._isDisconnecting) {
       this._scheduleReconnect(new Error(reason));
     }
-  }
-  _onClose() {
-    logger.info(`WebSerial port closed`);
-    for (const [slaveId] of this._deviceStates) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
-    }
-    this._deviceStates.clear();
-    this._handleConnectionLoss("Port closed");
   }
   _scheduleReconnect(err) {
     if (!this._shouldReconnect || this._isDisconnecting) {
@@ -602,23 +735,28 @@ class WebSerialTransport {
       const maxAttemptsError = new import_errors.WebSerialConnectionError(
         `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
       );
+      this._notifyPortDisconnected(import_modbus_types.ConnectionErrorType.MaxReconnect, maxAttemptsError.message);
       if (this._rejectConnection) {
         this._rejectConnection(maxAttemptsError);
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
       this._shouldReconnect = false;
-      for (const [slaveId] of this._deviceStates) {
-        this._notifyDeviceConnectionListeners(
-          slaveId,
-          this._createState(slaveId, false, "MaxReconnectAttemptsReached", maxAttemptsError.message)
-        );
-      }
+      (async () => {
+        const states = await this.connectionTracker.getAllStates();
+        for (const state of states) {
+          this.connectionTracker.notifyDisconnected(
+            state.slaveId,
+            import_modbus_types.ConnectionErrorType.MaxReconnect,
+            maxAttemptsError.message
+          );
+        }
+      })();
       return;
     }
     this._reconnectAttempts++;
     logger.info(
-      `Scheduling reconnect to WebSerial port in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`
+      `Scheduling reconnect in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`
     );
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
@@ -648,20 +786,41 @@ class WebSerialTransport {
       if (!readable || !writable) {
         throw new import_errors.WebSerialConnectionError("Serial port not readable/writable after open");
       }
+      if (this.reader) {
+        try {
+          await this.reader.cancel();
+          this.reader.releaseLock();
+        } catch {
+        }
+        this.reader = null;
+      }
+      if (this.writer) {
+        try {
+          this.writer.releaseLock();
+        } catch {
+        }
+        this.writer = null;
+      }
       this.reader = readable.getReader();
       this.writer = writable.getWriter();
+      logger.debug(`New writer created: ${this.writer !== null}, reader: ${this.reader !== null}`);
       this.isOpen = true;
       this._reconnectAttempts = 0;
+      this._portClosePromise = new Promise((resolve) => {
+        this._portCloseResolve = resolve;
+      });
+      this._watchForPortClose();
       this._startReading();
-      logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
-      this._deviceStates.clear();
+      logger.info(`Reconnect successful`);
+      await this._notifyPortConnected();
+      this.connectionTracker.clear();
       if (this._resolveConnection) {
         this._resolveConnection();
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
     } catch (err) {
-      logger.warn(`Reconnect attempt ${this._reconnectAttempts} failed: ${err.message}`);
+      logger.warn(`Reconnect attempt failed: ${err.message}`);
       this._reconnectAttempts++;
       if (this._shouldReconnect && !this._isDisconnecting && this._reconnectAttempts <= this.options.maxReconnectAttempts) {
         this._scheduleReconnect(err);
@@ -669,23 +828,26 @@ class WebSerialTransport {
         const maxAttemptsError = new import_errors.WebSerialConnectionError(
           `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
         );
+        await this._notifyPortDisconnected(
+          import_modbus_types.ConnectionErrorType.MaxReconnect,
+          maxAttemptsError.message
+        );
         if (this._rejectConnection) {
           this._rejectConnection(maxAttemptsError);
           this._resolveConnection = null;
           this._rejectConnection = null;
         }
         this._shouldReconnect = false;
-        for (const [slaveId] of this._deviceStates) {
-          this._notifyDeviceConnectionListeners(
-            slaveId,
-            this._createState(
-              slaveId,
-              false,
-              "MaxReconnectAttemptsReached",
+        (async () => {
+          const states = await this.connectionTracker.getAllStates();
+          for (const state of states) {
+            this.connectionTracker.notifyDisconnected(
+              state.slaveId,
+              import_modbus_types.ConnectionErrorType.MaxReconnect,
               maxAttemptsError.message
-            )
-          );
-        }
+            );
+          }
+        })();
       }
     }
   }
@@ -701,13 +863,26 @@ class WebSerialTransport {
       this._resolveConnection = null;
       this._rejectConnection = null;
     }
+    if (this._portCloseResolve) {
+      this._portCloseResolve();
+      this._portCloseResolve = null;
+    }
     this._readLoopActive = false;
     this._releaseAllResources(true).catch(() => {
     });
-    for (const [slaveId] of this._deviceStates) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
-    }
-    this._deviceStates.clear();
+    this._notifyPortDisconnected(import_modbus_types.ConnectionErrorType.Destroyed, "Transport destroyed");
+    (async () => {
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          import_modbus_types.ConnectionErrorType.Destroyed,
+          "Transport destroyed"
+        );
+      }
+      this.connectionTracker.clear();
+      await this.portConnectionTracker.clear();
+    })();
     this.isOpen = false;
     this._isConnecting = false;
     this._isDisconnecting = false;

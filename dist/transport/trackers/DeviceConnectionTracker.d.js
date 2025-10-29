@@ -16,24 +16,14 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var modbus_types_exports = {};
-__export(modbus_types_exports, {
-  ConnectionErrorType: () => ConnectionErrorType
+var DeviceConnectionTracker_d_exports = {};
+__export(DeviceConnectionTracker_d_exports, {
+  DeviceConnectionTracker: () => DeviceConnectionTracker
 });
-module.exports = __toCommonJS(modbus_types_exports);
-var ConnectionErrorType = /* @__PURE__ */ ((ConnectionErrorType2) => {
-  ConnectionErrorType2["UnknownError"] = "UnknownError";
-  ConnectionErrorType2["PortClosed"] = "PortClosed";
-  ConnectionErrorType2["Timeout"] = "Timeout";
-  ConnectionErrorType2["CRCError"] = "CRCError";
-  ConnectionErrorType2["ConnectionLost"] = "ConnectionLost";
-  ConnectionErrorType2["DeviceOffline"] = "DeviceOffline";
-  ConnectionErrorType2["MaxReconnect"] = "MaxReconnect";
-  ConnectionErrorType2["ManualDisconnect"] = "ManualDisconnect";
-  ConnectionErrorType2["Destroyed"] = "Destroyed";
-  return ConnectionErrorType2;
-})(ConnectionErrorType || {});
+module.exports = __toCommonJS(DeviceConnectionTracker_d_exports);
+class DeviceConnectionTracker {
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  ConnectionErrorType
+  DeviceConnectionTracker
 });

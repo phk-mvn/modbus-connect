@@ -2,7 +2,7 @@
 
 import type { Transport } from '../types/modbus-types.js';
 
-declare module 'modbus-connect/transport' {
+declare module 'modbus-connect/transport-old' {
   export interface TransportOptions {
     port?: string | any; // 'any' для совместимости с Web Serial API (SerialPort)
     path?: string;

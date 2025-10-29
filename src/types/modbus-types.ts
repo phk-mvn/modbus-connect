@@ -1,10 +1,8 @@
-// src/types/modbus-types.ts
-
 import { RegisterType } from '../constants/constants.js';
 
-// =============================================================================
-// Типы для функций чтения Modbus
-// =============================================================================
+// !=============================================================================
+// ! Типы для функций чтения Modbus
+// !=============================================================================
 
 /** Ответ на запрос чтения coils (coils) */
 export type ReadCoilsResponse = boolean[];
@@ -18,9 +16,9 @@ export type ReadHoldingRegistersResponse = number[];
 /** Ответ на запрос чтения input регистров (input registers) */
 export type ReadInputRegistersResponse = number[];
 
-// =============================================================================
-// Типы для функций записи Modbus
-// =============================================================================
+// !=============================================================================
+// ! Типы для функций записи Modbus
+// !=============================================================================
 
 /** Ответ на запрос записи одного coil */
 export interface WriteSingleCoilResponse {
@@ -46,9 +44,9 @@ export interface WriteMultipleRegistersResponse {
   quantity: number;
 }
 
-// =============================================================================
-// Типы для специальных функций Modbus
-// =============================================================================
+// !=============================================================================
+// ! Типы для специальных функций Modbus
+// !=============================================================================
 
 /** Ответ на запрос идентификации устройства (Report Slave ID) */
 export interface ReportSlaveIdResponse {
@@ -69,9 +67,9 @@ export interface ReadDeviceIdentificationResponse {
   objects: Record<number, string>;
 }
 
-// =============================================================================
-// Типы для функций SGM130
-// =============================================================================
+// !=============================================================================
+// ! Типы для функций SGM130
+// !=============================================================================
 
 /** Ответ на запрос длины файла */
 export type ReadFileLengthResponse = number;
@@ -113,17 +111,29 @@ export interface ControllerTime {
 /** Ответ на запрос установки времени контроллера */
 export type SetControllerTimeResponse = boolean;
 
-// =============================================================================
-// Интерфейсы для транспорта
-// =============================================================================
-// Типы для состояния связи с устройством
-interface DeviceConnectionStateObject {
+// !=============================================================================
+// ! Интерфейсы для транспорта
+// !=============================================================================
+export type PortStateHandler = (
+  connected: boolean,
+  slaveIds?: number[],
+  error?: { type: ConnectionErrorType; message: string }
+) => void;
+
+/** Состояние подключения устройства */
+export interface DeviceConnectionStateObject {
+  slaveId: number;
   hasConnectionDevice: boolean;
   errorType?: string;
   errorMessage?: string;
 }
 
-type DeviceConnectionListener = (state: DeviceConnectionStateObject) => void;
+/** Обработчик изменения состояния подключения устройства */
+export type DeviceStateHandler = (
+  slaveId: number,
+  connected: boolean,
+  error?: { type: string; message: string }
+) => void;
 
 /** Интерфейс для транспорта Modbus */
 export interface Transport {
@@ -132,14 +142,61 @@ export interface Transport {
   write(buffer: Uint8Array): Promise<void>;
   read(length: number, timeout?: number): Promise<Uint8Array>;
   flush?(): Promise<void>;
-  // Методы для работы с слушателем состояния связи с устройством
-  addDeviceConnectionListener(listener: DeviceConnectionListener): void;
-  removeDeviceConnectionListener(listener: DeviceConnectionListener): void;
+
+  /**
+   * Установить обработчик состояния подключения устройства.
+   */
+  setDeviceStateHandler(handler: DeviceStateHandler): void;
+
+  /**
+   * Установить обработчик состояния физического порта.
+   */
+  setPortStateHandler(handler: PortStateHandler): void;
+
+  /**
+   * Отключить уведомления о состоянии устройств.
+   * После вызова `setDeviceStateHandler` перестанет работать.
+   */
+  disableDeviceTracking(): Promise<void>;
+
+  /**
+   * Включить трекинг устройств (если был отключён).
+   * @param handler Опционально: установить новый обработчик
+   */
+  enableDeviceTracking(handler?: DeviceStateHandler): Promise<void>;
 }
 
-// =============================================================================
-// Интерфейсы для опций клиента
-// =============================================================================
+export interface DeviceConnectionTracker {
+  setHandler(handler: DeviceStateHandler): Promise<void>;
+  removeHandler(): Promise<void>;
+  clearHandler(): Promise<void>;
+}
+
+/**
+ * Типы ошибок подключения
+ */
+export enum ConnectionErrorType {
+  UnknownError = 'UnknownError',
+  PortClosed = 'PortClosed',
+  Timeout = 'Timeout',
+  CRCError = 'CRCError',
+  ConnectionLost = 'ConnectionLost',
+  DeviceOffline = 'DeviceOffline',
+  MaxReconnect = 'MaxReconnect',
+  ManualDisconnect = 'ManualDisconnect',
+  Destroyed = 'Destroyed',
+}
+
+export interface DeviceConnectionTrackerOptions {
+  /** Интервал дебонса уведомлений об отключении (мс) */
+  debounceMs?: number;
+  /** Валидировать slaveId (0–247) */
+  validateSlaveId?: boolean;
+}
+
+// !=============================================================================
+// ! Интерфейсы для опций клиента
+// !=============================================================================
 
 /** Опции для конфигурации Modbus клиента */
 export interface ModbusClientOptions {
@@ -163,9 +220,9 @@ export interface ModbusClientOptions {
     | 'crcjam';
 }
 
-// =============================================================================
-// Типы для логгера
-// =============================================================================
+// !=============================================================================
+// ! Типы для логгера
+// !=============================================================================
 
 /** Уровни логирования */
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
@@ -198,9 +255,9 @@ export interface LoggerInstance {
   resume(): void;
 }
 
-// =============================================================================
-// Типы для диагностики
-// =============================================================================
+// !=============================================================================
+// ! Типы для диагностики
+// !=============================================================================
 
 /** Опции для диагностики */
 export interface DiagnosticsOptions {
@@ -283,6 +340,7 @@ export interface DiagnosticsInterface {
   serialize(): string;
   toTable(): { metric: string; value: unknown }[];
   mergeWith(other: DiagnosticsInterface): void;
+
   readonly averageResponseTime: number | null;
   readonly averageResponseTimeAll: number | null;
   readonly errorRate: number | null;
@@ -290,10 +348,9 @@ export interface DiagnosticsInterface {
   readonly uptimeSeconds: number;
 }
 
-// =============================================================================
-// Интерфейсы для транспорта через последовательный порт
-// =============================================================================
-
+// !=============================================================================
+// ! Интерфейсы для транспорта через последовательный порт
+// !=============================================================================
 /** Опции для транспорта через Node.js SerialPort */
 export interface NodeSerialTransportOptions {
   baudRate?: number;
@@ -340,9 +397,9 @@ export interface WebSerialTransportOptions {
   [key: string]: unknown;
 }
 
-// =============================================================================
-// Типы для системы опроса (Polling)
-// =============================================================================
+// !=============================================================================
+// ! Типы для системы опроса (Polling)
+// !=============================================================================
 
 /** Конфигурация менеджера опроса */
 export interface PollingManagerConfig {
@@ -415,9 +472,9 @@ export interface PollingSystemStats {
   tasks: Record<string, PollingTaskStats>;
 }
 
-// =============================================================================
-// Типы для эмулятора и регистров
-// =============================================================================
+// !=============================================================================
+// ! Типы для эмулятора и регистров
+// !=============================================================================
 
 /** Определение одного регистра */
 export interface RegisterDefinition {

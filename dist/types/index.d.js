@@ -24,6 +24,8 @@ __reExport(index_d_exports, require("./errors.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/web-transports/web-serialport.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/node-transports/node-serialport.d.js"), module.exports);
 __reExport(index_d_exports, require("../slave-emulator/slave-emulator.d.js"), module.exports);
+__reExport(index_d_exports, require("../transport/trackers/DeviceConnectionTracker.d.js"), module.exports);
+__reExport(index_d_exports, require("../transport/trackers/PortConnectionTracker.d.js"), module.exports);
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ...require("./client.d.js"),
@@ -34,5 +36,7 @@ __reExport(index_d_exports, require("../slave-emulator/slave-emulator.d.js"), mo
   ...require("./errors.d.js"),
   ...require("../transport/web-transports/web-serialport.d.js"),
   ...require("../transport/node-transports/node-serialport.d.js"),
-  ...require("../slave-emulator/slave-emulator.d.js")
+  ...require("../slave-emulator/slave-emulator.d.js"),
+  ...require("../transport/trackers/DeviceConnectionTracker.d.js"),
+  ...require("../transport/trackers/PortConnectionTracker.d.js")
 });

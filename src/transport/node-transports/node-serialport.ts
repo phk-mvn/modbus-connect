@@ -1,5 +1,3 @@
-// src/transport/node-transports/node-serialport.ts
-
 import { SerialPort, SerialPortOpenOptions } from 'serialport';
 import { Mutex } from 'async-mutex';
 import { concatUint8Arrays, sliceUint8Array, allocUint8Array } from '../../utils/utils.js';
@@ -57,7 +55,15 @@ import {
   ModbusInterFrameTimeoutError,
   ModbusSilentIntervalError,
 } from '../../errors.js';
-import { Transport, NodeSerialTransportOptions } from '../../types/modbus-types.js';
+import {
+  Transport,
+  NodeSerialTransportOptions,
+  DeviceStateHandler,
+  ConnectionErrorType,
+  PortStateHandler,
+} from '../../types/modbus-types.js';
+import { DeviceConnectionTracker } from '../trackers/DeviceConnectionTracker.js';
+import { PortConnectionTracker } from '../trackers/PortConnectionTracker.js';
 
 // ========== CONSTANTS ==========
 const NODE_SERIAL_CONSTANTS = {
@@ -65,10 +71,9 @@ const NODE_SERIAL_CONSTANTS = {
   MAX_BAUD_RATE: 115200,
   DEFAULT_MAX_BUFFER_SIZE: 4096,
   POLL_INTERVAL_MS: 10,
-  VALID_BAUD_RATES: [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200] as const,
 } as const;
 
-// ========== ERROR HANDLERS ==========
+// ========== LOGGER ==========
 const loggerInstance = new Logger();
 loggerInstance.setLogFormat(['timestamp', 'level', 'logger']);
 loggerInstance.setCustomFormatter('logger', (value: unknown) => {
@@ -77,6 +82,7 @@ loggerInstance.setCustomFormatter('logger', (value: unknown) => {
 const logger = loggerInstance.createLogger('NodeSerialTransport');
 logger.setLevel('info');
 
+// ========== ERROR HANDLERS ==========
 const ERROR_HANDLERS: Record<string, () => void> = {
   [ModbusTimeoutError.name]: () => logger.error('Timeout error detected'),
   [ModbusCRCError.name]: () => logger.error('CRC error detected'),
@@ -136,57 +142,40 @@ const ERROR_HANDLERS: Record<string, () => void> = {
 };
 
 const handleModbusError = (err: Error): void => {
-  ERROR_HANDLERS[err.constructor.name]?.() || logger.error(`Unknown error: ${err.message}`);
+  const handler = ERROR_HANDLERS[err.constructor.name];
+  if (handler) {
+    handler();
+  } else {
+    logger.error(`Unknown error: ${err.message}`);
+  }
 };
 
-// Типы для состояния связи с устройством
-interface DeviceConnectionStateObject {
-  slaveId: number;
-  hasConnectionDevice: boolean;
-  errorType?: string;
-  errorMessage?: string;
-}
-
-type DeviceConnectionListener = (state: DeviceConnectionStateObject) => void;
-
-// Интерфейс расширенного транспорта для отслеживания состояния устройств
-interface ExtendedTransport extends Transport {
-  notifyDeviceConnected?(slaveId: number): void;
-  notifyDeviceDisconnected?(slaveId: number, errorType?: string, errorMessage?: string): void;
-}
-
 /**
- * Реализация транспорта для работы с последовательным портом через библиотеку `serialport`.
- * Реализует интерфейс Transport для Modbus клиента.
+ * Полная копия WebSerialTransport по трекингу порта и устройств.
  */
-class NodeSerialTransport implements ExtendedTransport {
+class NodeSerialTransport implements Transport {
   private path: string;
   private options: Required<NodeSerialTransportOptions>;
-  private port: SerialPort | null;
-  private readBuffer: Uint8Array;
-  private isOpen: boolean;
-  private _reconnectAttempts: number;
-  private _shouldReconnect: boolean;
-  private _reconnectTimeout: NodeJS.Timeout | null;
-  private _isConnecting: boolean;
-  private _isDisconnecting: boolean;
-  private _isFlushing: boolean;
-  private _pendingFlushPromises: Array<() => void>;
-  private _operationMutex: Mutex;
-  private _connectionPromise: Promise<void> | null;
-  private _resolveConnection: (() => void) | null;
-  private _rejectConnection: ((reason?: Error | string | null) => void) | null;
+  private port: SerialPort | null = null;
+  private readBuffer: Uint8Array = allocUint8Array(0);
+  private isOpen: boolean = false;
+  private _reconnectAttempts: number = 0;
+  private _shouldReconnect: boolean = true;
+  private _reconnectTimeout: NodeJS.Timeout | null = null;
+  private _isConnecting: boolean = false;
+  private _isDisconnecting: boolean = false;
+  private _isFlushing: boolean = false;
+  private _pendingFlushPromises: Array<() => void> = [];
+  private _operationMutex: Mutex = new Mutex();
+  private _connectionPromise: Promise<void> | null = null;
+  private _resolveConnection: (() => void) | null = null;
+  private _rejectConnection: ((reason?: Error | string | null) => void) | null = null;
 
-  // Слушатели состояния связи с устройством
-  private _deviceConnectionListeners: DeviceConnectionListener[] = [];
-  // Карта состояний для каждого slaveId
-  private _deviceStates: Map<number, DeviceConnectionStateObject> = new Map();
+  private readonly connectionTracker = new DeviceConnectionTracker();
+  private readonly portConnectionTracker = new PortConnectionTracker({ debounceMs: 300 });
 
-  /**
-   * Создаёт новый экземпляр транспорта для последовательного порта.
-   * @param port - Путь к последовательному порту (например, '/dev/ttyUSB0').
-   * @param options - Конфигурационные параметры порта.
-   */
+  private _wasEverConnected: boolean = false;
+
   constructor(port: string, options: NodeSerialTransportOptions = {}) {
     this.path = port;
     this.options = {
@@ -201,114 +190,72 @@ class NodeSerialTransport implements ExtendedTransport {
       maxReconnectAttempts: Infinity,
       ...options,
     };
-    this.port = null;
-    this.readBuffer = allocUint8Array(0);
-    this.isOpen = false;
-    this._reconnectAttempts = 0;
-    this._shouldReconnect = true;
-    this._reconnectTimeout = null;
-    this._isConnecting = false;
-    this._isDisconnecting = false;
-    this._isFlushing = false;
-    this._pendingFlushPromises = [];
-    this._operationMutex = new Mutex();
-    this._connectionPromise = null;
-    this._resolveConnection = null;
-    this._rejectConnection = null;
   }
 
-  // Публичный метод для добавления слушателя состояния связи с устройством
-  addDeviceConnectionListener(listener: DeviceConnectionListener): void {
-    this._deviceConnectionListeners.push(listener);
-    // Вызываем слушатель для всех текущих состояний
-    for (const state of this._deviceStates.values()) {
-      listener(state);
+  // === Трекинг устройств ===
+  public setDeviceStateHandler(handler: DeviceStateHandler): void {
+    this.connectionTracker.setHandler(handler);
+  }
+
+  public async disableDeviceTracking(): Promise<void> {
+    await this.connectionTracker.removeHandler();
+    logger.debug('Device tracking disabled');
+  }
+
+  public async enableDeviceTracking(handler?: DeviceStateHandler): Promise<void> {
+    if (handler) {
+      await this.connectionTracker.setHandler(handler);
     }
+    logger.debug('Device tracking enabled');
   }
 
-  // Публичный метод для удаления слушателя состояния связи с устройством
-  removeDeviceConnectionListener(listener: DeviceConnectionListener): void {
-    const index = this._deviceConnectionListeners.indexOf(listener);
-    if (index !== -1) {
-      this._deviceConnectionListeners.splice(index, 1);
-    }
+  public setPortStateHandler(handler: PortStateHandler): void {
+    this.portConnectionTracker.setHandler(handler);
   }
 
-  // Приватный метод для уведомления слушателей о смене состояния конкретного slaveId
-  private _notifyDeviceConnectionListeners(
+  public notifyDeviceConnected(slaveId: number): void {
+    this.connectionTracker.notifyConnected(slaveId);
+  }
+
+  public notifyDeviceDisconnected(
     slaveId: number,
-    state: DeviceConnectionStateObject
-  ): void {
-    // Обновляем состояние в карте
-    this._deviceStates.set(slaveId, state);
-    logger.debug(`Device connection state changed for slaveId ${slaveId}:`, state);
-
-    // Копируем массив слушателей, чтобы избежать проблем при изменении во время итерации
-    const listeners = [...this._deviceConnectionListeners];
-    for (const listener of listeners) {
-      try {
-        listener(state);
-      } catch (err: unknown) {
-        logger.error(
-          `Error in device connection listener for slaveId ${slaveId}: ${(err as Error).message}`
-        );
-      }
-    }
-  }
-
-  // Приватный метод для создания объекта состояния подключения
-  private _createState(
-    slaveId: number,
-    hasConnection: boolean,
-    errorType?: string,
+    errorType?: ConnectionErrorType,
     errorMessage?: string
-  ): DeviceConnectionStateObject {
-    if (hasConnection) {
-      return {
-        slaveId,
-        hasConnectionDevice: true,
-        errorType: undefined,
-        errorMessage: undefined,
-      };
-    } else {
-      return {
-        slaveId,
-        hasConnectionDevice: false,
-        errorType: errorType,
-        errorMessage: errorMessage,
-      };
+  ): void {
+    this.connectionTracker.notifyDisconnected(slaveId, errorType, errorMessage);
+  }
+
+  private async _notifyPortConnected(): Promise<void> {
+    this._wasEverConnected = true;
+    const slaveIds = await this.connectionTracker.getConnectedSlaveIds();
+    this.portConnectionTracker.notifyConnected(slaveIds);
+  }
+
+  private async _notifyPortDisconnected(
+    errorType: ConnectionErrorType = ConnectionErrorType.UnknownError,
+    errorMessage: string = 'Port disconnected'
+  ): Promise<void> {
+    if (!this._wasEverConnected) {
+      logger.debug('Skipping DISCONNECTED — port was never connected');
+      return;
     }
+
+    const slaveIds = await this.connectionTracker.getConnectedSlaveIds();
+    this.portConnectionTracker.notifyDisconnected(errorType, errorMessage, slaveIds);
   }
 
-  // Метод для установки состояния устройства как подключенного
-  // Вызывается из ModbusClient при успешном обмене
-  notifyDeviceConnected(slaveId: number): void {
-    const currentState = this._deviceStates.get(slaveId);
-    if (!currentState || !currentState.hasConnectionDevice) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, true));
-    }
-  }
-
-  // Метод для установки состояния устройства как отключенного
-  // Вызывается из ModbusClient при ошибке обмена
-  notifyDeviceDisconnected(slaveId: number, errorType?: string, errorMessage?: string): void {
-    this._notifyDeviceConnectionListeners(
-      slaveId,
-      this._createState(slaveId, false, errorType, errorMessage)
-    );
-  }
-
-  // ========== ЕДИНЫЙ МЕТОД ОЧИСТКИ ==========
   private async _releaseAllResources(): Promise<void> {
     logger.debug('Releasing NodeSerial resources');
-
     this._removeAllListeners();
 
     if (this.port && this.port.isOpen) {
-      await new Promise<void>(resolve => {
-        this.port!.close(() => {
-          logger.debug('Port closed successfully');
-          resolve();
+      await new Promise<void>((resolve, reject) => {
+        this.port!.close((_err: Error | null) => {
+          if (_err) reject(_err);
+          else {
+            logger.debug('Port closed successfully');
+            resolve();
+          }
         });
       });
     }
@@ -318,10 +265,14 @@ class NodeSerialTransport implements ExtendedTransport {
     this.readBuffer = allocUint8Array(0);
   }
 
-  /**
-   * Устанавливает соединение с последовательным портом.
-   * @throws NodeSerialConnectionError - Если не удалось открыть порт или превышено количество попыток подключения.
-   */
+  private _removeAllListeners(): void {
+    if (this.port) {
+      this.port.removeAllListeners('data');
+      this.port.removeAllListeners('error');
+      this.port.removeAllListeners('close');
+    }
+  }
+
   async connect(): Promise<void> {
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts && !this.isOpen) {
       const error = new NodeSerialConnectionError(
@@ -332,7 +283,7 @@ class NodeSerialTransport implements ExtendedTransport {
     }
 
     if (this._isConnecting) {
-      logger.warn(`Connection attempt already in progress, waiting for it to complete`);
+      logger.warn(`Connection attempt already in progress`);
       return this._connectionPromise ?? Promise.resolve();
     }
 
@@ -348,12 +299,10 @@ class NodeSerialTransport implements ExtendedTransport {
         this._reconnectTimeout = null;
       }
 
-      if (this.port && this.port.isOpen) {
-        logger.debug(`Closing existing port before reconnecting to ${this.path}`);
+      if (this.port) {
         await this._releaseAllResources();
       }
 
-      // Validate port configuration
       if (
         this.options.baudRate < NODE_SERIAL_CONSTANTS.MIN_BAUD_RATE ||
         this.options.baudRate > NODE_SERIAL_CONSTANTS.MAX_BAUD_RATE
@@ -363,48 +312,36 @@ class NodeSerialTransport implements ExtendedTransport {
 
       await this._createAndOpenPort();
       logger.info(`Serial port ${this.path} opened`);
+      await this._notifyPortConnected();
 
       if (this._resolveConnection) {
         this._resolveConnection();
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
-      return this._connectionPromise;
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new NodeSerialTransportError(String(err));
       logger.error(`Failed to open serial port ${this.path}: ${error.message}`);
       this.isOpen = false;
 
-      if (error instanceof ModbusConfigError) {
-        logger.error('Configuration error during connection');
-      } else if (error instanceof NodeSerialConnectionError) {
-        logger.error('Connection error during port opening');
-      }
-
-      // Уведомляем слушателей об ошибке подключения
-      for (const [slaveId] of this._deviceStates) {
-        this._notifyDeviceConnectionListeners(
-          slaveId,
-          this._createState(slaveId, false, error.constructor.name, error.message)
-        );
+      if (this._wasEverConnected) {
+        await this._notifyPortDisconnected(ConnectionErrorType.ConnectionLost, error.message);
       }
 
       if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
-        const maxAttemptsError = new NodeSerialConnectionError(
+        const maxError = new NodeSerialConnectionError(
           `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
         );
-        logger.error(`Max reconnect attempts reached, connection failed`);
         if (this._rejectConnection) {
-          this._rejectConnection(maxAttemptsError);
+          this._rejectConnection(maxError);
           this._resolveConnection = null;
           this._rejectConnection = null;
         }
-        throw maxAttemptsError;
+        throw maxError;
       }
 
       if (this._shouldReconnect) {
         this._scheduleReconnect(error);
-        return this._connectionPromise;
       } else {
         if (this._rejectConnection) {
           this._rejectConnection(error);
@@ -418,81 +355,49 @@ class NodeSerialTransport implements ExtendedTransport {
     }
   }
 
-  /**
-   * Создаёт и открывает новый последовательный порт.
-   * @private
-   * @throws NodeSerialConnectionError - Если не удалось открыть порт.
-   */
   private async _createAndOpenPort(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      try {
-        const serialOptions: SerialPortOpenOptions<any> = {
-          path: this.path,
-          baudRate: this.options.baudRate,
-          dataBits: this.options.dataBits,
-          stopBits: this.options.stopBits,
-          parity: this.options.parity,
-          autoOpen: false,
-        };
-        this.port = new SerialPort(serialOptions);
-        this.port.open(err => {
-          if (err) {
-            logger.error(`Failed to open serial port ${this.path}: ${err.message}`);
-            this.isOpen = false;
+      const serialOptions: SerialPortOpenOptions<any> = {
+        path: this.path,
+        baudRate: this.options.baudRate,
+        dataBits: this.options.dataBits,
+        stopBits: this.options.stopBits,
+        parity: this.options.parity,
+        autoOpen: false,
+      };
+      this.port = new SerialPort(serialOptions);
 
-            // Check for specific error types
-            if (err.message.includes('permission')) {
-              reject(new NodeSerialConnectionError('Permission denied to access serial port'));
-            } else if (err.message.includes('busy')) {
-              reject(new NodeSerialConnectionError('Serial port is busy'));
-            } else if (err.message.includes('no such file')) {
-              reject(new NodeSerialConnectionError('Serial port does not exist'));
-            } else {
-              reject(new NodeSerialConnectionError(err.message));
-            }
-            return;
+      this.port.open((_err: Error | null) => {
+        if (_err) {
+          this.isOpen = false;
+          if (_err.message.includes('permission')) {
+            reject(new NodeSerialConnectionError('Permission denied'));
+          } else if (_err.message.includes('busy')) {
+            reject(new NodeSerialConnectionError('Serial port is busy'));
+          } else if (_err.message.includes('no such file')) {
+            reject(new NodeSerialConnectionError('Serial port does not exist'));
+          } else {
+            reject(new NodeSerialConnectionError(_err.message));
           }
-          this.isOpen = true;
-          this._reconnectAttempts = 0;
-          this._removeAllListeners();
-          this.port?.on('data', this._onData.bind(this));
-          this.port?.on('error', this._onError.bind(this));
-          this.port?.on('close', this._onClose.bind(this));
-          resolve();
-        });
-      } catch (err: unknown) {
-        const error = err instanceof Error ? err : new NodeSerialTransportError(String(err));
-        reject(error);
-      }
+          return;
+        }
+
+        this.isOpen = true;
+        this._reconnectAttempts = 0;
+        this._removeAllListeners();
+        this.port?.on('data', this._onData.bind(this));
+        this.port?.on('error', this._onError.bind(this));
+        this.port?.on('close', this._onClose.bind(this));
+        resolve();
+      });
     });
   }
 
-  /**
-   * Удаляет все обработчики событий порта.
-   * @private
-   */
-  private _removeAllListeners(): void {
-    if (this.port) {
-      this.port.removeAllListeners('data');
-      this.port.removeAllListeners('error');
-      this.port.removeAllListeners('close');
-    }
-  }
-
-  /**
-   * Обрабатывает входящие данные от порта.
-   * @private
-   * @param data - Входящие данные в виде Buffer.
-   */
   private _onData(data: Buffer): void {
     if (!this.isOpen) return;
-
     try {
       const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-
-      // Check for buffer overflow
       if (this.readBuffer.length + chunk.length > this.options.maxBufferSize) {
-        logger.error('Buffer overflow detected');
         this._handleError(
           new ModbusBufferOverflowError(
             this.readBuffer.length + chunk.length,
@@ -501,255 +406,149 @@ class NodeSerialTransport implements ExtendedTransport {
         );
         return;
       }
-
       this.readBuffer = concatUint8Arrays([this.readBuffer, chunk]);
-
       if (this.readBuffer.length > this.options.maxBufferSize) {
         this.readBuffer = sliceUint8Array(this.readBuffer, -this.options.maxBufferSize);
       }
-
-      // НЕ уведомляем о получении данных от устройства здесь
-      // Это делается на уровне клиента при успешной обработке ответа
     } catch (err: unknown) {
-      const error = err instanceof Error ? err : new NodeSerialTransportError(String(err));
-      this._handleError(error);
+      this._handleError(err instanceof Error ? err : new NodeSerialTransportError(String(err)));
     }
   }
 
-  /**
-   * Обрабатывает ошибки порта.
-   * @private
-   * @param err - Ошибка порта.
-   */
   private _onError(err: Error): void {
     logger.error(`Serial port ${this.path} error: ${err.message}`);
-
-    // Check for specific error types
-    if (err.message.includes('parity') || err.message.includes('Parity')) {
-      this._handleError(new ModbusParityError(err.message));
-    } else if (err.message.includes('frame') || err.message.includes('Framing')) {
-      this._handleError(new ModbusFramingError(err.message));
-    } else if (err.message.includes('overrun')) {
+    if (err.message.includes('parity')) this._handleError(new ModbusParityError(err.message));
+    else if (err.message.includes('frame')) this._handleError(new ModbusFramingError(err.message));
+    else if (err.message.includes('overrun'))
       this._handleError(new ModbusOverrunError(err.message));
-    } else if (err.message.includes('collision')) {
+    else if (err.message.includes('collision'))
       this._handleError(new ModbusCollisionError(err.message));
-    } else if (err.message.includes('noise')) {
-      this._handleError(new ModbusNoiseError(err.message));
-    } else if (err.message.includes('buffer')) {
-      this._handleError(new ModbusBufferOverflowError(0, 0)); // Use 0 as placeholder
-    } else {
-      this._handleError(new NodeSerialTransportError(err.message));
-    }
+    else if (err.message.includes('noise')) this._handleError(new ModbusNoiseError(err.message));
+    else this._handleError(new NodeSerialTransportError(err.message));
   }
 
-  /**
-   * Обрабатывает событие закрытия порта.
-   * @private
-   */
   private _onClose(): void {
     logger.info(`Serial port ${this.path} closed`);
     this.isOpen = false;
 
-    // Очищаем все состояния устройств при закрытии порта
-    for (const [slaveId] of this._deviceStates) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
-    }
-    this._deviceStates.clear();
+    this._notifyPortDisconnected(ConnectionErrorType.PortClosed, 'Port was closed').catch(() => {});
 
-    if (this._shouldReconnect && !this._isDisconnecting) {
-      this._scheduleReconnect(new NodeSerialConnectionError('Port closed'));
-    }
+    (async () => {
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          ConnectionErrorType.PortClosed,
+          'Port was closed'
+        );
+      }
+      this.connectionTracker.clear();
+    })();
   }
 
-  /**
-   * Планирует попытку переподключения.
-   * @private
-   * @param err - Ошибка, вызвавшая необходимость переподключения.
-   */
-  private _scheduleReconnect(err: Error): void {
-    if (!this._shouldReconnect || this._isDisconnecting) {
-      logger.warn('Reconnect disabled or disconnecting, not scheduling');
-      return;
-    }
-    if (this._reconnectTimeout) {
-      clearTimeout(this._reconnectTimeout);
-      this._reconnectTimeout = null;
-    }
+  private _scheduleReconnect(_err: Error): void {
+    if (!this._shouldReconnect || this._isDisconnecting) return;
+    if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);
     if (this._reconnectAttempts >= this.options.maxReconnectAttempts) {
-      logger.error(
-        `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached for ${this.path}`
-      );
-      if (this._rejectConnection) {
-        const maxAttemptsError = new NodeSerialConnectionError(
-          `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
-        );
-        this._rejectConnection(maxAttemptsError);
-        this._resolveConnection = null;
-        this._rejectConnection = null;
-      }
+      const maxError = new NodeSerialConnectionError(`Max reconnect attempts reached`);
+      if (this._rejectConnection) this._rejectConnection(maxError);
       this._shouldReconnect = false;
-
-      // Очищаем все состояния устройств при достижении максимального количества попыток
-      for (const [slaveId] of this._deviceStates) {
-        const maxAttemptsError = new NodeSerialConnectionError(
-          `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
-        );
-        this._notifyDeviceConnectionListeners(
-          slaveId,
-          this._createState(slaveId, false, 'MaxReconnectAttemptsReached', maxAttemptsError.message)
-        );
-      }
-      this._deviceStates.clear();
-
+      (async () => {
+        const states = await this.connectionTracker.getAllStates();
+        for (const state of states) {
+          this.connectionTracker.notifyDisconnected(
+            state.slaveId,
+            ConnectionErrorType.MaxReconnect,
+            maxError.message
+          );
+        }
+        this.connectionTracker.clear();
+      })();
       return;
     }
     this._reconnectAttempts++;
-    logger.info(
-      `Scheduling reconnect to ${this.path} in ${this.options.reconnectInterval} ms (attempt ${this._reconnectAttempts}) due to: ${err.message}`
-    );
     this._reconnectTimeout = setTimeout(() => {
       this._reconnectTimeout = null;
       this._attemptReconnect();
     }, this.options.reconnectInterval);
   }
 
-  /**
-   * Выполняет попытку переподключения.
-   * @private
-   */
   private async _attemptReconnect(): Promise<void> {
     try {
-      if (this.port && this.port.isOpen) {
-        await this._releaseAllResources();
-      }
+      if (this.port && this.port.isOpen) await this._releaseAllResources();
       await this._createAndOpenPort();
-      logger.info(`Reconnect attempt ${this._reconnectAttempts} successful`);
-
       this._reconnectAttempts = 0;
-
-      // Очищаем все состояния устройств при успешном переподключении
-      // Они будут восстановлены при следующих обменах
-      this._deviceStates.clear();
-
-      if (this._resolveConnection) {
-        this._resolveConnection();
-        this._resolveConnection = null;
-        this._rejectConnection = null;
-      }
-    } catch (err: unknown) {
-      const error = err instanceof Error ? err : new NodeSerialTransportError(String(err));
-      logger.error(`Reconnect attempt ${this._reconnectAttempts} failed: ${error.message}`);
+      this.connectionTracker.clear();
+      await this._notifyPortConnected();
+      if (this._resolveConnection) this._resolveConnection();
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new NodeSerialTransportError(String(error));
       this._reconnectAttempts++;
       if (
         this._shouldReconnect &&
         !this._isDisconnecting &&
         this._reconnectAttempts <= this.options.maxReconnectAttempts
       ) {
-        this._scheduleReconnect(error);
+        this._scheduleReconnect(err);
       } else {
-        if (this._rejectConnection) {
-          const maxAttemptsError = new NodeSerialConnectionError(
-            `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
-          );
-          this._rejectConnection(maxAttemptsError);
-          this._resolveConnection = null;
-          this._rejectConnection = null;
-        }
+        const maxError = new NodeSerialConnectionError(`Max reconnect attempts reached`);
+        if (this._rejectConnection) this._rejectConnection(maxError);
         this._shouldReconnect = false;
-
-        // Очищаем все состояния устройств при достижении максимального количества попыток
-        for (const [slaveId] of this._deviceStates) {
-          const maxAttemptsError = new NodeSerialConnectionError(
-            `Max reconnect attempts (${this.options.maxReconnectAttempts}) reached`
-          );
-          this._notifyDeviceConnectionListeners(
-            slaveId,
-            this._createState(
-              slaveId,
-              false,
-              'MaxReconnectAttemptsReached',
-              maxAttemptsError.message
-            )
-          );
-        }
-        this._deviceStates.clear();
+        await this._notifyPortDisconnected(ConnectionErrorType.MaxReconnect, maxError.message);
+        (async () => {
+          const states = await this.connectionTracker.getAllStates();
+          for (const state of states) {
+            this.connectionTracker.notifyDisconnected(
+              state.slaveId,
+              ConnectionErrorType.MaxReconnect,
+              maxError.message
+            );
+          }
+          this.connectionTracker.clear();
+        })();
       }
     }
   }
 
-  /**
-   * Очищает буфер чтения транспорта.
-   * @returns Промис, который разрешается после завершения очистки.
-   */
   async flush(): Promise<void> {
-    logger.info('Flushing NodeSerial transport buffer');
     if (this._isFlushing) {
-      logger.info('Flush already in progress');
-      await Promise.all(this._pendingFlushPromises).catch(() => {});
+      await Promise.all(this._pendingFlushPromises.map(p => p())).catch(() => {});
       return;
     }
     this._isFlushing = true;
-    const flushPromise = new Promise<void>(resolve => {
-      this._pendingFlushPromises.push(resolve);
-    });
+    const p = new Promise<void>(resolve => this._pendingFlushPromises.push(resolve));
     try {
       this.readBuffer = allocUint8Array(0);
-      logger.info('NodeSerial read buffer flushed');
     } finally {
       this._isFlushing = false;
-      this._pendingFlushPromises.forEach(resolve => resolve());
+      this._pendingFlushPromises.forEach(r => r());
       this._pendingFlushPromises = [];
-      logger.info('NodeSerial transport flush completed');
     }
-    return flushPromise;
+    return p;
   }
 
-  /**
-   * Записывает данные в последовательный порт.
-   * @param buffer - Данные для записи.
-   * @throws NodeSerialWriteError - Если порт закрыт или произошла ошибка записи.
-   */
   async write(buffer: Uint8Array): Promise<void> {
-    if (!this.isOpen || !this.port || !this.port.isOpen) {
-      logger.info(`Write attempted on closed port ${this.path}`);
-      throw new NodeSerialWriteError('Port is closed');
-    }
-
-    // Check for buffer underrun
-    if (buffer.length === 0) {
-      throw new ModbusBufferUnderrunError(0, 1);
-    }
-
+    if (!this.isOpen || !this.port?.isOpen) throw new NodeSerialWriteError('Port closed');
+    if (buffer.length === 0) throw new ModbusBufferUnderrunError(0, 1);
     const release = await this._operationMutex.acquire();
     try {
       return new Promise<void>((resolve, reject) => {
-        this.port!.write(buffer, err => {
-          if (err) {
-            logger.error(`Write error on port ${this.path}: ${err.message}`);
-
-            // Check for specific error types
-            if (err.message.includes('parity')) {
-              const parityError = new ModbusParityError(err.message);
-              this._handleError(parityError);
-              return reject(parityError);
-            } else if (err.message.includes('collision')) {
-              const collisionError = new ModbusCollisionError(err.message);
-              this._handleError(collisionError);
-              return reject(collisionError);
-            } else {
-              const writeError = new NodeSerialWriteError(err.message);
-              this._handleError(writeError);
-              return reject(writeError);
-            }
+        this.port!.write(buffer, 'binary', (_err: Error | null | undefined) => {
+          if (_err) {
+            const e = _err.message.includes('parity')
+              ? new ModbusParityError(_err.message)
+              : _err.message.includes('collision')
+                ? new ModbusCollisionError(_err.message)
+                : new NodeSerialWriteError(_err.message);
+            this._handleError(e);
+            return reject(e);
           }
-          this.port!.drain(drainErr => {
-            if (drainErr) {
-              logger.info(`Drain error on port ${this.path}: ${drainErr.message}`);
-              const drainError = new NodeSerialWriteError(drainErr.message);
-              this._handleError(drainError);
-              return reject(drainError);
+          this.port!.drain((_drainErr: Error | null | undefined) => {
+            if (_drainErr) {
+              const e = new NodeSerialWriteError(_drainErr.message);
+              this._handleError(e);
+              return reject(e);
             }
-            // НЕ уведомляем о связи при отправке запроса - связь устанавливается только при получении ответа
             resolve();
           });
         });
@@ -759,168 +558,136 @@ class NodeSerialTransport implements ExtendedTransport {
     }
   }
 
-  /**
-   * Читает данные из последовательного порта.
-   * @param length - Количество байтов для чтения.
-   * @param timeout - Таймаут чтения в миллисекундах (по умолчанию из опций).
-   * @returns Прочитанные данные.
-   * @throws NodeSerialReadError - Если порт закрыт или таймаут чтения истёк.
-   * @throws ModbusFlushError - Если операция чтения прервана очисткой буфера.
-   */
   async read(length: number, timeout: number = this.options.readTimeout): Promise<Uint8Array> {
-    if (length <= 0) {
-      throw new ModbusDataConversionError(length, 'positive integer');
-    }
-
-    const start = Date.now();
+    if (length <= 0) throw new ModbusDataConversionError(length, 'positive');
     const release = await this._operationMutex.acquire();
-    let emptyReadAttempts = 0;
+    let emptyAttempts = 0;
+    const start = Date.now();
     try {
-      return await new Promise<Uint8Array>((resolve, reject) => {
-        const checkData = () => {
-          if (!this.isOpen || !this.port || !this.port.isOpen) {
-            logger.info('Read operation interrupted: port is not open');
-            const readError = new NodeSerialReadError('Port is closed');
-            return reject(readError);
-          }
-          if (this._isFlushing) {
-            logger.info('Read operation interrupted by flush');
-            const flushError = new ModbusFlushError();
-            return reject(flushError);
-          }
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          if (!this.isOpen || !this.port?.isOpen)
+            return reject(new NodeSerialReadError('Port closed'));
+          if (this._isFlushing) return reject(new ModbusFlushError());
           if (this.readBuffer.length >= length) {
             const data = sliceUint8Array(this.readBuffer, 0, length);
             this.readBuffer = sliceUint8Array(this.readBuffer, length);
-            logger.trace(`Read ${length} bytes from ${this.path}`);
-            emptyReadAttempts = 0;
-
-            // Validate data integrity
-            if (data.length !== length) {
-              const insufficientDataError = new ModbusInsufficientDataError(data.length, length);
-              return reject(insufficientDataError);
-            }
-
-            // НЕ уведомляем тут, т.к. не знаем slaveId
-            // Это делается на уровне клиента при успешной обработке ответа
-
+            emptyAttempts = 0;
+            if (data.length !== length)
+              return reject(new ModbusInsufficientDataError(data.length, length));
             return resolve(data);
           }
-
           if (this.readBuffer.length === 0) {
-            emptyReadAttempts++;
-            if (emptyReadAttempts >= 3) {
-              logger.debug('Auto-reconnecting NodeSerialTransport - 3 empty reads detected', {
-                path: this.path,
-                timeout,
-                emptyAttempts: emptyReadAttempts,
-              });
-              emptyReadAttempts = 0;
-
-              this.connect().catch(reconnectErr => {
-                logger.error('Auto-reconnect failed during read', {
-                  path: this.path,
-                  error: reconnectErr,
-                });
-              });
+            emptyAttempts++;
+            if (emptyAttempts >= 3) {
+              emptyAttempts = 0;
+              this.connect().catch(() => {});
             }
-          } else {
-            emptyReadAttempts = 0;
-          }
-
-          if (Date.now() - start > timeout) {
-            logger.warn(`Read timeout on NodeSerial port`);
-            const timeoutError = new ModbusTimeoutError('Read timeout');
-            return reject(timeoutError);
-          }
-          setTimeout(checkData, NODE_SERIAL_CONSTANTS.POLL_INTERVAL_MS);
+          } else emptyAttempts = 0;
+          if (Date.now() - start > timeout) return reject(new ModbusTimeoutError('Read timeout'));
+          setTimeout(check, NODE_SERIAL_CONSTANTS.POLL_INTERVAL_MS);
         };
-        checkData();
+        check();
       });
     } finally {
       release();
     }
   }
 
-  /**
-   * Закрывает соединение с последовательным портом.
-   * @returns Промис, который разрешается после закрытия порта.
-   * @throws NodeSerialConnectionError - Если произошла ошибка при закрытии порта.
-   */
   async disconnect(): Promise<void> {
     this._shouldReconnect = false;
     this._isDisconnecting = true;
-    if (this._reconnectTimeout) {
-      clearTimeout(this._reconnectTimeout);
-      this._reconnectTimeout = null;
-    }
-    if (this._rejectConnection) {
-      this._rejectConnection(new NodeSerialConnectionError('Connection manually disconnected'));
-      this._resolveConnection = null;
-      this._rejectConnection = null;
-    }
+    if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);
+    if (this._rejectConnection)
+      this._rejectConnection(new NodeSerialConnectionError('Disconnected'));
     if (!this.isOpen || !this.port) {
       this._isDisconnecting = false;
-      // Очищаем все состояния устройств при отключении порта
-      for (const [slaveId] of this._deviceStates) {
-        this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+      if (this._wasEverConnected) {
+        await this._notifyPortDisconnected(
+          ConnectionErrorType.ManualDisconnect,
+          'Port closed by user'
+        );
       }
-      this._deviceStates.clear();
-      return Promise.resolve();
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          ConnectionErrorType.ManualDisconnect,
+          'Port closed by user'
+        );
+      }
+      this.connectionTracker.clear();
+      return;
     }
-    return new Promise<void>((resolve, reject) => {
-      this._releaseAllResources()
-        .then(() => {
-          this._isDisconnecting = false;
-          logger.info(`Serial port ${this.path} closed`);
-          // Очищаем все состояния устройств при успешном закрытии порта
-          for (const [slaveId] of this._deviceStates) {
-            this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
-          }
-          this._deviceStates.clear();
-          resolve();
-        })
-        .catch(err => {
-          this._isDisconnecting = false;
-          const closeError = new NodeSerialConnectionError(err.message);
-          // Очищаем все состояния устройств при ошибке закрытия порта
-          for (const [slaveId] of this._deviceStates) {
-            this._notifyDeviceConnectionListeners(
-              slaveId,
-              this._createState(slaveId, false, 'NodeSerialConnectionError', closeError.message)
-            );
-          }
-          this._deviceStates.clear();
-          reject(closeError);
-        });
-    });
+    await this._releaseAllResources();
+    if (this._wasEverConnected) {
+      await this._notifyPortDisconnected(
+        ConnectionErrorType.ManualDisconnect,
+        'Port closed by user'
+      );
+    }
+    const states = await this.connectionTracker.getAllStates();
+    for (const state of states) {
+      this.connectionTracker.notifyDisconnected(
+        state.slaveId,
+        ConnectionErrorType.ManualDisconnect,
+        'Port closed by user'
+      );
+    }
+    this.connectionTracker.clear();
+    this._isDisconnecting = false;
   }
 
-  /**
-   * Полностью уничтожает транспорт, закрывая порт и очищая ресурсы.
-   */
   destroy(): void {
     this._shouldReconnect = false;
-    if (this._reconnectTimeout) {
-      clearTimeout(this._reconnectTimeout);
-      this._reconnectTimeout = null;
-    }
-    if (this._rejectConnection) {
-      this._rejectConnection(new NodeSerialTransportError('Transport destroyed'));
-      this._resolveConnection = null;
-      this._rejectConnection = null;
-    }
-
+    if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);
+    if (this._rejectConnection) this._rejectConnection(new NodeSerialTransportError('Destroyed'));
     this._releaseAllResources().catch(() => {});
-
-    // Очищаем все состояния устройств при уничтожении транспорта
-    for (const [slaveId] of this._deviceStates) {
-      this._notifyDeviceConnectionListeners(slaveId, this._createState(slaveId, false));
+    if (this._wasEverConnected) {
+      this._notifyPortDisconnected(ConnectionErrorType.Destroyed, 'Transport destroyed').catch(
+        () => {}
+      );
     }
-    this._deviceStates.clear();
+    (async () => {
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          ConnectionErrorType.Destroyed,
+          'Transport destroyed'
+        );
+      }
+      this.connectionTracker.clear();
+      await this.portConnectionTracker.clear();
+    })();
   }
 
   private _handleError(err: Error): void {
     handleModbusError(err);
+    this._handleConnectionLoss(`Error: ${err.message}`);
+  }
+
+  private _handleConnectionLoss(reason: string): void {
+    if (!this.isOpen && !this._isConnecting) return;
+
+    logger.warn(`Connection loss detected: ${reason}`);
+    this.isOpen = false;
+
+    if (this._wasEverConnected) {
+      this._notifyPortDisconnected(ConnectionErrorType.ConnectionLost, reason).catch(() => {});
+    }
+
+    (async () => {
+      const states = await this.connectionTracker.getAllStates();
+      for (const state of states) {
+        this.connectionTracker.notifyDisconnected(
+          state.slaveId,
+          ConnectionErrorType.ConnectionLost,
+          reason
+        );
+      }
+      this.connectionTracker.clear();
+    })();
   }
 }
 

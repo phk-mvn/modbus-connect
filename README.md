@@ -9,9 +9,7 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - [Installation](#installation)
 - [Basic Usage](#basic-usage)
 - [Modbus Client](#modbus-client)
-- [Node Serial Transport](#node-serial-transport)
-- [WEB Serial Transport](#web-serial-transport)
-- [Factory transport's](#factory-transports)
+- [Transport Controller](#transport-controller)
 - [Errors Types](#errors-types)
 - [Polling Manager](#polling-manager)
 - [Slave Emulator](#slave-emulator)
@@ -19,8 +17,6 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - [Diagnostics](#diagnostics)
 - [Utils](#utils)
 - [Utils CRC](#utils-crc)
-- [Packet Building](#packet-building)
-- [Notes](#notes)
 - [Tips for use](#tips-for-use)
 - [Expansion](#expansion)
 - [CHANGELOG](#changelog)
@@ -792,724 +788,340 @@ Modbus error: Read timeout
 
 <br>
 
-# <span id="node-serial-transport">Node Serial Transport</span>
+# <span id="transport-controller">Transport Controller</span>
 
-The NodeSerialTransport class implements a transport layer for Modbus (or other protocols) based on the serialport library in Node.js. It is designed for server applications that need to connect to serial ports (RS-232/USB-serial). The class supports **_asynchronous operations_** (`connect()`, `disconnect()`, `write()`, `read()`, `flush()`), **_automatic reconnection on errors_**, **_read buffering_**, **_timeouts_**, and **_logger_** integration. It uses a `Mutex` for operation synchronization.
+The `transport/transport-controller.js` module provides a centralized way to manage **multiple** Modbus transports (serial or TCP) depending on the environment (Node.js or Web). `TransportController` allows you to **manage connections**, **route requests** between devices with different `slaveId`s via different transports, and provides **load balancing** and **fault tolerance**.
 
 **Key Features:**
 
-- **SerialPort:** Requires serialport installed (npm install serialport).
-- **Reconnect:** Automatic reconnection with an interval (default 3000ms), max retries (Infinity), error counter.
-- **Buffering:** 'data' events are accumulated in the readBuffer (max 4096 bytes, truncates old ones).
-- **Errors:** Integration with ModbusError (TimeoutError, FlushError, etc.).
-- **Logging:** Uses Logger (default level 'info', format ['timestamp', 'level', 'logger']).
-- **Promises:** connect() returns a Promise, waits for a successful connection/reconnection.
+- **Transport Management:** Add, remove, connect, disconnect.
+- **Routing:** Automatically routes requests from `ModbusClient` to the correct transport based on `slaveId`.
+- **Dynamic Assignment:** Ability to assign new `slaveId`s to an already connected transport.
+- **Fault Tolerance:** Supports fallback transports.
+- **Logging:** Integrated with the main logger.
+- **Diagnostics:** Can provide transport-level statistics.
+- **Device/Port State Tracking:** Internally leverages the state tracking capabilities of the underlying `NodeSerialTransport` and `WebSerialTransport`. These transports use `DeviceConnectionTracker` and `PortConnectionTracker` to monitor the connection status of individual Modbus slaves and the physical port itself, providing detailed error types and messages. `TransportController` manages these states for all managed transports. **You can subscribe to state changes by setting handlers directly on the individual transports added to the controller.**
 
-The class is exported as { NodeSerialTransport }. Works in Node.js.
+The module exports the `TransportController` class. It maintains its own internal state for managing transports and routing.
 
 **Dependencies:**
 
-- `serialport:` For the port.
-- `async-mutex:` Mutex.
-- `../../logger.js:` Logger.
-- `../../utils/utils.js:` concatUint8Arrays, sliceUint8Array, allocUint8Array, isUint8Array.
-- `../../errors.js:` ModbusError and subclasses.
-
-## Initialization
-
-Include the module:
-
-```js
-const { NodeSerialTransport } = require('./transport/node-transports/node-serialport');
-```
-
-Create an instance:
-
-```js
-const options = {
-  baudRate: 19200,
-  dataBits: 8,
-  stopBits: 1,
-  parity: 'none',
-  readTimeout: 2000,
-  writeTimeout: 1000,
-  maxBufferSize: 8192,
-  reconnectInterval: 5000,
-  maxReconnectAttempts: 10,
-};
-
-const transport = new NodeSerialTransport('/dev/ttyUSB0', options);
-```
-
-**Initialization output (logs if level >= 'info'; simulation):** No explicit output in the constructor.
-
-**Connection:**
-
-```js
-await transport.connect();
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][NodeSerialTransport] Serial port /dev/ttyUSB0 opened
-```
-
-**Disconnectiong:**
-
-```js
-await transport.disconnect();
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][NodeSerialTransport] Serial port /dev/ttyUSB0 closed
-```
-
-## Main Methods
-
-All methods are asynchronous. They use a Mutex to serialize operations.
-
-## 1. connect()
-
-Connects to the port: creates/opens a SerialPort, adds handlers ('data', 'error', 'close'), starts buffering. Automatically reconnects on errors.
-
-**Parameters:** None.
-**Returns:** Promise<_void_> (waits for a successful connection).
-**Errors:** ModbusTimeoutError, Error('Max reconnect attempts...').
-
-**Example:**
-
-```js
-try {
-  await transport.connect();
-  console.log('Connected:', transport.isOpen); // true
-} catch (err) {
-  console.error('Connect failed:', err.message);
-}
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][NodeSerialTransport] Serial port /dev/ttyUSB0 opened
-Connected: true
-```
-
-**On reconnect (error + auto):**
-
-```bash
-[14:30:15][ERROR][NodeSerialTransport] Serial port /dev/ttyUSB0 error: Some error
-[14:30:15][INFO][NodeSerialTransport] Scheduling reconnect to /dev/ttyUSB0 in 3000 ms (attempt 1) due to: Some error
-[14:30:18][INFO][NodeSerialTransport] Reconnect attempt 1 successful
-```
-
-## 2. disconnect()
-
-Disconnecting: closes the port Removes handlers, stops reconnection.
-
-**Parameters:** None.
-**Returns:** Promise<_void_>.
-
-**Example:**
-
-```js
-await transport.disconnect();
-console.log('Disconnected:', !transport.isOpen); // true
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][NodeSerialTransport] Serial port /dev/ttyUSB0 closed
-Disconnected: true
-```
-
-## write(buffer)
-
-Writes a Uint8Array to the port with drain (waits for sending).
-
-**Parameters:**
-
-- `buffer (Uint8Array):` Data.
-  **Returns:** Promise<_void_>.
-  **Errors:** Error('Port is closed'), serialport errors.
-
-**Example:**
-
-```js
-const data = new Uint8Array([0x01, 0x03, 0x00]);
-await transport.write(data);
-console.log('Written:', data.length, 'bytes');
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][TRACE][NodeSerialTransport] Read 5 bytes from /dev/ttyUSB0  // There is no explicit log for write, but trace for read
-Written: 5 bytes
-```
-
-## 3. read(length, timeout = options.readTimeout)
-
-Reads length bytes from the buffer with a timeout (poll every 10ms).
-
-**Parameters:**
-
-- `length (number):` Number of bytes.
-- `timeout (number, optional):` Timeout.
-  **Returns:** Promise<_Uint8Array_>.
-  **Errors:** ModbusTimeoutError, ModbusFlushError, Error('Port is closed').
-
-**Example:**
-
-```js
-const received = await transport.read(5, 2000);
-console.log(
-  'Read hex:',
-  Array.from(received)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03 00 00 01
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][TRACE][NodeSerialTransport] Read 5 bytes from /dev/ttyUSB0
-Read hex: 01 03 00 00 01
-```
-
-**On timeout:**
-
-```bash
-[14:30:15][ERROR][NodeSerialTransport] Read timeout on /dev/ttyUSB0
-Error: Read timeout
-```
-
-## 4. flush()
-
-Clears the readBuffer and resets the state. Blocks read/write (FlushError).
-
-**Parameters:** None.
-**Returns:** Promise<_void_>.
-
-**Example:**
-
-```js
-await transport.flush();
-console.log('Buffer flushed, length:', transport.readBuffer.length); // 0
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][NodeSerialTransport] Flushing NodeSerial transport buffer
-[14:30:15][INFO][NodeSerialTransport] NodeSerial read buffer flushed
-[14:30:15][INFO][NodeSerialTransport] NodeSerial transport flush completed
-Buffer flushed, length: 0
-```
-
-## 5. destroy()
-
-Destroys the transport: disconnects, clears, and disconnects reconnection.
-
-**Parameters:** None.
-**Returns:** void (synchronous).
-
-**Example:**
-
-```js
-transport.destroy();
-console.log('Destroyed:', !transport.isOpen); // true
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][NodeSerialTransport] Port /dev/ttyUSB0 destroyed
-Destroyed: true
-```
-
-<br>
-
-# <span id="web-serial-transport">WEB Serial Transport</span>
-
-The WebSerialTransport class implements a transport layer for Modbus (or other protocols) based on the Web Serial API (browser serial port). It is designed for web applications that require connection to serial devices (e.g., USB-to-Serial adapters). The class supports **_asynchronous operations_** (`connect()`, `disconnect()`, `write()`, `read()`, `flush()`), **_automatic reconnection on errors_**, **_read buffering_**, **_timeouts_**, and **_logger_** integration. It uses a `Mutex` to synchronize operations.
-
-**Key Features:**
-
-- **Web Serial API:** Requires HTTPS and a user gesture (navigator.serial.requestPort()).
-- **Reconnect:** Automatic reconnection with an interval (default 3000ms), maximum attempts (Infinity), empty read counter (max 10 before reconnection).
-- **Buffering:** Background reading (read loop), readBuffer buffer for data accumulation.
-- **Errors:** Integration with ModbusError (TimeoutError, FlushError, etc.).
-- **Logging:** Uses Logger (default level 'info', format ['timestamp', 'level', 'logger']).
-
-The class is exported as { WebSerialTransport }. Requires a browser with Web Serial support (Chrome/Edge 89+).
-
-**Dependencies:**
-
-- `../../logger.js:` Logger.
-- `../../utils/utils.js:` allocUint8Array.
-- `async-mutex:` Mutex.
-- `../../errors.js:` ModbusError and subclasses.
+- `./factory.js`: For creating underlying transport instances (NodeSerialTransport, WebSerialTransport).
+- `../logger.js`: For logging.
+- `../types/modbus-types.js`: For type definitions.
 
 ## Initialization
 
 Include the module
 
 ```js
-import { WebSerialTransport } from './transport/web-transports/web-serialport.js'; // Path
-// Or in Node (for tests): const { WebSerialTransport } = require('./transport/web-transports/web-serialport');
-```
-
-Create an instance:
-
-```js
-const port = async () => {
-  const newPort = await navigator.serial.requestPort({ filters: [] });
-  return newPort;
-};
-
-// Options port
-const options = {
-  baudRate: 19200,
-  dataBits: 8,
-  stopBits: 1,
-  parity: 'none',
-  readTimeout: 2000,
-  writeTimeout: 1000,
-  reconnectInterval: 5000,
-  maxReconnectAttempts: 5,
-  maxEmptyReadsBeforeReconnect: 5,
-};
-
-const transport = new WebSerialTransport(port, options);
-```
-
-**Output on initialization (logs if level >= 'info'; simulation):** No explicit output in the constructor. Logs are activated upon connect.
-
-**Connection:**
-
-```js
-await transport.connect();
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][WebSerialTransport] WebSerial port opened successfully with new instance
-```
-
-**Disconnecting:**
-
-```js
-await transport.disconnect();
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][WebSerialTransport] Disconnecting WebSerial transport...
-[14:30:15][INFO][WebSerialTransport] WebSerial transport disconnected successfully
-```
-
-**Error in constructor:**
-
-```js
-const invalid = new WebSerialTransport('not a function'); // Not a function
-```
-
-**Output:**
-
-```bash
-Error: A port factory function must be provided to WebSerialTransport
-```
-
-## Main Methods
-
-All methods are asynchronous. Use a Mutex to serialize operations.
-
-### 1. connect()
-
-Connects to the port: opens, sets up a reader/writer, starts a read loop. Automatically reconnects on errors.
-
-**Parameters:** None.
-**Returns:** Promise<_void_>.
-**Errors:** ModbusTimeoutError, ModbusTooManyEmptyReadsError, etc.
-
-**Example:**
-
-```js
-try {
-  await transport.connect();
-  console.log('Connected:', transport.isOpen); // true
-} catch (err) {
-  console.error('Connect failed:', err.message);
-}
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][DEBUG][WebSerialTransport] Requesting new SerialPort instance from factory...
-[14:30:15][DEBUG][WebSerialTransport] New SerialPort instance acquired.
-[14:30:15][DEBUG][WebSerialTransport] Starting read loop
-[14:30:15][INFO][WebSerialTransport] WebSerial port opened successfully with new instance
-Connected: true
-```
-
-**When reconnecting (error + auto):**
-
-```bash
-[14:30:15][WARN][WebSerialTransport] Connection loss detected: Error: Some error
-[14:30:15][INFO][WebSerialTransport] Auto-reconnect enabled, starting reconnect process...
-[14:30:15][INFO][WebSerialTransport] Scheduling reconnect to WebSerial port in 3000 ms (attempt 1) due to: Some error
-[14:30:18][INFO][WebSerialTransport] Reconnect attempt 1 successful
-```
-
-### 2. disconnect()
-
-Disconnecting: closes the port, cleans up resources, stops reconnecting.
-
-**Parameters:** None.
-**Returns:** Promise<_void_>.
-
-**Example:**
-
-```js
-await transport.disconnect();
-console.log('Disconnected:', !transport.isOpen); // true
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][WebSerialTransport] Disconnecting WebSerial transport...
-[14:30:15][DEBUG][WebSerialTransport] Closing port...
-[14:30:15][DEBUG][WebSerialTransport] Port closed successfully.
-[14:30:15][INFO][WebSerialTransport] WebSerial transport disconnected successfully
-Disconnected: true
-```
-
-### 3. write(buffer)
-
-Writes a Uint8Array to the port with a timeout volume. Throws FlushError on flush.
-
-**Parameters:**
-
-- `buffer(Uint8Array):` Data to write.
-  **Returns:** Promise<_void_>.
-  **Errors:** ModbusTimeoutError, ModbusFlushError.
-
-**Example:**
-
-```js
-const data = new Uint8Array([0x01, 0x03, 0x00]);
-await transport.write(data);
-console.log('Written:', data.length, 'bytes');
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][DEBUG][WebSerialTransport] Wrote 5 bytes to WebSerial port
-Written: 5 bytes
-```
-
-**On timeout:**
-
-```bash
-[14:30:15][WARN][WebSerialTransport] Write timeout on WebSerial port
-Error: Write timeout
-```
-
-### 4. read(length, timeout = options.readTimeout)
-
-Reads length bytes from the timeout buffer. Waits for the buffer to accumulate.
-
-**Parameters:**
-
-- `length (number):` Number of bytes.
-- `timeout (number, optional):` Timeout.
-  **Returns:** Promise<_Uint8Array_>.
-  **Errors:** ModbusTimeoutError, ModbusFlushError.
-
-**Example:**
-
-```js
-const received = await transport.read(5, 2000);
-console.log(
-  'Read hex:',
-  Array.from(received)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03 00 00 01
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][DEBUG][WebSerialTransport] Read 5 bytes from WebSerial port
-Read hex: 01 03 00 00 01
-```
-
-**On timeout:**
-
-```bash
-[14:30:15][WARN][WebSerialTransport] Read timeout on WebSerial port
-Error: Read timeout
-```
-
-### 5. flush()
-
-Clears readBuffer and resets counters. Blocks write/read (FlushError).
-
-**Parameters:** None.
-**Returns:** Promise<_void_>.
-
-**Example:**
-
-```js
-await transport.flush();
-console.log('Buffer flushed, length:', transport.readBuffer.length); // 0
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][DEBUG][WebSerialTransport] Flushing WebSerial transport buffer
-[14:30:15][DEBUG][WebSerialTransport] WebSerial read buffer flushed
-[14:30:15][DEBUG][WebSerialTransport] WebSerial transport flush completed
-Buffer flushed, length: 0
-```
-
-### 5. destroy()
-
-Destroys the transport: disconnects, clears, disconnects reconnect.
-
-**Parameters:** None.
-**Returns:** void (synchronous).
-
-**Example:**
-
-```js
-transport.destroy();
-console.log('Destroyed:', !transport.isOpen); // true
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][WebSerialTransport] Destroying WebSerial transport...
-[14:30:15][DEBUG][WebSerialTransport] Error closing port during destroy: ... (if error)
-Destroyed: true
-```
-
-<br>
-
-# <span id="factory-transports">Factory Transport's</span>
-
-The` transport/factory.js` module is a factory for creating Modbus transport instances (serial or TCP) depending on the environment (Node.js or Web). The createTransport function asynchronously returns a Transport object implementing the interface (connect(), disconnect(), write(), read(), flush()). This allows for abstracting low-level access (**_SerialPort_** for Node, **_Web Serial API_** for the browser).
-
-**Key Features:**
-
-- **Transport Types:**
-  - `node:` Node.js serial (uses **_serialport_**).
-  - `web`: Web serial (uses **_Web Serial API_**).
-- **Options:** Passed to the transport constructor (e.g., baudRate for serial).
-- **Logging:** Integration with Logger (from '../logger.js'); sets the transport to the context. Logs at the 'error' level by default.
-- **Validation:** Checks for the presence of port/path; throws Error on errors.
-- **Reconnect:** For 'web', uses portFactory to reuse the port (recommended for robust reconnects).
-
-The module exports { createTransport }. No state—just call the function.
-
-**Dependencies:**
-
-- `../logger.js:` For logging.
-- `./node-transports/node-serialport.js:` NodeSerialTransport.
-- `./web-transports/web-serialport.js:` WebSerialTransport.
-
-## Initialization
-
-Include the module
-
-```js
-const { createTransport } = require('modbus-connect/transport');
+const TransportController = require('modbus-connect/transport');
+// Or if you still have a separate export for TransportController
+// const TransportController = require('modbus-connect/transport-controller');
 ```
 
 Or in the browser:
 
 ```js
-import { createTransport } from 'modbus-connect/transport';
+import TransportController from 'modbus-connect/transport';
+// Or if you still have a separate export for TransportController
+// import TransportController from 'modbus-connect/transport-controller';
 ```
 
-The function is ready to use. Enable logging if needed:
+Create an instance:
 
 ```js
-const Logger = require('modbus-connect/logger');
-const logger = new Logger();
-logger.enableLogger('debug'); // For details
+const controller = new TransportController();
 ```
+
+Logging and diagnostics are configured internally or via the main logger.
 
 ## Main functions
 
-### 1. createTransport(type, options = {})
+### 1. `addTransport(id, type, options)`
 
-Asynchronously creates a transport. Returns a Promise<_Transport_>
+Asynchronously adds a new transport to the controller. Does not connect it automatically.
 
 **Parameters:**
 
-- `type (string):` Type ('node', 'web'; others - error).
-- `options (object, opt):` Config:
-- `For node:` { port: '/dev/ttyUSB0', baudRate: 9600, ... } (SerialPort options).
-- `For web:` { port: SerialPort instance } (or portFactory: async () => SerialPort for reconnects).
-  **Returns:** Promise<_Transport_> - an instance (NodeSerialTransport or WebSerialTransport).
-  **Errors:**
-- Error: Missing "port" (or "path") option for node transport.
-- Error: Missing "port" option for web transport.
-- Error: Unknown transport type: ${type}.
-- Logged in Logger: Failed to create transport of type "${type}": ${err.message}.
+- `id (string)`: A unique identifier for this transport within the controller.
+- `type (string)`: Type ('node', 'web').
+- `options (object)`: Config:
+  _ `For 'node':` `{ port: 'COM3', baudRate: 9600, ..., slaveIds: [1, 2] }` (SerialPort options + `slaveIds` array).
+  _ `For 'web':` `{ port: SerialPort instance, ..., slaveIds: [3, 4] }` (Web Serial Port instance + `slaveIds` array).
+  _ `slaveIds (number[], optional):` An array of `slaveId`s that this transport will handle. These are registered internally for routing.
+  _ `fallbacks (string[], optional):` An array of transport IDs to use as fallbacks for the assigned `slaveIds` if the primary transport fails.
+  **Returns:** Promise<void>
+  **Errors:** Throws Error on invalid options, duplicate ID, or if the underlying `createTransport` fails.
 
-**Example 1: Node.js serial transport.**
+**Example 1: Add Node.js serial transport.**
 
 ```js
-async function createNodeSerial() {
+async function addNodeTransport() {
   try {
-    const transport = await createTransport('node', {
-      port: '/dev/ttyUSB0',
+    await controller.addTransport('com3', 'node', {
+      port: 'COM3', // Use path for Node
       baudRate: 19200,
       dataBits: 8,
       stopBits: 1,
       parity: 'none',
+      slaveIds: [13, 14], // Assign slave IDs 13 and 14 to this transport
     });
-    console.log('Created transport:', transport.constructor.name); // NodeSerialTransport
-    return transport;
+    console.log('Transport added to controller:', 'com3');
   } catch (err) {
-    console.error('Failed:', err.message);
+    console.error('Failed to add transport:', err.message);
   }
 }
 
-createNodeSerial();
+addNodeTransport();
 ```
 
-**Output (logs if level >= 'debug'; simulation):**
+**Output (logs if level >= 'info'; simulation):**
 
 ```bash
-[14:30:15][DEBUG][factory] Creating NodeSerialTransport with port /dev/ttyUSB0
-[14:30:15][INFO] Transport created { type: 'node' }  // if logs are in the transport
-Created transport: NodeSerialTransport
+[14:30:15][INFO][TransportController] Transport "com3" added {"type":"node","slaveIds":[13, 14]}
 ```
 
-**Example 2: Web serial transport (with port instance).**
+**Example 2: Add Web serial transport.**
 
 ```js
 // In the browser, after navigator.serial.requestPort()
-async function createWebSerial(port) {
+async function addWebTransport(port) {
   try {
-    const transport = await createTransport('web', { port });
-    console.log('Created transport:', transport.constructor.name); // WebSerialTransport
-    return transport;
+    await controller.addTransport('webPort1', 'web', {
+      port, // The SerialPort instance obtained via Web Serial API
+      slaveIds: [15, 16], // Assign slave IDs 15 and 16 to this transport
+    });
+    console.log('Transport added to controller:', 'webPort1');
   } catch (err) {
-    console.error('Failed:', err.message);
+    console.error('Failed to add transport:', err.message);
   }
 }
 
 // Simulation: const port = await navigator.serial.requestPort();
-createWebSerial(port);
+addWebTransport(port);
 ```
 
 **Output (logs):**
 
 ```bash
-[14:30:15][DEBUG][factory] WebSerialTransport portFactory: Returning provided port instance
-[14:30:15][DEBUG][factory] Creating WebSerialTransport with provided port
-[14:30:15][DEBUG][factory] WebSerialTransport portFactory: Port seems to be in use, trying to close...
-[14:30:15][DEBUG][factory] WebSerialTransport portFactory: Existing port closed
-Created transport: WebSerialTransport
+[14:30:15][INFO][TransportController] Transport "webPort1" added {"type":"web","slaveIds":[15, 16]}
 ```
 
-**Example 3: Error - unknown type.**
+### 2. `connectAll()` / `connectTransport(id)`
+
+Connects all managed transports or a specific one.
+
+**Parameters:**
+
+- `id (string, optional)`: The ID of the specific transport to connect.
+
+**Returns:** Promise<void>
+
+**Example:**
 
 ```js
-try {
-  await createTransport('invalid');
-} catch (err) {
-  console.log('Error:', err.message);
+async function connectAllTransports() {
+  try {
+    await controller.connectAll(); // Connect all added transports
+    console.log('All transports connected via controller.');
+  } catch (err) {
+    console.error('Failed to connect transports:', err.message);
+  }
+}
+
+connectAllTransports();
+```
+
+### 3. `assignSlaveIdToTransport(transportId, slaveId)`
+
+Dynamically assigns a `slaveId` to an already added and potentially connected transport. Useful if you discover a new device on an existing port.
+
+**Parameters:**
+
+- `transportId (string)`: The ID of the target transport.
+- `slaveId (number)`: The Modbus slave ID to assign.
+
+**Returns:** void
+
+**Errors:** Throws Error if `transportId` is not found.
+
+**Example:**
+
+```js
+// Assume 'com3' transport was added earlier and is connected
+// Later, you discover a device with slaveId 122 is also on COM3
+controller.assignSlaveIdToTransport('com3', 122);
+console.log('Assigned slaveId 122 to transport com3');
+// ModbusClient with slaveId 122 will now use the 'com3' transport.
+```
+
+### 4. `getTransportForSlave(slaveId)`
+
+Gets the currently assigned transport for a specific `slaveId`. Used internally by `ModbusClient` if needed, but can be useful for direct interaction.
+
+**Parameters:**
+
+- `slaveId (number)`: The Modbus slave ID.
+
+**Returns:** `Transport | null` - The assigned transport instance or null if not found.
+
+**Example:**
+
+```js
+const assignedTransport = controller.getTransportForSlave(13);
+if (assignedTransport) {
+  console.log('Transport for slave 13:', assignedTransport.constructor.name);
+} else {
+  console.log('No transport assigned for slave 13');
 }
 ```
 
-**output:**
+### 5. **Device/Port State Tracking**
 
-```bash
-[14:30:15][ERROR][factory] Failed to create transport of type "invalid": Unknown transport type: invalid
-Error: Unknown transport type: invalid
-```
+To track the connection state of devices or the port itself, you need to access the individual transport instance managed by the `TransportController` and set the handler on it.
 
-**Example 4: Error - missing port.**
+**Example: Setting Device State Handler**
 
 ```js
-try {
-  await createTransport('node', {}); // No port
-} catch (err) {
-  console.log('Error:', err.message);
+async function addAndTrackTransport() {
+  await controller.addTransport('com3', 'node', {
+    port: 'COM3',
+    baudRate: 9600,
+    slaveIds: [1, 2],
+  });
+
+  await controller.connectAll();
+
+  // Get the transport instance for 'com3'
+  const transport = controller.getTransport('com3');
+  if (transport && transport.setDeviceStateHandler) {
+    // Set the handler to receive state updates for devices on this transport
+    transport.setDeviceStateHandler((slaveId, connected, error) => {
+      console.log(`[Transport 'com3'] Device ${slaveId} is ${connected ? 'ONLINE' : 'OFFLINE'}`);
+      if (error) {
+        console.log(`[Transport 'com3'] Device ${slaveId} Error: ${error.type}, ${error.message}`);
+      }
+    });
+  }
+
+  // Create clients using the controller
+  const client1 = new ModbusClient(controller, 1, { timeout: 2000 });
+  await client1.connect(); // This will trigger the handler for slaveId 1
 }
+
+addAndTrackTransport();
 ```
 
-**Output:**
+**Example: Setting Port State Handler**
 
-```bash
-[14:30:15][ERROR][factory] Failed to create transport of type "node": Missing "port" (or "path") option for node transport
-Error: Missing "port" (or "path") option for node transport
+```js
+async function addAndTrackPort() {
+  await controller.addTransport('com4', 'node', {
+    port: 'COM4',
+    baudRate: 115200,
+    slaveIds: [3],
+  });
+
+  // Get the transport instance for 'com4' *before* connecting if needed
+  const transport = controller.getTransport('com4');
+  if (transport && transport.setPortStateHandler) {
+    // Set the handler to receive state updates for the physical port
+    transport.setPortStateHandler((connected, slaveIds, error) => {
+      console.log(`[Transport 'com4'] Port is ${connected ? 'CONNECTED' : 'DISCONNECTED'}`);
+      console.log(`[Transport 'com4'] Affected slave IDs:`, slaveIds || []);
+      if (error) {
+        console.log(`[Transport 'com4'] Port Error: ${error.type}, ${error.message}`);
+      }
+    });
+  }
+
+  await controller.connectAll();
+
+  // Create clients using the controller
+  const client3 = new ModbusClient(controller, 3, { timeout: 2000 });
+  await client3.connect();
+}
+
+addAndTrackPort();
 ```
 
 ## Full usage example
 
-Integration with ModbusClient (from the previous module). Creating a transport and using it in the client.
+Integration with `ModbusClient`. Creating a controller, adding transports, setting state handlers, and using the controller in clients.
 
 ```js
-const { createTransport } = require('modbus-connect/transport');
-const { ModbusClient } = require('modbus-connect/client');
+const TransportController = require('modbus-connect/transport'); // Import TransportController
+const ModbusClient = require('modbus-connect/client');
 const Logger = require('modbus-connect/logger');
 
 async function modbusExample() {
   const logger = new Logger();
   logger.enableLogger('info'); // Enable logs
 
+  const controller = new TransportController();
+
   try {
-    // Example Node.js
-    const transport = await createTransport('node', {
-      port: '/dev/ttyUSB0',
+    // Add Node.js transport for slave IDs 1 and 2
+    await controller.addTransport('com3', 'node', {
+      port: 'COM3',
       baudRate: 9600,
+      slaveIds: [1, 2],
     });
 
-    // It's recommended to add the listener once to the transport, not from each client.
-    const deviceStates = new Map(); // Store state for each slaveId
-
-    transport.addDeviceConnectionListener(state => {
-      console.log(
-        `Device ${state.slaveId} state:`,
-        state.hasConnectionDevice ? 'Connected' : 'Disconnected'
-      );
-      if (state.errorType) {
-        console.log(`  Error Type: ${state.errorType}`);
-        console.log(`  Error Message: ${state.errorMessage}`);
-      }
-      // Update internal state or UI
-      deviceStates.set(state.slaveId, state);
+    // Add another Node.js transport for slave ID 3
+    await controller.addTransport('com4', 'node', {
+      port: 'COM4',
+      baudRate: 115200,
+      slaveIds: [3],
     });
-    // -------------------------------------------------------
 
-    const client = new ModbusClient(transport, 1, { timeout: 2000 });
-    await client.connect();
+    // Set up state tracking for each transport *after* adding but before connecting
+    const transport3 = controller.getTransport('com3');
+    if (transport3 && transport3.setDeviceStateHandler) {
+      transport3.setDeviceStateHandler((slaveId, connected, error) => {
+        console.log(`[COM3] Device ${slaveId}: ${connected ? 'ONLINE' : 'OFFLINE'}`);
+        if (error) console.error(`[COM3] Device ${slaveId} Error:`, error);
+      });
+    }
 
-    const registers = await client.readHoldingRegisters(0, 10);
-    console.log('Registers:', registers);
+    const transport4 = controller.getTransport('com4');
+    if (transport4 && transport4.setPortStateHandler) {
+      transport4.setPortStateHandler((connected, slaveIds, error) => {
+        console.log(`[COM4] Port: ${connected ? 'UP' : 'DOWN'}. Slaves affected:`, slaveIds);
+        if (error) console.error(`[COM4] Port Error:`, error);
+      });
+    }
 
-    await client.disconnect();
+    // Connect all added transports
+    await controller.connectAll();
+
+    // Create clients, passing the controller instance and their specific slaveId
+    const client1 = new ModbusClient(controller, 1, { timeout: 2000 }); // Uses 'com3'
+    const client2 = new ModbusClient(controller, 2, { timeout: 2000 }); // Uses 'com3'
+    const client3 = new ModbusClient(controller, 3, { timeout: 2000 }); // Uses 'com4'
+
+    await client1.connect();
+    await client2.connect();
+    await client3.connect();
+
+    const registers1 = await client1.readHoldingRegisters(0, 10);
+    console.log('Registers from slave 1:', registers1);
+
+    const registers2 = await client2.readHoldingRegisters(0, 10);
+    console.log('Registers from slave 2:', registers2);
+
+    const registers3 = await client3.readHoldingRegisters(0, 10);
+    console.log('Registers from slave 3:', registers3);
+
+    await client1.disconnect();
+    await client2.disconnect();
+    await client3.disconnect();
   } catch (err) {
     console.error('Modbus error:', err.message);
+  } finally {
+    // Disconnect all transports managed by the controller
+    await controller.disconnectAll();
   }
 }
 
@@ -1519,16 +1131,30 @@ modbusExample();
 **Expected output (snippet):**
 
 ```bash
-[14:30:15][INFO][factory] Transport created implicitly { type: 'node' }
-[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' }
+[14:30:15][INFO][TransportController] Transport "com3" added {"type":"node","slaveIds":[1, 2]}
+[14:30:15][INFO][TransportController] Transport "com4" added {"type":"node","slaveIds":[3]}
+[14:30:15][INFO][NodeSerialTransport] Serial port COM3 opened
+[14:30:15][INFO][NodeSerialTransport] Serial port COM4 opened
+[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' } // For client 1
+[COM3] Device 1: ONLINE // Output from device state handler
+[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' } // For client 2
+[COM3] Device 2: ONLINE // Output from device state handler
+[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' } // For client 3
+[COM4] Port: UP. Slaves affected: [ 3 ] // Output from port state handler
 [14:30:15][INFO] Response received { slaveId: 1, funcCode: 3, responseTime: 50 }
-Registers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-Device 1 state: Connected
-State for slaveId 1: { slaveId: 1, hasConnectionDevice: true, errorType: undefined, errorMessage: undefined }
-[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' }
+Registers from slave 1: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+[14:30:15][INFO] Response received { slaveId: 2, funcCode: 3, responseTime: 48 }
+Registers from slave 2: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+[14:30:15][INFO] Response received { slaveId: 3, funcCode: 3, responseTime: 60 }
+Registers from slave 3: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' } // For client 1
+[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' } // For client 2
+[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' } // For client 3
+[14:30:16][INFO][TransportController] Transport "com3" disconnected
+[14:30:16][INFO][TransportController] Transport "com4" disconnected
 ```
 
-> For Web: Replace with 'web' and use navigator.serial.requestPort() for the port.
+> For Web: Use `type: 'web'` and provide the `SerialPort` instance obtained via `navigator.serial.requestPort()` to the `addTransport` options. The process for setting state handlers is the same.
 
 <br>
 
@@ -1546,28 +1172,6 @@ The errors.js module defines a hierarchy of error classes for Modbus operations.
 
 The module exports classes. No initialization required—just import and use for throw/catch.
 
-**Dependencies:**
-
-- `./constants/constants.js:` EXCEPTION_CODES for ModbusExceptionError.
-
-## Initialization
-
-Include the module
-
-```js
-const {
-  ModbusError,
-  ModbusTimeoutError,
-  ModbusCRCError,
-  ModbusResponseError,
-  ModbusTooManyEmptyReadsError,
-  ModbusExceptionError,
-  ModbusFlushError,
-} = require('./errors.js');
-```
-
-No constructor or state—the classes are ready to use. Import **_EXCEPTION_CODES_** separately if needed.
-
 ## Basic Error Classes
 
 Each class has a constructor with an optional message. When throwing, the message, name, and stack (standard for Error) are displayed.
@@ -1580,115 +1184,21 @@ Base class for all Modbus errors.
 
 - `message (string, optional):` Custom message. Defaults to ''.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusError('Custom Modbus failure');
-} catch (err) {
-  console.log('Error name:', err.name); // ModbusError
-  console.log('Message:', err.message); // Custom Modbus failure
-  console.log('Stack:', err.stack); // Stack trace
-}
-```
-
-**Output:**
-
-```bash
-Error name: ModbusError
-Message: Custom Modbus failure
-Stack: Error: Custom Modbus failure
-    at ... (path/to/file:line:col)
-    ...
-```
-
 ### 2. ModbusTimeoutError(message = 'Modbus request timed out')
 
 Request timeout error.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusTimeoutError('Read operation timed out after 5s');
-} catch (err) {
-  console.log('Name:', err.name); // ModbusTimeoutError
-  console.log('Message:', err.message); // Read operation timed out after 5s
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusTimeoutError
-Message: Read operation timed out after 5s
-```
 
 ### 3. ModbusCRCError(message = 'Modbus CRC check failed')
 
 There was a CRC check error in the package.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusCRCError('CRC mismatch in response packet');
-} catch (err) {
-  console.log('Name:', err.name); // ModbusCRCError
-  console.log('Message:', err.message); // CRC mismatch in response packet
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusCRCError
-Message: CRC mismatch in response packet
-```
-
 ### 4. ModbusResponseError(message = 'Invalid Modbus response')
 
 Invalid response error (eg unexpected PDU length).
 
-**Example:**
-
-```bash
-try {
-    throw new ModbusResponseError('Unexpected PDU length: 10 bytes');
-} catch (err) {
-    console.log('Name:', err.name);            // ModbusResponseError
-    console.log('Message:', err.message);      // Unexpected PDU length: 10 bytes
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusResponseError
-Message: Unexpected PDU length: 10 bytes
-```
-
 ### 5. ModbusTooManyEmptyReadsError(message = 'Too many empty reads from transport')
 
 Too many empty reads from transport (e.g., serial)
-
-**Example:**
-
-```js
-try {
-  throw new ModbusTooManyEmptyReadsError('5 consecutive empty reads');
-} catch (err) {
-  console.log('Name:', err.name); // ModbusTooManyEmptyReadsError
-  console.log('Message:', err.message); // 5 consecutive empty reads
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusTooManyEmptyReadsError
-Message: 5 consecutive empty reads
-```
 
 ### 6. ModbusExceptionError(functionCode, exceptionCode)
 
@@ -1699,90 +1209,13 @@ Modbus exception error (response with funcCode | 0x80). Uses EXCEPTION_CODES for
 - `functionCode (number):` Original funcCode (without 0x80).
 - `exceptionCode (number):` Exception code (0x01–0xFF).
 
-**Example 1: Basic (Illegal Function, code 0x01 for func 0x03).**
-
-```js
-try {
-  throw new ModbusExceptionError(0x03, 0x01);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusExceptionError
-  console.log('Message:', err.message); // Modbus exception: function 0x3, code 0x1 (Illegal Function)
-  console.log('functionCode:', err.functionCode); // 3
-  console.log('exceptionCode:', err.exceptionCode); // 1
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusExceptionError
-Message: Modbus exception: function 0x3, code 0x1 (Illegal Function)
-functionCode: 3
-exceptionCode: 1
-```
-
-**Example 2: Unknown code (fallback 'Unknown Exception').**
-
-```js
-try {
-  throw new ModbusExceptionError(0x06, 0xff);
-} catch (err) {
-  console.log('Message:', err.message); // Modbus exception: function 0x6, code 0xff (Unknown Exception)
-}
-```
-
-**Output:**
-
-```bash
-Message: Modbus exception: function 0x6, code 0xff (Unknown Exception)
-```
-
 ### 8. ModbusFlushError(message = 'Modbus operation interrupted by transport flush')
 
 Error interrupting operation with transport flash (buffer clearing).
 
-**Example:**
-
-```js
-try {
-  throw new ModbusFlushError('Flush during read registers');
-} catch (err) {
-  console.log('Name:', err.name); // ModbusFlushError
-  console.log('Message:', err.message); // Flush during read registers
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusFlushError
-Message: Flush during read registers
-```
-
 ## Error Catching (General)
 
 All classes are caught as ModbusError.
-
-**Example:**
-
-```js
-try {
-  // Simulating Modbus Operation
-  throw new ModbusTimeoutError();
-} catch (err) {
-  if (err instanceof ModbusError) {
-    console.log('Modbus error caught:', err.name);
-  } else {
-    console.log('Other error:', err.message);
-  }
-}
-```
-
-**Output:**
-
-```bash
-Modbus error caught: ModbusTimeoutError
-```
 
 ## Data Validation Errors
 
@@ -1794,24 +1227,6 @@ Invalid Modbus slave address (must be 0-247).
 
 - `address (number):` Invalid address value.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusInvalidAddressError(300);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusInvalidAddressError
-  console.log('Message:', err.message); // Invalid Modbus address: 300. Address must be between 0-247 for RTU/TCP.
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusInvalidAddressError
-Message: Invalid Modbus address: 300. Address must be between 0-247 for RTU/TCP.
-```
-
 ### 10. ModbusInvalidFunctionCodeError(functionCode)
 
 Invalid Modbus function code.
@@ -1819,24 +1234,6 @@ Invalid Modbus function code.
 **Parameters:**
 
 - `functionCode (number):` Invalid function code.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusInvalidFunctionCodeError(0xff);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusInvalidFunctionCodeError
-  console.log('Message:', err.message); // Invalid Modbus function code: 0xff
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusInvalidFunctionCodeError
-Message: Invalid Modbus function code: 0xff
-```
 
 ### 11. ModbusInvalidQuantityError(quantity, min, max)
 
@@ -1847,24 +1244,6 @@ Invalid register/coil quantity.
 - `quantity (number):` Invalid quantity.
 - `min (number):` Minimum allowed.
 - `max (number):` Maximum allowed.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusInvalidQuantityError(2000, 1, 125);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusInvalidQuantityError
-  console.log('Message:', err.message); // Invalid quantity: 2000. Must be between 1-125.
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusInvalidQuantityError
-Message: Invalid quantity: 2000. Must be between 1-125.
-```
 
 ## Modbus Exception Errors
 
@@ -1877,24 +1256,6 @@ Modbus exception 0x02 - Illegal Data Address.
 - `address (number):` Starting address.
 - `quantity (number):` Quantity requested.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusIllegalDataAddressError(50000, 10);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusIllegalDataAddressError
-  console.log('Message:', err.message); // Illegal data address: start=50000, quantity=10
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusIllegalDataAddressError
-Message: Illegal data address: start=50000, quantity=10
-```
-
 ### 13. ModbusIllegalDataValueError(value, expected)
 
 Modbus exception 0x03 - Illegal Data Value.
@@ -1904,89 +1265,17 @@ Modbus exception 0x03 - Illegal Data Value.
 - `value (any):` Invalid value.
 - `expected (string):` Expected format.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusIllegalDataValueError(65536, '0-65535');
-} catch (err) {
-  console.log('Name:', err.name); // ModbusIllegalDataValueError
-  console.log('Message:', err.message); // Illegal data value: 65536, expected 0-65535
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusIllegalDataValueError
-Message: Illegal data value: 65536, expected 0-65535
-```
-
 ### 14. ModbusSlaveBusyError()
 
 Modbus exception 0x04 - Slave Device Busy.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusSlaveBusyError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusSlaveBusyError
-  console.log('Message:', err.message); // Slave device is busy
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusSlaveBusyError
-Message: Slave device is busy
-```
 
 ### 15. ModbusAcknowledgeError()
 
 Modbus exception 0x05 - Acknowledge.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusAcknowledgeError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusAcknowledgeError
-  console.log('Message:', err.message); // Acknowledge received - device needs continued polling
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusAcknowledgeError
-Message: Acknowledge received - device needs continued polling
-```
-
 ### 16. ModbusSlaveDeviceFailureError()
 
 Modbus exception 0x06 - Slave Device Failure.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusSlaveDeviceFailureError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusSlaveDeviceFailureError
-  console.log('Message:', err.message); // Slave device failure
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusSlaveDeviceFailureError
-Message: Slave device failure
-```
 
 ## Message Format Errors
 
@@ -1998,24 +1287,6 @@ Malformed Modbus frame received.
 
 - `rawData (Buffer | Uint8Array):` Raw received data.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusMalformedFrameError(Buffer.from('ff00aa', 'hex'));
-} catch (err) {
-  console.log('Name:', err.name); // ModbusMalformedFrameError
-  console.log('Message:', err.message); // Malformed Modbus frame received: ff00aa
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusMalformedFrameError
-Message: Malformed Modbus frame received: ff00aa
-```
-
 ### 18. ModbusInvalidFrameLengthError(received, expected)
 
 Invalid frame length.
@@ -2024,24 +1295,6 @@ Invalid frame length.
 
 - `received (number):` Bytes received.
 - `expected (number):` Expected bytes.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusInvalidFrameLengthError(5, 8);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusInvalidFrameLengthError
-  console.log('Message:', err.message); // Invalid frame length: received 5, expected 8
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusInvalidFrameLengthError
-Message: Invalid frame length: received 5, expected 8
-```
 
 ### 19. ModbusInvalidTransactionIdError(received, expected)
 
@@ -2052,24 +1305,6 @@ Invalid transaction ID mismatch.
 - `received (number):` Received ID.
 - `expected (number):` Expected ID.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusInvalidTransactionIdError(123, 456);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusInvalidTransactionIdError
-  console.log('Message:', err.message); // Invalid transaction ID: received 123, expected 456
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusInvalidTransactionIdError
-Message: Invalid transaction ID: received 123, expected 456
-```
-
 ### 20. ModbusUnexpectedFunctionCodeError(sent, received)
 
 Unexpected function code in response.
@@ -2078,24 +1313,6 @@ Unexpected function code in response.
 
 - `sent (number):` Sent function code.
 - `received (number):` Received function code.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusUnexpectedFunctionCodeError(0x03, 0x04);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusUnexpectedFunctionCodeError
-  console.log('Message:', err.message); // Unexpected function code: sent 0x3, received 0x4
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusUnexpectedFunctionCodeError
-Message: Unexpected function code: sent 0x3, received 0x4
-```
 
 ## Connection Errors
 
@@ -2108,24 +1325,6 @@ Connection refused by device.
 - `host (string):` Target host.
 - `port (number):` Target port.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusConnectionRefusedError('192.168.1.100', 502);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusConnectionRefusedError
-  console.log('Message:', err.message); // Connection refused to 192.168.1.100:502
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusConnectionRefusedError
-Message: Connection refused to 192.168.1.100:502
-```
-
 ### 22. ModbusConnectionTimeoutError(host, port, timeout)
 
 Connection timeout.
@@ -2136,67 +1335,13 @@ Connection timeout.
 - `port (number):` Target port.
 - `timeout (number):` Timeout in ms.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusConnectionTimeoutError('192.168.1.100', 502, 5000);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusConnectionTimeoutError
-  console.log('Message:', err.message); // Connection timeout to 192.168.1.100:502 after 5000ms
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusConnectionTimeoutError
-Message: Connection timeout to 192.168.1.100:502 after 5000ms
-```
-
 ### 23. ModbusNotConnectedError()
 
 Operation attempted without connection.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusNotConnectedError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusNotConnectedError
-  console.log('Message:', err.message); // Not connected to Modbus device
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusNotConnectedError
-Message: Not connected to Modbus device
-```
-
 ### 24. ModbusAlreadyConnectedError()
 
 Attempt to connect when already connected.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusAlreadyConnectedError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusAlreadyConnectedError
-  console.log('Message:', err.message); // Already connected to Modbus device
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusAlreadyConnectedError
-Message: Already connected to Modbus device
-```
 
 ## Buffer & Data Errors
 
@@ -2209,24 +1354,6 @@ Buffer exceeds maximum size.
 - `size (number):` Current size.
 - `max (number):` Maximum allowed.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusBufferOverflowError(260, 255);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusBufferOverflowError
-  console.log('Message:', err.message); // Buffer overflow: 260 bytes exceeds maximum 255 bytes
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusBufferOverflowError
-Message: Buffer overflow: 260 bytes exceeds maximum 255 bytes
-```
-
 ### 26. ModbusInsufficientDataError(received, required)
 
 Not enough data received.
@@ -2235,24 +1362,6 @@ Not enough data received.
 
 - `received (number):` Bytes received.
 - `required (number):` Bytes needed.
-
-**Example:**
-
-```js
-try {
-  throw new ModbusInsufficientDataError(3, 8);
-} catch (err) {
-  console.log('Name:', err.name); // ModbusInsufficientDataError
-  console.log('Message:', err.message); // Insufficient data: received 3 bytes, required 8 bytes
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusInsufficientDataError
-Message: Insufficient data: received 3 bytes, required 8 bytes
-```
 
 ### 27. ModbusDataConversionError(data, expectedType)
 
@@ -2263,69 +1372,15 @@ Data type conversion failure.
 - `data (any):` Invalid data.
 - `expectedType (string):` Expected type.
 
-**Example:**
-
-```js
-try {
-  throw new ModbusDataConversionError('abc', 'number');
-} catch (err) {
-  console.log('Name:', err.name); // ModbusDataConversionError
-  console.log('Message:', err.message); // Cannot convert data "abc" to number
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusDataConversionError
-Message: Cannot convert data "abc" to number
-```
-
 ## Gateway Errors
 
 ### 28. ModbusGatewayPathUnavailableError()
 
 Gateway path unavailable (exception 0x0A).
 
-**Example:**
-
-```js
-try {
-  throw new ModbusGatewayPathUnavailableError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusGatewayPathUnavailableError
-  console.log('Message:', err.message); // Gateway path unavailable
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusGatewayPathUnavailableError
-Message: Gateway path unavailable
-```
-
 ### 29. ModbusGatewayTargetDeviceError()
 
 Gateway target device failed to respond (exception 0x0B).
-
-**Example:**
-
-```js
-try {
-  throw new ModbusGatewayTargetDeviceError();
-} catch (err) {
-  console.log('Name:', err.name); // ModbusGatewayTargetDeviceError
-  console.log('Message:', err.message); // Gateway target device failed to respond
-}
-```
-
-**Output:**
-
-```bash
-Name: ModbusGatewayTargetDeviceError
-Message: Gateway target device failed to respond
-```
 
 ## Polling Errors
 
@@ -2337,24 +1392,6 @@ Polling task ID already registered.
 
 - `id (string):` Task ID.
 
-**Example:**
-
-```js
-try {
-  throw new PollingTaskAlreadyExistsError('read_temp');
-} catch (err) {
-  console.log('Name:', err.name); // PollingTaskAlreadyExistsError
-  console.log('Message:', err.message); // Polling task with id "read_temp" already exists.
-}
-```
-
-**Output:**
-
-```bash
-Name: PollingTaskAlreadyExistsError
-Message: Polling task with id "read_temp" already exists.
-```
-
 ### 31. PollingTaskNotFoundError(id)
 
 Polling task ID not found.
@@ -2362,95 +1399,6 @@ Polling task ID not found.
 **Parameters:**
 
 - `id (string):` Task ID.
-
-**Example:**
-
-```js
-try {
-  throw new PollingTaskNotFoundError('read_temp');
-} catch (err) {
-  console.log('Name:', err.name); // PollingTaskNotFoundError
-  console.log('Message:', err.message); // Polling task with id "read_temp" does not exist.
-}
-```
-
-**Output:**
-
-```bash
-Name: PollingTaskNotFoundError
-Message: Polling task with id "read_temp" does not exist.
-```
-
-## Full usage example
-
-Integration with ModbusClient (from the previous module). Simulating throw/catch in the client context.
-
-```js
-const { ModbusClient } = require('./client.js');
-const { ModbusTimeoutError, ModbusCRCError, ModbusExceptionError } = require('./errors.js');
-const { createTransport } = require('./transport/factory.js');
-
-async function exampleUsage() {
-  const transport = await createTransport('node', {
-    port: 'COM3',
-    baudRate: 9600,
-    parity: 'none',
-    dataBits: 8,
-    stopBits: 1,
-  });
-  const client = new ModbusClient(transport, 1);
-
-  try {
-    await client.connect();
-
-    // Simulation: Throwing errors in the method
-    try {
-      // Simulate a timeout
-      throw new ModbusTimeoutError('Request to slave 1 timed out');
-    } catch (readErr) {
-      if (readErr instanceof ModbusTimeoutError) {
-        console.log('Handled timeout:', readErr.message);
-      }
-      throw readErr; // Forwarding further
-    }
-
-    // Simulate a CRC
-    try {
-      throw new ModbusCRCError('Bad CRC from device');
-    } catch (crcErr) {
-      console.log('CRC error:', crcErr.name, crcErr.message);
-    }
-
-    // Simulate an exception
-    try {
-      throw new ModbusExceptionError(0x03, 0x02); // Illegal Address
-    } catch (excErr) {
-      console.log('Exception details:', {
-        func: excErr.functionCode,
-        code: excErr.exceptionCode,
-        msg: excErr.message,
-      });
-    }
-  } catch (err) {
-    if (err instanceof ModbusError) {
-      console.error('Global Modbus error:', err.name, err.message);
-    }
-  } finally {
-    await client.disconnect();
-  }
-}
-
-exampleUsage();
-```
-
-**Expected output:**
-
-```bash
-Handled timeout: Modbus request timed out  // From first catch
-CRC error: ModbusCRCError Modbus CRC check failed  // Or custom
-Exception details: { func: 3, code: 2, msg: 'Modbus exception: function 0x3, code 0x2 (Illegal Data Address)' }
-Global Modbus error: ModbusTimeoutError Request to slave 1 timed out  // Forgotten
-```
 
 <br>
 
@@ -4791,385 +3739,6 @@ The `utils/utils.js` module provides a set of helper utilities for working with 
 
 The module exports functions. No initialization required—just import.
 
-## Initialization
-
-Include the module
-
-```js
-const {
-  fromBytes,
-  concatUint8Arrays,
-  uint16ToBytesBE,
-  bytesToUint16BE,
-  sliceUint8Array,
-  isUint8Array,
-  allocUint8Array,
-  toHex,
-  toBytesLE,
-  fromBytesLE,
-} = require('./utils/utils.js');
-```
-
-> Functions are ready to use. No dependencies.
-
-## Basic Functions
-
-### 1. fromBytes(...bytes)
-
-Creates a Uint8Array from a variable number of bytes (numbers 0–255).
-
-**Parameters:**
-
-- `...bytes (number...):` Bytes as arguments.
-  **Returns:** Uint8Array.
-
-**Example:**
-
-```js
-const bytes = fromBytes(0x01, 0x03, 0x00);
-console.log('Bytes array:', Array.from(bytes)); // [1, 3, 0]
-console.log('Hex:', bytes.map(b => b.toString(16).padStart(2, '0')).join(' ')); // 01 03 00
-```
-
-**Output:**
-
-```bash
-Bytes array: [1, 3, 0]
-Hex: 01 03 00
-```
-
-### 2. concatUint8Arrays(arrays)
-
-Concatenates two Uint8Arrays into one.
-
-**Paramameters:**
-
-- arrays (Uint8Array[]): Array of arrays.
-  **Returns:** Uint8Array.
-
-**Example:**
-
-```js
-const arr1 = new Uint8Array([0x01, 0x03]);
-const arr2 = new Uint8Array([0x00, 0x00]);
-const combined = concatUint8Arrays([arr1, arr2]);
-console.log(
-  'Combined hex:',
-  Array.from(combined)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03 00 00
-```
-
-**Output:**
-
-```bash
-Combined hex: 01 03 00 00
-```
-
-### 3. uint16ToBytesBE(value)
-
-Converts uint16 to a Uint8Array (Big Endian: most significant byte first).
-
-**Parameters:**
-
-- value (number): 16-bit number (0–65535).
-  **Returns:** Uint8Array[2].
-
-**Example:**
-
-```js
-const bytes = uint16ToBytesBE(0x0103); // 259 in dec
-console.log(
-  'BE bytes:',
-  Array.from(bytes)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03
-```
-
-**Output:**
-
-```bash
-BE bytes: 01 03
-```
-
-### 4. bytesToUint16BE(buf, offset = 0)
-
-Converts Uint8Array[2] (Big Endian) to uint16.
-
-**Parameters:**
-
-- `buf (Uint8Array):` Buffer.
-- `offset (number, optional):` Offset (default 0).
-  **Returns:** number.
-
-**Example:**
-
-```js
-const buf = new Uint8Array([0x01, 0x03, 0x00]);
-const value = bytesToUint16BE(buf, 0);
-console.log('Uint16 BE:', value); // 259 (0x0103)
-```
-
-**Output:**
-
-```bash
-Uint16 BE: 259
-```
-
-### 5. sliceUint8Array(arr, start, end)
-
-Slices a Uint8Array (subarray - view, not a copy).
-
-**Parameters:**
-
-- `arr (Uint8Array): `Original array.
-- `start (number):` Start.
-- `end (number, optional):` End (inclusive? No, exclusive like slice).
-  **Returns:** Uint8Array (view).
-
-**Example:**
-
-```js
-const full = new Uint8Array([0x01, 0x03, 0x00, 0x01]);
-const sliced = sliceUint8Array(full, 1, 3);
-console.log(
-  'Sliced hex:',
-  Array.from(sliced)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 03 00
-console.log(
-  'Original modified:',
-  Array.from(full)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // Changes to sliced ​​will affect full
-sliced[0] = 0xff; // Modify
-console.log(
-  'After mod hex:',
-  Array.from(full)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 ff 00 01
-```
-
-**Output:**
-
-```bash
-Sliced hex: 03 00
-Original modified: 01 ff 00 01
-After mod hex: 01 ff 00 01
-```
-
-### 6. isUint8Array(obj)
-
-Checks if an object is a Uint8Array.
-
-**Parameters:**
-
-- `obj (any):` The object to check.
-  **Returns:** boolean.
-
-**Example:**
-
-```js
-const arr = new Uint8Array([1, 2]);
-console.log(isUint8Array(arr)); // true
-console.log(isUint8Array([1, 2])); // false
-```
-
-**Output:**
-
-```bash
-true
-false
-```
-
-### 7. allocUint8Array(size, fill = 0)
-
-Creates a Uint8Array of the specified size, filled with a value.
-
-**Parameters:**
-
-- `size (number):` Size.
-- `fill (number, optional):` Value (0–255, default 0).
-  **Returns:** Uint8Array.
-
-**Example:**
-
-```js
-const arr = allocUint8Array(4, 0xff);
-console.log(
-  'Filled hex:',
-  Array.from(arr)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // ff ff ff ff
-```
-
-**Output:**
-
-```bash
-Filled hex: ff ff ff ff
-```
-
-### 8. toHex(uint8arr)
-
-Converts a Uint8Array to a hex string (without spaces).
-
-**Parameters:**
-
-- uint8arr (Uint8Array): Array.
-  **Returns:** string.
-  **Errors:** Error: Argument must be a Uint8Array.
-
-**Example:**
-
-```js
-const arr = new Uint8Array([0x01, 0x03, 0x00]);
-console.log('Hex string:', toHex(arr)); // 010300
-```
-
-**Output:**
-
-```bash
-Hex string: 010300
-```
-
-**Error example:**
-
-```js
-try {
-  toHex([1, 3]); // Not a Uint8Array
-} catch (err) {
-  console.log(err.message);
-}
-```
-
-**Output:**
-
-```bash
-Argument must be a Uint8Array
-```
-
-### 9. toBytesLE(value, byteLength = 2)
-
-Converts a number to a Uint8Array (Little Endian: least significant byte first).
-
-**Parameters:**
-
-- `value (number):` Number.
-- `byteLength (number, optional):` Length (default 2 for uint16).
-  **Returns:** Uint8Array.
-
-**Example:**
-
-```js
-const bytes = toBytesLE(0x0103, 2); // 259
-console.log(
-  'LE bytes hex:',
-  Array.from(bytes)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 03 01
-```
-
-**Output:**
-
-```bash
-LE bytes hex: 03 01
-```
-
-### 10. fromBytesLE(lo, hi)
-
-Converts two bytes (LE: lo=low, hi=high) to a number.
-
-**Parameters:**
-
-- `lo (number):` Low byte.
-- `hi (number):` High byte.
-  **Returns:** number.
-
-**Example:**
-
-```js
-const value = fromBytesLE(0x03, 0x01); // LE: 03 01 = 0x0103
-console.log('From LE:', value); // 259
-```
-
-**Output:**
-
-```bash
-From LE: 259
-```
-
-## Full usage example
-
-Integration with **_packet-builder.js_** and **_crc.js_** (previous modules). Building a Modbus packet using utilities.
-
-```js
-const {
-  fromBytes,
-  concatUint8Arrays,
-  uint16ToBytesBE,
-  bytesToUint16BE,
-  sliceUint8Array,
-  isUint8Array,
-  allocUint8Array,
-  toHex,
-  toBytesLE,
-  fromBytesLE,
-} = require('./utils/utils.js');
-const { buildPacket, parsePacket } = require('../packet-builder.js');
-const { crc16Modbus } = require('./crc.js');
-
-// PDU: Read Holding Registers (func 0x03, addr 0x0000, qty 0x0001)
-const func = fromBytes(0x03);
-const addr = uint16ToBytesBE(0x0000);
-const qty = uint16ToBytesBE(0x0001);
-const pdu = concatUint8Arrays([func, addr, qty]);
-console.log('PDU hex:', toHex(pdu)); // 0300000001
-
-// Build packet
-const packet = buildPacket(1, pdu, crc16Modbus);
-console.log('Full packet hex:', toHex(packet)); // 010300000001d5ca
-
-// Parse
-const { slaveAddress, pdu: parsedPdu } = parsePacket(packet, crc16Modbus);
-console.log('Parsed slave:', slaveAddress); // 1
-console.log('Parsed PDU hex:', toHex(parsedPdu)); // 0300000001
-
-// LE example
-const leBytes = toBytesLE(0x0001, 2); // qty in LE
-console.log('LE qty hex:', toHex(leBytes)); // 0100
-const fromLe = fromBytesLE(leBytes[0], leBytes[1]);
-console.log('Back to num:', fromLe); // 1
-
-// Alloc and slice
-const buf = allocUint8Array(10, 0x00);
-buf.set(pdu, 0);
-const sliced = sliceUint8Array(buf, 0, 5);
-console.log('Sliced hex:', toHex(sliced)); // 0300000001
-
-// Type check
-console.log('Is Uint8Array:', isUint8Array(sliced)); // true
-```
-
-**Expected output:**
-
-```bash
-PDU hex: 0300000001
-Full packet hex: 010300000001d5ca
-Parsed slave: 1
-Parsed PDU hex: 0300000001
-LE qty hex: 0100
-Back to num: 1
-Sliced hex: 0300000001
-Is Uint8Array: true
-```
-
 <br>
 
 # <span id="utils-crc">Utils CRC</span>
@@ -5204,718 +3773,6 @@ The `utils/crc.js` module provides a set of functions for calculating various Cy
 
 The module exports functions. No initialization required—just import. No dependencies (self-contained).
 
-## Initialization
-
-Include the module
-
-```js
-const {
-  crc16Modbus,
-  crc16CcittFalse,
-  crc32,
-  crc8,
-  crc1,
-  crc8_1wire,
-  crc8_dvbs2,
-  crc16_kermit,
-  crc16_xmodem,
-  crc24,
-  crc32mpeg,
-  crcjam,
-} = require('./utils/crc.js');
-```
-
-> The functions are ready to use. The CRC16_TABLE table is initialized automatically in the IIFE.
-
-## Main Functions
-
-Each function accepts a buffer (Uint8Array) and returns a Uint8Array with the CRC bytes. No errors—valid input is assumed.
-
-### 1. crc16Modbus(buffer)
-
-CRC-16 Modbus (poly 0xA001, init 0xFFFF, no reflection). Standard for Modbus RTU.
-
-**Parameters:**
-
-- `buffer (Uint8Array):` Data for calculation.
-  **Returns:** Uint8Array[2] — big-endian CRC (low/high? No: [low, high] calculated).
-
-**Example:**
-
-```js
-const data = new Uint8Array([0x01, 0x03, 0x00, 0x00, 0x00, 0x01]); // ADU example without CRC
-const crc = crc16Modbus(data);
-console.log(
-  'CRC (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // d5 ca
-```
-
-**Output:**
-
-```bash
-CRC (hex): d5 ca
-```
-
-### 2. crc16CcittFalse(buffer)
-
-CRC-16 CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection). Big-endian.
-
-**Example:**
-
-```js
-const crc = crc16CcittFalse(data);
-console.log(
-  'CCITT CRC (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 31 c3 (example)
-```
-
-**Output:**
-
-```bash
-CCITT CRC (hex): 31 c3
-```
-
-### 3. crc32(buffer)
-
-CRC-32 (poly 0x04C11DB7, init 0xFFFFFFFF, reflection, final XOR 0xFFFFFFFF). Little-endian.
-
-**Example:**
-
-```js
-const crc = crc32(data);
-console.log(
-  'CRC32 (hex, LE):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // cb 1e 4d 5a (example)
-```
-
-**Output:**
-
-```bash
-CRC32 (hex, LE): cb 1e 4d 5a
-```
-
-### 4. crc8(buffer)
-
-CRC-8 (poly 0x07, init 0x00, no reflection). Big-endian (1 bytes).
-
-**Example:**
-
-```js
-const crc = crc8(data);
-console.log(
-  'CRC8 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // f4
-```
-
-**Output:**
-
-```bash
-CRC8 (hex): f4
-```
-
-### 5. crc1(buffer)
-
-CRC-1 (poly 0x01, init 0x00) - simple parity (XOR of all bits).
-
-**Example:**
-
-```js
-const crc = crc1(data);
-console.log(
-  'CRC1 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 00 or 01
-```
-
-**Output:**
-
-```bash
-CRC1 (hex): 01  // If odd number of 1-bits
-```
-
-### 6. crc8_1wire(buffer)
-
-CRC-8 1-Wire (poly 0x31, init 0x00, reflection). Big-endian.
-
-**Example:**
-
-```js
-const crc = crc8_1wire(data);
-console.log(
-  '1-Wire CRC8 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 9a
-```
-
-**Output:**
-
-```bash
-1-Wire CRC8 (hex): 9a
-```
-
-### 7. crc8_dvbs2(buffer)
-
-CRC-8 DVB-S2 (poly 0xD5, init 0x00, no reflection). Big-endian.
-
-**Example:**
-
-```js
-const crc = crc8_dvbs2(data);
-console.log(
-  'DVB-S2 CRC8 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 62
-```
-
-**Output:**
-
-```bash
-DVB-S2 CRC8 (hex): 62
-```
-
-### 8. crc16_kermit(buffer)
-
-CRC-16 Kermit (poly 0x1021, init 0x0000, reflection). Big-endian.
-
-**Example:**
-
-```js
-const crc = crc16_kermit(data);
-console.log(
-  'Kermit CRC16 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 21 89
-```
-
-**Output:**
-
-```bash
-Kermit CRC16 (hex): 21 89
-```
-
-### 9. crc16_xmodem(buffer)
-
-CRC-16 XModem (poly 0x1021, init 0x0000, no reflection). Big-endian.
-
-**Example:**
-
-```js
-const crc = crc16_xmodem(data);
-console.log(
-  'XModem CRC16 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 31 00
-```
-
-**Output:**
-
-```bash
-XModem CRC16 (hex): 31 00
-```
-
-### 10. crc24(buffer)
-
-CRC-24 (poly 0x864CFB, init 0xB704CE). Big-endian (3 bytes).
-
-**Example:**
-
-```js
-const crc = crc24(data);
-console.log(
-  'CRC24 (hex):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 00 21 89
-```
-
-**Output:**
-
-```bash
-CRC24 (hex): 00 21 89
-```
-
-### 11. crc32mpeg(buffer)
-
-CRC-32 MPEG-2 (poly 0x04C11DB7, init 0xFFFFFFFF, no reflection, no final XOR). Big-endian? (code: >>>24 first, so big-endian).
-
-**Example:**
-
-```js
-const crc = crc32mpeg(data);
-console.log(
-  'MPEG CRC32 (hex, BE):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 34 5a 4d 1e
-```
-
-**Output:**
-
-```bash
-MPEG CRC32 (hex, BE): 34 5a 4d 1e
-```
-
-### 12. crcjam(buffer)
-
-CRC-JAM (like CRC-32, but without final XOR). Little-endian.
-
-**Example:**
-
-```js
-const crc = crcjam(data);
-console.log(
-  'JAM CRC32 (hex, LE):',
-  Array.from(crc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 5a 4d 1e cb
-```
-
-**Output:**
-
-```bash
-JAM CRC32 (hex, LE): 5a 4d 1e cb
-```
-
-## Full usage example
-
-Integration with packet-builder.js (previous module). Modbus packet CRC calculation and verification.
-
-```js
-const { crc16Modbus, crc32, crc8 } = require('./utils/crc.js');
-const { buildPacket, parsePacket } = require('../packet-builder.js');
-
-// Sample data
-const buffer = new Uint8Array([0x01, 0x03, 0x00, 0x00, 0x00, 0x01]); // ADU without CRC
-
-// Modbus CRC-16
-const modbusCrc = crc16Modbus(buffer);
-console.log(
-  'Modbus CRC:',
-  Array.from(modbusCrc)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // d5 ca
-
-// Full package
-const packet = buildPacket(1, new Uint8Array([0x03, 0x00, 0x00, 0x00, 0x01]), crc16Modbus);
-console.log(
-  'Full packet (hex):',
-  Array.from(packet)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03 00 00 00 01 d5 ca
-
-// Parse and check
-const { slaveAddress, pdu } = parsePacket(packet, crc16Modbus);
-console.log('Parsed:', {
-  slaveAddress,
-  pdu: Array.from(pdu)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' '),
-}); // { slaveAddress: 1, pdu: '03 00 00 00 01' }
-
-// Other CRCs for the same data
-const c32 = crc32(buffer);
-console.log(
-  'CRC32 (LE hex):',
-  Array.from(c32)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // cb 1e 4d 5a
-
-const c8 = crc8(buffer);
-console.log(
-  'CRC8 (hex):',
-  Array.from(c8)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // f4
-```
-
-**Expected output:**
-
-```bash
-Modbus CRC: d5 ca
-Full packet (hex): 01 03 00 00 00 01 d5 ca
-Parsed: { slaveAddress: 1, pdu: '03 00 00 00 01' }
-CRC32 (LE hex): cb 1e 4d 5a
-CRC8 (hex): f4
-```
-
-<br>
-
-# <span id="packet-builder">Packet Building</span>
-
-The packet-builder.js module provides utilities for building and parsing Modbus RTU (Application Data Unit) packets. It works with the Protocol Data Unit (PDU)—the payload without the slave address and CRC—and forms a full ADU with the slave address and CRC appended. The module integrates with the CRC functions from ./utils/crc.js and utilities from **./utils/utils.js** (`isUint8Array`, `concatUint8Arrays`, `toHex`, `sliceUint8Array`).
-
-**Key Features:**
-
-- **Build:** Appends the slaveAddress and CRC to the PDU.
-- **Parse:** Extracts the slaveAddress and PDU from the ADU and checks the CRC. If the CRC does not match, an error is thrown.
-- **CRC:** Defaults to crc16Modbus, but any function can be passed (from crc.js).
-- **Errors:** Error for a short packet or CRC mismatch (with hex details).
-- **Validation:** Validates a Uint8Array for a PDU and packet.
-
-> The module exports two functions: buildPacket and parsePacket. No initialization required—just import and use.
-
-**Dependencies:**
-
-- `./utils/crc.js:` CRC functions (crc16Modbus, etc.).
-- `./utils/utils.js:` Utilities for working with Uint8Array.
-
-## Initialization
-
-Include the module:
-
-```js
-const { buildPacket, parsePacket } = require('./packet-builder.js');
-const crcFns = require('./utils/crc.js');
-```
-
-> No constructor - functions are ready to use. Importing hex logging utilities is recommended.
-
-## Main functions
-
-### 1. buildPacket(slaveAddress, pdu, crcFn = crcFns.crc16Modbus)
-
-Generates a complete Modbus RTU ADU packet: `[slaveAddress]` + `PDU` + `CRC (2 bytes)`.
-
-**Parameters:**
-
-- `slaveAddress (number):` Slave address (0–247).
-- `pdu (Uint8Array):` PDU (function + data, without slave/CRC).
-- `crcFn (Function, optional):` CRC function (returns Uint8Array[2]). Defaults to crc16Modbus.
-
-**Returns:** Uint8Array — the complete ADU.
-**Errors:** Error: PDU must be a Uint8Array (if pdu is not a Uint8Array).
-
-**Example 1: Basic packet construction for reading registers (PDU for func 0x03, address 0, quantity 1).**
-
-```js
-const pdu = new Uint8Array([0x03, 0x00, 0x00, 0x00, 0x01]); // Func 3: Read 1 holding reg at addr 0
-const packet = buildPacket(1, pdu); // slave=1
-
-console.log(
-  'PDU (hex):',
-  Array.from(pdu)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 03 00 00 00 01
-console.log(
-  'Full ADU (hex):',
-  Array.from(packet)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03 00 00 00 01 D5 CA (CRC is data dependent)
-```
-
-**Output:**
-
-```bash
-PDU (hex): 03 00 00 00 01
-Full ADU (hex): 01 03 00 00 00 01 d5 ca
-```
-
-- Length: 8 bytes (1 slave + 5 PDUs + 2 CRCs).
-- CRC calculated for [01 03 00 00 00 01].
-
-**Example 2: With custom CRC (crc16CcittFalse).**
-
-```js
-const customCrc = crcFns.crc16CcittFalse;
-const packet2 = buildPacket(5, pdu, customCrc);
-
-console.log(
-  'Full ADU with custom CRC (hex):',
-  Array.from(packet2)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 01 03 00 00 00 01 XX YY (another CRC)
-```
-
-**Output:**
-
-```bash
-Full ADU with custom CRC (hex): 01 03 00 00 00 01 12 34  // Approximate, depends on crc16CcittFalse
-```
-
-**Example 3: Validation error.**
-
-```js
-const invalidPdu = [0x03, 0x00]; // not a Uint8Array
-try {
-  buildPacket(1, invalidPdu);
-} catch (err) {
-  console.log(err.message);
-}
-```
-
-**Output:**
-
-```bash
-PDU must be a Uint8Array
-```
-
-### 2. parsePacket(packet, crcFn)
-
-Parses an ADU packet: checks length (>=4), extracts slaveAddress and PDU, checks CRC.
-
-**Parameters:**
-
-- `packet (Uint8Array):` Full ADU.
-- `crcFn (Function, optional):` CRC function. Defaults to crc16Modbus.
-
-**Returns:** `{ slaveAddress: number, pdu: Uint8Array }`.
-**Errors:**
-
-- Error: Invalid packet: too short (length <4).
-- Error: CRC mismatch: received XX YY, calculated AB CD (CRC mismatch, with hex).
-
-**Example 1: Basic parsing of a valid packet.**
-
-```js
-const { utils } = require('./utils/utils.js'); // For toHex, if needed
-const pdu = new Uint8Array([0x03, 0x00, 0x00, 0x00, 0x01]);
-const packet = buildPacket(1, pdu); // From the previous example
-
-const { slaveAddress, pdu: parsedPdu } = parsePacket(packet);
-
-console.log('Slave Address:', slaveAddress); // 1
-console.log(
-  'Parsed PDU (hex):',
-  Array.from(parsedPdu)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 03 00 00 00 01
-```
-
-**Output:**
-
-```bash
-Slave Address: 1
-Parsed PDU (hex): 03 00 00 00 01
-```
-
-- CRC checked automatically.
-
-**Example 2: Parsing with a custom CRC.**
-
-```js
-const customCrc = crcFns.crc16CcittFalse;
-const packetCustom = buildPacket(1, pdu, customCrc);
-const { slaveAddress: sa2, pdu: pdu2 } = parsePacket(packetCustom, customCrc);
-
-console.log('Slave Address (custom):', sa2); // 1
-console.log(
-  'Parsed PDU (custom):',
-  Array.from(pdu2)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-); // 03 00 00 00 00 01
-```
-
-**Output:**
-
-```bash
-Slave Address (custom): 1
-Parsed PDU (custom): 03 00 00 00 01
-```
-
-**Example 3: Error - short packet.**
-
-```js
-const shortPacket = new Uint8Array([0x01, 0x03]); // <4 bytes
-try {
-  parsePacket(shortPacket);
-} catch (err) {
-  console.log(err.message);
-}
-```
-
-**Output:**
-
-```bash
-Invalid packet: too short
-```
-
-**Example 4: Error - CRC mismatch (changing a byte).**
-
-```js
-const tamperedPacket = new Uint8Array(packet); // Copy
-tamperedPacket[1] = 0x04; // Change funcCode to invalid
-
-try {
-  parsePacket(tamperedPacket);
-} catch (err) {
-  console.log(err.message);
-  console.log(
-    'Received CRC:',
-    Array.from(sliceUint8Array(tamperedPacket, -2))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join(' ')
-  );
-  console.log(
-    'Calculated CRC:',
-    Array.from(crcFns.crc16Modbus(sliceUint8Array(tamperedPacket, 0, -2)))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join(' ')
-  );
-}
-```
-
-**Output:**
-
-```bash
-CRC mismatch: received d5 ca, calculated 12 34  // Approximate values
-Received CRC: d5 ca
-Calculated CRC: 12 34
-```
-
-**Example 5: Parsing with default CRC (if not passed).**
-
-```js
-const { slaveAddress: sa3, pdu: pdu3 } = parsePacket(packet); // Without crcFn
-
-console.log('Default CRC parse success:', sa3 === 1); // true
-```
-
-**Output:**
-
-```bash
-Default CRC parse success: true
-```
-
-## Helper function (internal)
-
-### 1. arraysEqual(a, b)
-
-Compares two Uint8Arrays byte by byte. Used in parsePacket for CRC.
-
-**Parameters:**
-
-- a, b (Uint8Array).
-  **Returns:** boolean.
-
-**Example:**
-
-```js
-const arr1 = new Uint8Array([1, 2, 3]);
-const arr2 = new Uint8Array([1, 2, 3]);
-const arr3 = new Uint8Array([1, 2, 4]);
-
-console.log(arraysEqual(arr1, arr2)); // true
-console.log(arraysEqual(arr1, arr3)); // false
-```
-
-**Output:**
-
-```bash
-true
-false
-```
-
-> Not exported, but can be used for testing.
-
-## Complete usage example
-
-Integration with ModbusClient (from the previous module). Simulation of the full cycle: build -> send (simulation) -> parse.
-
-```js
-const { buildPacket, parsePacket } = require('./packet-builder');
-const crcFns = require('./utils/crc.js');
-
-// Simulate a PDU for write single register (func 0x06, addr 100, value 1234)
-const pdu = new Uint8Array([0x06, 0x00, 0x64, 0x04, 0xd2]); // 100=0x0064, 1234=0x04D2
-
-// Build
-const slaveId = 1;
-const packet = buildPacket(slaveId, pdu);
-console.log(
-  'Built packet (hex):',
-  Array.from(packet)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ')
-);
-
-// Simulate sending/receiving (in reality — transport.write/read)
-const receivedPacket = packet; // Ideal case, no noise
-
-// Parse
-try {
-  const { slaveAddress, pdu: receivedPdu } = parsePacket(receivedPacket);
-  console.log('Parsed slaveAddress:', slaveAddress);
-  console.log(
-    'Parsed PDU (hex):',
-    Array.from(receivedPdu)
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join(' ')
-  );
-
-  if (slaveAddress === slaveId && arraysEqual(receivedPdu, pdu)) {
-    console.log('Packet integrity: OK');
-  }
-} catch (err) {
-  console.error('Parse error:', err.message);
-}
-
-// Test with CRC error
-const faultyPacket = new Uint8Array(packet);
-faultyPacket[faultyPacket.length - 1] = 0xff; // Change CRC
-try {
-  parsePacket(faultyPacket);
-} catch (err) {
-  console.log('Expected CRC error:', err.message);
-}
-```
-
-**Expected output:**
-
-```bash
-Built packet (hex): 01 06 00 64 04 d2 xx yy  // xx yy — CRC
-Parsed slaveAddress: 1
-Parsed PDU (hex): 06 00 64 04 d2
-Packet integrity: OK
-Expected CRC error: CRC mismatch: received xx ff, calculated xx yy
-```
-
-<br>
-
-# <span id="notes">Notes</span>
-
-- Each `fn[i]` is handled independently; one failing does not stop others.
-- `onData(results)` is called only if all functions succeed, with `results[i]` matching `fn[i]`.
-- Retries (`maxRetries`) are applied per function, with delay `delay = backoffDelay × attempt`.
-- `taskTimeout` applies individually to each function call.
-- `onError(error, index, attempt)` fires on each failed attempt.
-- Use `getTaskState(id)` for detailed insight into task lifecycle.
-- Suitable for advanced diagnostic loops, sensor polling, background watchdogs, or telemetry logging.
-- `PollingManager` handles transport `flush()` and `ModbusFlushError` internally for smotther operation.
-
 <br>
 
 # <span id="tips-for-use">Tips for use</span>
@@ -5933,6 +3790,13 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.4.72 (2025-10-29)
+
+- The device connection status tracker has been moved to a separate module connected to the transport.
+- A port connection status tracker has been added.
+- A layer has been added to the TransportController transport creation module.
+  > see more details in [Transport Controller](#transport-controller)
+
 ### 2.3.53 (2025-10-23)
 
 - Improved device connection state listener handling for `WebSerialTransports` and `NodeSerialTransports`
@@ -5942,7 +3806,7 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 - Added many handlers for various Modbus errors
 - Added listeners to `WebSerialTransports` and `NodeSerialTransports`
-  > see more details in [Factory Transport's](#factory-transports)
+  > see more details in [Transport Controller](#transport-controller)
 
 ### 2.1.49 (2025-10-13)
 
