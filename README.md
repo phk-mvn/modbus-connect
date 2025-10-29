@@ -71,8 +71,8 @@ import ModbusClient from 'modbus-connect/client';
 // Polling manager for scheduled tasks
 import PollingManager from 'modbus-connect/polling-manager';
 
-// Transport factory for creating connections
-import { createTransport } from 'modbus-connect/transport';
+// Transport controller for managing connections
+import TransportController from 'modbus-connect/transport';
 
 // Logger for diagnostics and debugging
 import Logger from 'modbus-connect/logger';
@@ -81,13 +81,13 @@ import Logger from 'modbus-connect/logger';
 import SlaveEmulator from 'modbus-connect/slave-emulator';
 ```
 
-### Creating Transports
+### Creating Transports via TransportController
 
-Transports are the underlying communication layers. The library provides a factory function to simplify their creation across different environments.
+The `TransportController` is the centralized way to manage one or more transport connections. It handles routing, reconnection, and assignment of slave IDs to specific transports.
 **Node.js Serial Port:**
 
 ```js
-const transport = await createTransport('node', {
+await controller.addTransport('node-port-1', 'node', {
   port: '/dev/ttyUSB', // or 'COM' on Windows
   baudRate: 19200,
   dataBits: 8,
@@ -98,49 +98,44 @@ const transport = await createTransport('node', {
   maxBufferSize: 8192,
   reconnectInterval: 5000,
   maxReconnectAttempts: 10,
+  slaveIds: [1, 2], // Assign these slave IDs to this transport
 });
+
+await controller.connectAll();
 ```
 
 **Web Serial API port:**
 
 ```js
 // Function to request a SerialPort instance, typically called from a user gesture
-// or stored from an initial user selection.
 const getSerialPort = async () => {
-  // In a real application, you might store the port object after the first user selection
-  // and return it here, or request a new one if needed.
-  // Example for initial request (requires user gesture):
-  // const port = await navigator.serial.requestPort();
-  // Store port for future use...
-  // return port;
-  // Example returning a previously stored/stale port (less robust for reconnection):
-  // return storedSerialPortInstance;
-  // Example forcing a new request (requires user gesture, best for manual reconnection):
-  const port = await navigator.serial.requestPort(); // Update stored reference if needed
-  // storedSerialPortInstance = port;
+  const port = await navigator.serial.requestPort();
   return port;
 };
 
-const transport = await createTransport('web', {
-  port: getSerialPort, // Recommended for robustness
-  // OR, for simpler cases (less robust reconnection):
-  // port: serialPortInstance, // Directly pass a SerialPort object
+await controller.addTransport('web-port-1', 'web', {
+  port: getSerialPort,
   baudRate: 9600,
   dataBits: 8,
   stopBits: 1,
-  parity: 'none', // Optional reconnection parameters for WebSerialTransport
-  reconnectInterval: 3000, // ms
-  maxReconnectAttempts: 5, // Set to Infinity for continuous attempts (use with caution)
-  maxEmptyReadsBeforeReconnect: 10, // Triggers reconnect if data stops flowing
+  parity: 'none',
+  reconnectInterval: 3000,
+  maxReconnectAttempts: 5,
+  maxEmptyReadsBeforeReconnect: 10,
+  slaveIds: [3, 4],
 });
+
+await controller.connectAll();
 ```
 
-To set the `read/write` speed parameters, it is necessary to specify parameters such as `writeTimeout` and `readTimeout` during initialization. Example:
+To set the read/write speed parameters, specify writeTimeout and readTimeout during addTransport. Example:
 
 ```js
-const transport = await createTransport('node', {
-  writeTimeout: 500, // your value
-  readTimeout: 500, // your value
+await controller.addTransport('node-port-2', 'node', {
+  port: 'COM3',
+  writeTimeout: 500,
+  readTimeout: 500,
+  slaveIds: [5],
 });
 ```
 
@@ -149,11 +144,11 @@ const transport = await createTransport('node', {
 ### Creating a Client
 
 ```js
-const client = new ModbusClient(transport, (slaveId = 1), (options = {}));
+const client = new ModbusClient(controller, 1, { timeout: 2000, retryCount: 2 });
 ```
 
-- `transport` — transport object (see below)
-- `slaveId` —  device address (1..247)
+- `controller` — The `TransportController` instance.
+- `slaveId` — Device address (1..247). The controller will route requests to the correct transport.
 - `options` — `{ timeout, retryCount, retryDelay }`
 
 ### Connecting and Communicating
@@ -161,15 +156,17 @@ const client = new ModbusClient(transport, (slaveId = 1), (options = {}));
 ```js
 try {
   await client.connect();
-  console.log('Connected to device'); // Reading holding registers
-  const registers = await client.readHoldingRegisters(0, 10); // Start at address 0, read 10 registers
-  console.log('Registers:', registers); // Writing a single register
+  console.log('Connected to device');
 
-  await client.writeSingleRegister(5, 1234); // Write 1234 to register 5
+  const registers = await client.readHoldingRegisters(0, 10);
+  console.log('Registers:', registers);
+
+  await client.writeSingleRegister(5, 1234);
 } catch (error) {
   console.error('Communication error:', error.message);
 } finally {
   await client.disconnect();
+  await controller.disconnectAll(); // Disconnect all managed transports
 }
 ```
 
@@ -178,7 +175,7 @@ try {
 In order to work via RS485, you first need to connect the COM port.
 
 ```js
-const transport = await createTransport('node', {
+await controller.addTransport('rs485-port', 'node', {
   port: 'COM3',
   baudRate: 9600,
   dataBits: 8,
@@ -186,22 +183,15 @@ const transport = await createTransport('node', {
   parity: 'none',
   writeTimeout: 500,
   readTimeout: 500,
+  slaveIds: [38, 51], // Multiple devices on the same port
 });
-```
 
-Then, if you have several devices connected via RS485 in series, you need to create a `ModbusClient` for each one.
+await controller.connectAll();
 
-```js
-const device_1 = new ModbusClient(transport, 38, { timeout: 1000 });
-const device_2 = new ModbusClient(transport, 51, { timeout: 1000 });
-```
+const device_1 = new ModbusClient(controller, 38, { timeout: 1000 });
+const device_2 = new ModbusClient(controller, 51, { timeout: 1000 });
 
-Then do whatever you need - read Holding/Input registers, write registers, but for each device separately. Example:
-
-```js
 try {
-  await transport.connect();
-
   const registers_1 = await device_1.readHoldingRegisters(0, 10);
   console.log('Registers 1:', registers_1);
 
@@ -212,6 +202,7 @@ try {
 } finally {
   await device_1.disconnect();
   await device_2.disconnect();
+  await controller.disconnectAll();
 }
 ```
 
@@ -223,13 +214,13 @@ The ModbusClient class is a client for working with Modbus devices (RTU/TCP, etc
 
 Key Features:
 
-- Transport: Requires a transport instance (e.g., WebSerialTransport or NodeSerialTransport) that implements `connect()`, `disconnect()`, `write()`, `read()`, and `flush()`.
-- Retry and Timeouts: Automatic retry (up to retryCount), retryDelay delay, default timeout of 2000ms.
-- **Logging:** Integration with Logger (default **'error'** level). Context support (slaveId, funcCode).
-- **Data Conversion:** Automatic conversion of registers to types (`uint16`, `float`, `string`, etc.), with byte/word swap support.
-- **Errors:** Special classes (`ModbusTimeoutError`, `ModbusCRCError`, `ModbusExceptionError`, etc.).
-- **CRC:** Support for various algorithms (`crc16Modbus` by default).
-- **Echo:** Optional echo check for serial (for debugging).
+- **Transport**: Requires a `TransportController` instance that manages routing to underlying transports.
+- **Retry and Timeouts**: Automatic retry (up to retryCount), retryDelay delay, default timeout of 2000ms.
+- **Logging**: Integration with Logger (default 'error' level). Context support (slaveId, funcCode).
+- **Data Conversion**: Automatic conversion of registers to types (`uint16`, `float`, strin`g, etc.), with byte/word swap support.
+- **Errors**: Special classes (`ModbusTimeoutError`, `ModbusCRCError`, `ModbusExceptionError`, etc.).
+- **CRC**: Support for various algorithms (`crc16Modbus` by default).
+- **Echo**: Optional echo check for serial (for debugging).
 
 **Dependencies:**
 
@@ -245,29 +236,34 @@ Include the module:
 
 ```js
 const ModbusClient = require('modbus-connect/client');
-const { createTransport } = require('modbus-connect/transport');
+const TransportController = require('modbus-connect/transport');
 ```
 
 Create an instance:
 
 ```js
-const transport = await createTransport('node', {
+const controller = new TransportController();
+await controller.addTransport('com3', 'node', {
   port: 'COM3',
   baudRate: 9600,
   parity: 'none',
   dataBits: 8,
   stopBits: 1,
+  slaveIds: [1],
 });
+
+await controller.connectAll();
+
 const options = {
-  timeout: 3000, // Timeout (default 2000ms)
-  retryCount: 2, // Number of retry attempts (default 0)
-  retryDelay: 200, // Retry delay (default 100ms)
-  diagnostics: true, // Collection of diagnostic data (true or false)
-  echoEnabled: true, // Echo check (default false)
-  crcAlgorithm: 'crc16Modbus', // CRC (default)
+  timeout: 3000,
+  retryCount: 2,
+  retryDelay: 200,
+  diagnostics: true,
+  echoEnabled: true,
+  crcAlgorithm: 'crc16Modbus',
 };
 
-const client = new ModbusClient(transport, 1, options); // slaveId=1
+const client = new ModbusClient(controller, 1, options);
 ```
 
 **_Initialization output (if logging is enabled):_** _No explicit output in the constructor. Logging is enabled by methods._
@@ -728,38 +724,41 @@ console.log(client.diagnostics.getStats()); // { requests: 10, errors: 2, ... }
 
 ```js
 const ModbusClient = require('modbus-connect/client');
-const { createTransport } = require('modbus-connect/transport');
+const TransportController = require('modbus-connect/transport');
 
 async function main() {
-  const transport = await createTransport('node', {
+  const controller = new TransportController();
+
+  await controller.addTransport('com3', 'node', {
     port: 'COM3',
     baudRate: 9600,
     parity: 'none',
     dataBits: 8,
     stopBits: 1,
+    slaveIds: [1],
   });
-  const client = new ModbusClient(transport, 1, { timeout: 1000, retryCount: 1 });
 
-  client.enableLogger('info'); // Enable logs
+  await controller.connectAll();
+
+  const client = new ModbusClient(controller, 1, { timeout: 1000, retryCount: 1 });
+  client.enableLogger('info');
 
   try {
     await client.connect();
 
-    // Read registers
     const regs = await client.readHoldingRegisters(0, 10, { type: 'uint16' });
     console.log('Registers:', regs);
 
-    // Write
     await client.writeSingleRegister(0, 1234);
 
-    // SGM130: time
     const time = await client.getControllerTime();
     console.log('Controller time:', time);
 
-    // Closeing
     await client.disconnect();
   } catch (err) {
     console.error('Modbus error:', err);
+  } finally {
+    await controller.disconnectAll();
   }
 }
 
@@ -816,16 +815,12 @@ Include the module
 
 ```js
 const TransportController = require('modbus-connect/transport');
-// Or if you still have a separate export for TransportController
-// const TransportController = require('modbus-connect/transport-controller');
 ```
 
 Or in the browser:
 
 ```js
 import TransportController from 'modbus-connect/transport';
-// Or if you still have a separate export for TransportController
-// import TransportController from 'modbus-connect/transport-controller';
 ```
 
 Create an instance:
@@ -852,7 +847,7 @@ Asynchronously adds a new transport to the controller. Does not connect it autom
   _ `slaveIds (number[], optional):` An array of `slaveId`s that this transport will handle. These are registered internally for routing.
   _ `fallbacks (string[], optional):` An array of transport IDs to use as fallbacks for the assigned `slaveIds` if the primary transport fails.
   **Returns:** Promise<void>
-  **Errors:** Throws Error on invalid options, duplicate ID, or if the underlying `createTransport` fails.
+  **Errors:** Throws Error on invalid options, duplicate ID.
 
 **Example 1: Add Node.js serial transport.**
 
@@ -3060,40 +3055,35 @@ logger.enable();
 
 ```js
 const ModbusClient = require('modbus-connect/client');
-const { createTransport } = require('modbus-connect/transport');
+const TransportController = require('modbus-connect/transport');
 const Logger = require('modbus-connect/logger');
-const PollingManager = require('modbusc-connect/polling-manager');
+const PollingManager = require('modbus-connect/polling-manager');
 
 const logger = new Logger();
 
 // Setting global logger settings
 logger.setLevel('info');
-// Setting the log format: timestamp, level, logger
 logger.setLogFormat(['timestamp', 'level', 'logger']);
-// Setting a custom formatter for the logger
 logger.setCustomFormatter('logger', value => {
   return value ? `[${value}]` : '';
 });
 
-// Create a named logger and save a reference to it
 const testLogger = logger.createLogger('test-node.js');
 const poll = new PollingManager({ logLevel: 'info' });
 
 async function main() {
-  const transport = await createTransport('node', {
+  const transport = new TransportController('node', {
     port: 'COM3',
     baudRate: 9600,
     parity: 'none',
     dataBits: 8,
     stopBits: 1,
   });
+
   const client = new ModbusClient(transport, 13, {
     timeout: 1000,
-
     crcAlgorithm: 'crc16Modbus',
-
     retryCount: 3,
-
     retryDelay: 300,
   });
 
@@ -3790,8 +3780,9 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
-### 2.4.72 (2025-10-29)
+### 2.4.76 (2025-10-29)
 
+- The import module `createTransport` has been replaced by `TransportController`
 - The device connection status tracker has been moved to a separate module connected to the transport.
 - A port connection status tracker has been added.
 - A layer has been added to the TransportController transport creation module.

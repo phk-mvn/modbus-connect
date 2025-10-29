@@ -11,3 +11,4 @@ export * from '../transport/node-transports/node-serialport.d.js';
 export * from '../slave-emulator/slave-emulator.d.js';
 export * from '../transport/trackers/DeviceConnectionTracker.d.js';
 export * from '../transport/trackers/PortConnectionTracker.d.js';
+export * from '../transport/transport-controller.d.js';
