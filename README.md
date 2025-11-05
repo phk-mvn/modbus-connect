@@ -4,7 +4,6 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 
 ## Navigation through documentation
 
-- [Library Structure](#library-structure)
 - [Features](#features)
 - [Installation](#installation)
 - [Basic Usage](#basic-usage)
@@ -20,20 +19,6 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - [Tips for use](#tips-for-use)
 - [Expansion](#expansion)
 - [CHANGELOG](#changelog)
-
-<br>
-
-# <span id="library-structure">Library Structure</span>
-
-- **function-codes/** — PDU implementations for all Modbus functions (register/bit read/write, special functions).
-- **transport/** — Transport adapters (Node.js SerialPort, Web Serial API).
-- **utils/** — Utilities: CRC, diagnostics, and helpers.
-- **polling-manager.js:** A tool for continuously polling a device at a specified interval
-- **client.js:** Main `ModbusClient` class for Modbus RTU devices.
-- **constants.js:** Protocol constants (function codes, errors, etc.).
-- **errors.js:** Error classes for robust exception handling, including `ModbusFlushError`.
-- **logger.js:** Event logging utilities.
-- **packet-builder.js:** ADU packet construction/parsing (with CRC).
 
 <br>
 
@@ -108,10 +93,7 @@ await controller.connectAll();
 
 ```js
 // Function to request a SerialPort instance, typically called from a user gesture
-const getSerialPort = async () => {
-  const port = await navigator.serial.requestPort();
-  return port;
-};
+const getSerialPort = await navigator.serial.requestPort();
 
 await controller.addTransport('web-port-1', 'web', {
   port: getSerialPort,
@@ -291,14 +273,6 @@ await client.disconnect();
 ```bash
 [05:53:17][INFO][NodeSerialTransport] Serial port COM3 closed
 ```
-
-**Settings slaveId:**
-
-```js
-client.setSlaveId(5);
-```
-
-If the ID is invalid: Error: Invalid slave ID. Must be a number between 0 and 247
 
 ## Logging Controls
 
@@ -903,7 +877,32 @@ addWebTransport(port);
 [14:30:15][INFO][TransportController] Transport "webPort1" added {"type":"web","slaveIds":[15, 16]}
 ```
 
-### 2. `connectAll()` / `connectTransport(id)`
+### 2. `removeTransport(id)`
+
+Asynchronously removes a transport from the controller. Disconnects it first if connected.
+
+**Parameters:**
+
+- `id (string)`: The ID of the transport to remove.
+
+**Returns:** Promise<void>
+
+**Example:**
+
+```js
+async function removeTransport() {
+  try {
+    await controller.removeTransport('com3');
+    console.log('Transport removed from controller:', 'com3');
+  } catch (err) {
+    console.error('Failed to remove transport:', err.message);
+  }
+}
+
+removeTransport();
+```
+
+### 3. `connectAll()` / `connectTransport(id)`
 
 Connects all managed transports or a specific one.
 
@@ -928,7 +927,22 @@ async function connectAllTransports() {
 connectAllTransports();
 ```
 
-### 3. `assignSlaveIdToTransport(transportId, slaveId)`
+### 4. `listTransports()`
+
+Returns an array of all managed transports with their details.
+
+**Parameters:** None
+
+**Returns:** TransportInfo[] - Array of transport info objects.
+
+**Example:**
+
+```js
+const transports = controller.listTransports();
+console.log('All transports:', transports);
+```
+
+### 5. `assignSlaveIdToTransport(transportId, slaveId)`
 
 Dynamically assigns a `slaveId` to an already added and potentially connected transport. Useful if you discover a new device on an existing port.
 
@@ -951,7 +965,7 @@ console.log('Assigned slaveId 122 to transport com3');
 // ModbusClient with slaveId 122 will now use the 'com3' transport.
 ```
 
-### 4. `getTransportForSlave(slaveId)`
+### 6. `getTransportForSlave(slaveId)`
 
 Gets the currently assigned transport for a specific `slaveId`. Used internally by `ModbusClient` if needed, but can be useful for direct interaction.
 
@@ -972,7 +986,7 @@ if (assignedTransport) {
 }
 ```
 
-### 5. **Device/Port State Tracking**
+### 7. `Device/Port State Tracking`
 
 To track the connection state of devices or the port itself, you need to access the individual transport instance managed by the `TransportController` and set the handler on it.
 
@@ -1039,6 +1053,77 @@ async function addAndTrackPort() {
 }
 
 addAndTrackPort();
+```
+
+### 8. `getStatus(id?)`
+
+Gets the status of a specific transport or all transports.
+
+**Parameters:**
+
+- `id (string, optional)`: The ID of the transport to get the status for. If not provided, returns the status of all transports.
+
+**Returns:** TransportStatus[] - Array of transport status objects.
+
+**Example:**
+
+```js
+const status = controller.getStatus('com3');
+console.log('Transport status:', status);
+```
+
+### 9. `getStats(id?)`
+
+Gets the diagnostics/stats of a specific transport or all transports.
+
+**Parameters:**
+
+- id (string, optional): The ID of the transport to query. If omitted, returns stats for all transports.
+
+**Returns:** TransportStats[] - Array of transport statistics objects.
+
+**Example:**
+
+```js
+const stats = controller.getStats('com3');
+console.log('Transport statistics:', stats);
+```
+
+### 10. `getActiveTransportCount()`
+
+Returns the number of currently connected transports.
+
+**Parameters:** None
+
+**Returns:** number
+
+### 11. `setLoadBalancer(strategy)`
+
+Sets the load balancing strategy for routing requests.
+
+**Parameters:**
+
+- strategy (string): 'round-robin', 'sticky', 'first-available'
+
+**Example:**
+
+```js
+controller.setLoadBalancer('round-robin');
+```
+
+### 12. `destroy()`
+
+Destroys the controller and disconnects all transports.
+
+**Parameters:** None
+
+**Returns:** Promise<void>
+
+**Example:**
+
+```js
+await controller.destroy();
+console.log('Controller destroyed');
 ```
 
 ## Full usage example
@@ -3072,7 +3157,8 @@ const testLogger = logger.createLogger('test-node.js');
 const poll = new PollingManager({ logLevel: 'info' });
 
 async function main() {
-  const transport = new TransportController('node', {
+  const controller = new TransportController();
+  await controller.addTransport('com3', 'node', {
     port: 'COM3',
     baudRate: 9600,
     parity: 'none',
@@ -3080,7 +3166,7 @@ async function main() {
     stopBits: 1,
   });
 
-  const client = new ModbusClient(transport, 13, {
+  const client = new ModbusClient(controller, 13, {
     timeout: 1000,
     crcAlgorithm: 'crc16Modbus',
     retryCount: 3,
@@ -3780,6 +3866,20 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.5.11 (2025-11-05)
+
+- **TransportController** now manages transport creation internally, removing the need for factory.ts
+- **Device and port connection trackers** (DeviceConnectionTracker, PortConnectionTracker) are now managed by TransportController
+- **ModbusClient** now works only with TransportController, direct Transport support has been removed
+- **Transports** (`NodeSerialTransport`, `WebSerialTransport`) no longer manage trackers internally, they delegate notifications to `TransportController`
+- Updated `.d.ts` files to reflect the changes
+- **Major** `WebSerialTransport` **Stability Fix**: Overhauled the internal read logic by removing the unreliable `_emptyReadCount` mechanism. The transport no longer produces false disconnection events during periods of silence and now behaves consistently with `NodeSerialTransport`.
+- `DeviceConnectionTracker` **Fix**: Fixed a critical race condition that caused repeated "ONLINE" notifications for a device even when its connection was stable. The tracker now correctly cancels pending disconnection timers upon receiving a successful connection signal.
+- `TransportController` **Load Balancer Implemented**: Fixed the non-functional `round-robin` and `sticky` load balancing strategies. They now operate with the correct logic instead of defaulting to the `first-available` strategy.
+- **Browser Port Release Fix**: Resolved an issue where browser tabs would not release a serial port after a physical device disconnection. The transport's internal resource cleanup is now correctly sequenced to ensure `port.close()` is called reliably.
+- `PortConnectionTracker` **Fix**: Corrected an issue where port disconnection notifications could be sent with an outdated `connected: true` status. The tracker now updates its internal state immediately upon disconnection, ensuring status queries are always accurate.
+- **API Cleanup**: Removed the non-functional `getStats` method from `TransportController` and its corresponding interface to simplify the public API.
+
 ### 2.4.76 (2025-10-29)
 
 - The import module `createTransport` has been replaced by `TransportController`
@@ -3798,46 +3898,3 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 - Added many handlers for various Modbus errors
 - Added listeners to `WebSerialTransports` and `NodeSerialTransports`
   > see more details in [Transport Controller](#transport-controller)
-
-### 2.1.49 (2025-10-13)
-
-- Fixed type declaration for `modbus-connect/transport`
-- Fixed re-export of declared modules in `src/types/index.d.ts`
-- Added module declaration file `src/transport/factory.d.ts` for `modbus-connect/transport`
-- Fixed exports of the `WebSerialTransport` and `NodeSerialTransport` modules
-
-### 2.1.38 (2025-10-13)
-
-- Updated type declarations in files:
-  - `src/types/client.d.ts`
-- Strong typing improvements in modules:
-  - `ModbusClient`
-- Constants in the file `src/constants/constants.ts` have now been converted to `enum`
-- Fixed usage of enum in modules and files:
-  - `ModbusClient`
-  - `Logger`
-  - `Diagnostics`
-  - `SlaveEmulator`
-  - `src/errors.ts`
-
-### 2.1.29 (2025-10-10)
-
-- The library is fully typed using TypeScript.
-- Added type descriptions for all modules in the form of `.d.ts` files available for import
-  - `class ModbusClient` from **_'modbus-connect/client'_**
-  - `class PollingManager` from **_'modbus-connect/polling-manager'_**
-  - `class SlaveEmulator` from **_'modbus-connect/slave-emulator'_**
-  - `class Logger` from **_'modbus-connect/logger'_**
-  - `createTransport()` from **_'modbus-connect/transport'_**
-
-- Modules can now be imported into your project using both `require()` and `import`.
-- The library guide has been updated.
-- Removed files from the `transports/` folder that had not been used by the system for a long time
-- > Logger is unstable and has been taken for rework.
-
-### 2.0.7 (2025-10-08)
-
-- The logger is now represented in the Logger video class.
-- Loggers in `PollingManager`, `ModbusClient`, and `SlaveEmulator` are disabled by default.
-- Methods have been added to enable loggers in `PollingManager`, `ModbusClient`, and `SlaveEmulator`.
-- The library documentation has been completely revised.

@@ -7,7 +7,6 @@ import {
   DeviceStateHandler,
   PortStateHandler,
   ConnectionErrorType,
-  DeviceConnectionStateObject,
 } from '../../types/modbus-types.js';
 
 /**
@@ -15,12 +14,16 @@ import {
  *
  * Особенности:
  * - Автоматический реконнект
- * - Трекинг состояния порта и устройств
- * - Дебонс отключений
+ * - Поддержка уведомлений о состоянии устройств и порта
  * - Потокобезопасность
  * - Поддержка отключения трекинга устройств
  */
 declare class WebSerialTransport implements Transport {
+  /**
+   * Показывает, открыт ли порт в данный момент.
+   */
+  public isOpen: boolean;
+
   /**
    * @param portFactory Фабрика, возвращающая экземпляр Web Serial Port
    * @param options Настройки транспорта
@@ -73,8 +76,8 @@ declare class WebSerialTransport implements Transport {
    */
   notifyDeviceDisconnected(
     slaveId: number,
-    errorType?: ConnectionErrorType,
-    errorMessage?: string
+    errorType: ConnectionErrorType,
+    errorMessage: string
   ): void;
 
   // === Состояние порта ===
@@ -84,13 +87,4 @@ declare class WebSerialTransport implements Transport {
   isPortReady(): boolean;
 }
 
-// === Экспорт типов ===
-export {
-  WebSerialTransport,
-  WebSerialTransportOptions,
-  WebSerialPort,
-  DeviceConnectionStateObject,
-  DeviceStateHandler,
-  PortStateHandler,
-  ConnectionErrorType,
-};
+export = WebSerialTransport;

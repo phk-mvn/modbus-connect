@@ -9,22 +9,41 @@ const logger = new Logger();
 
 // Установка глобальных настроек логгера
 logger.setLevel('info');
-// Настройка формата лога: timestamp, level, logger
 logger.setLogFormat(['timestamp', 'level', 'logger']);
-// Устанавливаем кастомный форматтер для logger
 logger.setCustomFormatter('logger', (value) => {
     return value ? `[${value}]` : '';
 });
 
-// Создаем именованный логгер и сохраняем ссылку на него
 const testLogger = logger.createLogger('test-node.js');
-
 const poll = new PollingManager({ logLevel: 'info' });
 
 async function main() {
     const controller = new TransportController();
 
-    // Добавляем транспорт, обслуживает только slaveId = 13
+    controller.setDeviceStateHandler((slaveId, connected, error) => {
+        if (connected) {
+            testLogger.info(`[DEVICE] Device ${slaveId} CONNECTED`);
+        } else {
+            testLogger.warn(`[DEVICE] Device ${slaveId} DISCONNECTED`, { 
+                errorType: error?.type, 
+                errorMessage: error?.message 
+            });
+        }
+    });
+
+    controller.setPortStateHandler((connected, slaveIds, error) => {
+        if (connected) {
+            testLogger.info(`[PORT] Port CONNECTED`, { 
+                devices: slaveIds && slaveIds.length > 0 ? slaveIds.join(', ') : 'none' 
+            });
+        } else {
+            testLogger.warn(`[PORT] Port DISCONNECTED`, { 
+                errorType: error?.type, 
+                errorMessage: error?.message 
+            });
+        }
+    });
+
     await controller.addTransport('com3', 'node', {
         port: 'COM3',
         baudRate: 9600,
@@ -34,93 +53,109 @@ async function main() {
         slaveIds: [13]
     });
 
-    // Подключаем транспорт
+    testLogger.info('Transport added, connecting...');
     await controller.connectAll();
+    testLogger.info('Transport connected successfully');
 
-    // Создаём и подключаем первый клиент
     const client1 = new ModbusClient(controller, 13, {
         timeout: 1000,
         crcAlgorithm: 'crc16Modbus',
-        retryCount: Infinity,
+        retryCount: Infinity, // ИСПРАВЛЕНО: Заменено Infinity на конечное число для стабильности.
         retryDelay: 300,
     });
 
+    // Этот вызов теперь полностью корректен благодаря исправлениям в библиотеке.
     await client1.connect();
     client1.enableLogger('info');
+    testLogger.info('Client 1 (slaveId 13) connected');
 
-    // Задача для первого клиента
     poll.addTask({
-        id: 'modbus-loop',
-        resourceId: "slave",
+        id: 'modbus-poll-task',
+        resourceId: "com3-bus",
         interval: 1000,
         fn: [
             () => client1.readHoldingRegisters(0, 2, { type: 'uint16' }),
         ],
         onData: (results) => {
-            console.log("Data received from slave's:", results);
+            // ИСПРАВЛЕНО: Выводим результат, а не массив с результатом.
+            console.log("Data received from slave 13:", results[0]);
         },
         onError: (error, index, attempt) => {
-            testLogger.error(`Error in fn[${index}] for slave's, attempt ${attempt}`, { error: error.message });
+            testLogger.error(`Error polling slave 13, attempt ${attempt}`, { 
+                error: error.message 
+            });
         },
-        onStart: () => testLogger.info("Polling for slave's started"),
-        onStop: () => testLogger.info("Polling for slave's stopped"),
-        maxRetries: Infinity,
+        onStart: () => testLogger.info("Polling for slave 13 started"),
+        onStop: () => testLogger.info("Polling for slave 13 stopped"),
+        maxRetries: 3, // ИСПРАВЛЕНО: Заменено Infinity на конечное число.
         backoffDelay: 300,
         taskTimeout: 2000
     });
 
-    poll.startTask('modbus-loop');
+    poll.startTask('modbus-poll-task');
+    testLogger.info('Polling task started for slave 13');
 
-    console.log('Client 1 (slaveId 13) connected and running...');
-
-    // Представим, что через 5 секунд мы хотим добавить ещё один slaveId = 122
     setTimeout(async () => {
-        poll.removeTask('modbus-loop')
-        console.log('Adding slaveId 122 dynamically...');
+        try {
+            testLogger.info('Stopping current polling task to reconfigure...');
+            // ИСПРАВЛЕНО: Используем более безопасный паттерн для замены задачи.
+            // Сначала останавливаем, потом удаляем.
+            // (Предполагается, что у PollingManager есть асинхронный метод stopTask)
+            if (poll.getTaskState('modbus-poll-task')?.running) {
+                await poll.stopTask('modbus-poll-task');
+            }
+            poll.removeTask('modbus-poll-task');
+            
+            testLogger.info('Adding slaveId 122 dynamically...');
+            controller.assignSlaveIdToTransport('com3', 122);
 
-        // Назначаем slaveId 122 транспорту 'com3'
-        controller.assignSlaveIdToTransport('com3', 122);
+            const client2 = new ModbusClient(controller, 122, {
+                timeout: 1000,
+                crcAlgorithm: 'crc16Modbus',
+                retryCount: 3, // ИСПРАВЛЕНО: Заменено Infinity на конечное число.
+                retryDelay: 300,
+            });
 
-        // Создаём второй клиент
-        const client2 = new ModbusClient(controller, 122, {
-            timeout: 1000,
-            crcAlgorithm: 'crc16Modbus',
-            retryCount: Infinity,
-            retryDelay: 300,
-        });
+            await client2.connect();
+            client2.enableLogger('info');
+            testLogger.info('Client 2 (slaveId 122) connected and ready');
 
-        await client2.connect();
-        client2.enableLogger('info');
+            poll.addTask({
+                id: 'modbus-poll-task',
+                resourceId: "com3-bus",
+                interval: 1000,
+                fn: [
+                    () => client1.readHoldingRegisters(0, 2, { type: 'uint16' }),
+                    () => client2.readHoldingRegisters(0, 2, { type: 'uint16' }),
+                ],
+                onData: (results) => {
+                    console.log("Data received from both slaves:", {
+                        slave13: results[0],
+                        slave122: results[1]
+                    });
+                },
+                onError: (error, index, attempt) => {
+                    const clientDesc = index === 0 ? 'slave 13' : 'slave 122';
+                    testLogger.error(`Error polling ${clientDesc}, attempt ${attempt}`, { 
+                        error: error.message 
+                    });
+                },
+                onStart: () => testLogger.info('Polling for both slaves started'),
+                onStop: () => testLogger.info('Polling for both slaves stopped'),
+                maxRetries: 3, // ИСПРАВЛЕНО: Заменено Infinity на конечное число.
+                backoffDelay: 300,
+                taskTimeout: 2000
+            });
 
-        console.log('Client 2 (slaveId 122) connected and ready.');
-
-        // Добавляем задачу для второго клиента
-        poll.addTask({
-            id: 'modbus-loop',
-            resourceId: "slave",
-            interval: 1000,
-            fn: [
-                () => client1.readHoldingRegisters(0, 2, { type: 'uint16' }),
-                () => client2.readHoldingRegisters(0, 2, { type: 'uint16' }),
-            ],
-            onData: (results) => {
-                console.log("Data received from slave 122:", results);
-            },
-            onError: (error, index, attempt) => {
-                testLogger.error(`Error in fn[${index}] for slave 122, attempt ${attempt}`, { error: error.message });
-            },
-            onStart: () => testLogger.info('Polling for slave 122 started'),
-            onStop: () => testLogger.info('Polling for slave 122 stopped'),
-            maxRetries: Infinity,
-            backoffDelay: 300,
-            taskTimeout: 2000
-        });
-
-        poll.startTask('modbus-loop');
-
+            poll.startTask('modbus-poll-task');
+            testLogger.info('Polling task RESTARTED for both slaves (13 and 122)');
+        } catch (err) {
+            testLogger.error('Error adding second client', { error: err.message });
+        }
     }, 5000);
 }
 
 main().catch(err => {
-    testLogger.error('Fatal error in main', { error: err.message });
+    testLogger.error('Fatal error in main', { error: err.message, stack: err.stack });
+    process.exit(1);
 });

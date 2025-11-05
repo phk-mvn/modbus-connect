@@ -1,3 +1,5 @@
+// src/transport/trackers/PortConnectionTracker.ts
+
 import { Mutex } from 'async-mutex';
 import { ConnectionErrorType, PortStateHandler } from '../../types/modbus-types.js';
 
@@ -73,12 +75,16 @@ export class PortConnectionTracker {
   /**
    * Уведомляет о подключении порта.
    * Игнорируется, если порт уже подключён.
-   *
    * @param slaveIds — список slaveId, подключённых к порту
    */
   public async notifyConnected(slaveIds: number[] = []): Promise<void> {
     const release = await this._mutex.acquire();
     try {
+      if (this._debounceTimeout) {
+        clearTimeout(this._debounceTimeout);
+        this._debounceTimeout = null;
+      }
+
       if (this._state.isConnected && arraysEqual(this._state.slaveIds, slaveIds)) {
         return;
       }
@@ -89,12 +95,7 @@ export class PortConnectionTracker {
         timestamp: Date.now(),
       };
 
-      // Сбрасываем дебонс
-      if (this._debounceTimeout) {
-        clearTimeout(this._debounceTimeout);
-        this._debounceTimeout = null;
-      }
-
+      // Немедленно отправляем уведомление
       this._handler?.(true, this._state.slaveIds);
     } finally {
       release();
@@ -104,7 +105,6 @@ export class PortConnectionTracker {
   /**
    * Уведомляет об отключении порта с trailing debounce.
    * Последний вызов в серии будет выполнен через `debounceMs`.
-   *
    * @param errorType Тип ошибки, по умолчанию: `ConnectionErrorType.UnknownError`
    * @param errorMessage Подробное сообщение, по умолчанию: `'Port disconnected'`
    * @param slaveIds Список slaveId, которые были активны
@@ -118,35 +118,29 @@ export class PortConnectionTracker {
       clearTimeout(this._debounceTimeout);
     }
 
-    this._debounceTimeout = setTimeout(() => {
-      this._doNotifyDisconnected(errorType, errorMessage, slaveIds);
-    }, this._debounceMs);
-  }
+    (async () => {
+      const release = await this._mutex.acquire();
+      try {
+        if (!this._state.isConnected) {
+          return;
+        }
 
-  /**
-   * Внутренний метод — фактическое уведомление об отключении.
-   */
-  private async _doNotifyDisconnected(
-    errorType: ConnectionErrorType,
-    errorMessage: string,
-    slaveIds: number[]
-  ): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
-      if (!this._state.isConnected) return;
+        this._state = {
+          isConnected: false,
+          errorType,
+          errorMessage,
+          slaveIds: [...slaveIds],
+          timestamp: Date.now(),
+        };
 
-      this._state = {
-        isConnected: false,
-        errorType,
-        errorMessage,
-        slaveIds: [...slaveIds],
-        timestamp: Date.now(),
-      };
-
-      this._handler?.(false, this._state.slaveIds, { type: errorType, message: errorMessage });
-    } finally {
-      release();
-    }
+        this._debounceTimeout = setTimeout(() => {
+          this._debounceTimeout = null;
+          this._handler?.(false, this._state.slaveIds, { type: errorType, message: errorMessage });
+        }, this._debounceMs);
+      } finally {
+        release();
+      }
+    })();
   }
 
   /**

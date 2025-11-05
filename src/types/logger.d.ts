@@ -47,4 +47,4 @@ export class Logger {
   createLogger(name: string): LoggerInstance;
 }
 
-export default Logger;
+export = Logger;

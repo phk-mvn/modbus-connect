@@ -20,6 +20,9 @@ interface TransportInfo {
   fallbacks: string[];
   createdAt: Date;
   lastError?: Error;
+  reconnectAttempts: number;
+  maxReconnectAttempts: number;
+  reconnectInterval: number;
 }
 
 interface TransportStatus {
@@ -47,11 +50,16 @@ declare class TransportController {
    * @param id - ID транспорта
    * @param type - Тип транспорта ('node' или 'web')
    * @param options - Опции транспорта
+   * @param reconnectOptions - Параметры переподключения
    */
   addTransport(
     id: string,
     type: 'node' | 'web',
-    options: NodeSerialTransportOptions | (WebSerialTransportOptions & { port: WebSerialPort })
+    options: NodeSerialTransportOptions | (WebSerialTransportOptions & { port: WebSerialPort }),
+    reconnectOptions?: {
+      maxReconnectAttempts?: number;
+      reconnectInterval?: number;
+    }
   ): Promise<void>;
 
   /**
@@ -72,6 +80,16 @@ declare class TransportController {
    * @returns Массив объектов TransportInfo
    */
   listTransports(): TransportInfo[];
+
+  /**
+   * Перезагрузить транспорт с новыми опциями.
+   * @param id - ID транспорта
+   * @param options - Новые опции
+   */
+  reloadTransport(
+    id: string,
+    options: NodeSerialTransportOptions | (WebSerialTransportOptions & { port: WebSerialPort })
+  ): Promise<void>;
 
   // === Подключение/отключение ===
   /**
@@ -120,13 +138,6 @@ declare class TransportController {
   getStatus(id?: string): TransportStatus | Record<string, TransportStatus>;
 
   /**
-   * Получить статистику транспорта.
-   * @param id - ID транспорта (по умолчанию все транспорты)
-   * @returns Статистика транспорта или объект со статистикой всех транспортов
-   */
-  getStats(id?: string): any | Record<string, any>;
-
-  /**
    * Получить количество активных транспортов.
    * @returns Количество активных транспортов
    */
@@ -139,6 +150,36 @@ declare class TransportController {
    */
   setLoadBalancer(strategy: LoadBalancerStrategy): void;
 
+  // === Управление обработчиками ===
+  /**
+   * Установить обработчик состояния устройства для внешнего мира.
+   * @param handler - Обработчик состояния
+   */
+  setDeviceStateHandler(handler: DeviceStateHandler): void;
+
+  /**
+   * Установить обработчик состояния порта для внешнего мира.
+   * @param handler - Обработчик состояния
+   */
+  setPortStateHandler(handler: PortStateHandler): void;
+
+  /**
+   * Установить обработчик состояния устройства для транспорта.
+   * @param transportId - ID транспорта
+   * @param handler - Обработчик состояния
+   */
+  setDeviceStateHandlerForTransport(
+    transportId: string,
+    handler: DeviceStateHandler
+  ): Promise<void>;
+
+  /**
+   * Установить обработчик состояния порта для транспорта.
+   * @param transportId - ID транспорта
+   * @param handler - Обработчик состояния
+   */
+  setPortStateHandlerForTransport(transportId: string, handler: PortStateHandler): Promise<void>;
+
   // === Уничтожение ===
   /**
    * Уничтожить транспорт.
@@ -146,4 +187,4 @@ declare class TransportController {
   destroy(): Promise<void>;
 }
 
-export default TransportController;
+export = TransportController;

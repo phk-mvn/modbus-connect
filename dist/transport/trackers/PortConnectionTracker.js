@@ -57,12 +57,15 @@ class PortConnectionTracker {
   /**
    * Уведомляет о подключении порта.
    * Игнорируется, если порт уже подключён.
-   *
    * @param slaveIds — список slaveId, подключённых к порту
    */
   async notifyConnected(slaveIds = []) {
     const release = await this._mutex.acquire();
     try {
+      if (this._debounceTimeout) {
+        clearTimeout(this._debounceTimeout);
+        this._debounceTimeout = null;
+      }
       if (this._state.isConnected && arraysEqual(this._state.slaveIds, slaveIds)) {
         return;
       }
@@ -71,10 +74,6 @@ class PortConnectionTracker {
         slaveIds: [...slaveIds],
         timestamp: Date.now()
       };
-      if (this._debounceTimeout) {
-        clearTimeout(this._debounceTimeout);
-        this._debounceTimeout = null;
-      }
       this._handler?.(true, this._state.slaveIds);
     } finally {
       release();
@@ -83,7 +82,6 @@ class PortConnectionTracker {
   /**
    * Уведомляет об отключении порта с trailing debounce.
    * Последний вызов в серии будет выполнен через `debounceMs`.
-   *
    * @param errorType Тип ошибки, по умолчанию: `ConnectionErrorType.UnknownError`
    * @param errorMessage Подробное сообщение, по умолчанию: `'Port disconnected'`
    * @param slaveIds Список slaveId, которые были активны
@@ -92,28 +90,27 @@ class PortConnectionTracker {
     if (this._debounceTimeout) {
       clearTimeout(this._debounceTimeout);
     }
-    this._debounceTimeout = setTimeout(() => {
-      this._doNotifyDisconnected(errorType, errorMessage, slaveIds);
-    }, this._debounceMs);
-  }
-  /**
-   * Внутренний метод — фактическое уведомление об отключении.
-   */
-  async _doNotifyDisconnected(errorType, errorMessage, slaveIds) {
-    const release = await this._mutex.acquire();
-    try {
-      if (!this._state.isConnected) return;
-      this._state = {
-        isConnected: false,
-        errorType,
-        errorMessage,
-        slaveIds: [...slaveIds],
-        timestamp: Date.now()
-      };
-      this._handler?.(false, this._state.slaveIds, { type: errorType, message: errorMessage });
-    } finally {
-      release();
-    }
+    (async () => {
+      const release = await this._mutex.acquire();
+      try {
+        if (!this._state.isConnected) {
+          return;
+        }
+        this._state = {
+          isConnected: false,
+          errorType,
+          errorMessage,
+          slaveIds: [...slaveIds],
+          timestamp: Date.now()
+        };
+        this._debounceTimeout = setTimeout(() => {
+          this._debounceTimeout = null;
+          this._handler?.(false, this._state.slaveIds, { type: errorType, message: errorMessage });
+        }, this._debounceMs);
+      } finally {
+        release();
+      }
+    })();
   }
   /**
    * Возвращает копию текущего состояния порта.

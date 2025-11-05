@@ -27,8 +27,6 @@ var import_utils = require("../../utils/utils.js");
 var import_logger = __toESM(require("../../logger.js"));
 var import_errors = require("../../errors.js");
 var import_modbus_types = require("../../types/modbus-types.js");
-var import_DeviceConnectionTracker = require("../trackers/DeviceConnectionTracker.js");
-var import_PortConnectionTracker = require("../trackers/PortConnectionTracker.js");
 const NODE_SERIAL_CONSTANTS = {
   MIN_BAUD_RATE: 300,
   MAX_BAUD_RATE: 115200,
@@ -104,11 +102,11 @@ const handleModbusError = (err) => {
   }
 };
 class NodeSerialTransport {
+  isOpen = false;
   path;
   options;
   port = null;
   readBuffer = (0, import_utils.allocUint8Array)(0);
-  isOpen = false;
   _reconnectAttempts = 0;
   _shouldReconnect = true;
   _reconnectTimeout = null;
@@ -120,8 +118,9 @@ class NodeSerialTransport {
   _connectionPromise = null;
   _resolveConnection = null;
   _rejectConnection = null;
-  connectionTracker = new import_DeviceConnectionTracker.DeviceConnectionTracker();
-  portConnectionTracker = new import_PortConnectionTracker.PortConnectionTracker({ debounceMs: 300 });
+  _connectedSlaveIds = /* @__PURE__ */ new Set();
+  _deviceStateHandler = null;
+  _portStateHandler = null;
   _wasEverConnected = false;
   constructor(port, options = {}) {
     this.path = port;
@@ -138,41 +137,54 @@ class NodeSerialTransport {
       ...options
     };
   }
-  // === Трекинг устройств ===
   setDeviceStateHandler(handler) {
-    this.connectionTracker.setHandler(handler);
+    this._deviceStateHandler = handler;
+  }
+  setPortStateHandler(handler) {
+    this._portStateHandler = handler;
   }
   async disableDeviceTracking() {
-    await this.connectionTracker.removeHandler();
+    this._deviceStateHandler = null;
     logger.debug("Device tracking disabled");
   }
   async enableDeviceTracking(handler) {
     if (handler) {
-      await this.connectionTracker.setHandler(handler);
+      this._deviceStateHandler = handler;
     }
     logger.debug("Device tracking enabled");
   }
-  setPortStateHandler(handler) {
-    this.portConnectionTracker.setHandler(handler);
-  }
   notifyDeviceConnected(slaveId) {
-    this.connectionTracker.notifyConnected(slaveId);
+    if (this._connectedSlaveIds.has(slaveId)) {
+      return;
+    }
+    this._connectedSlaveIds.add(slaveId);
+    if (this._deviceStateHandler) {
+      this._deviceStateHandler(slaveId, true);
+    }
   }
   notifyDeviceDisconnected(slaveId, errorType, errorMessage) {
-    this.connectionTracker.notifyDisconnected(slaveId, errorType, errorMessage);
+    if (!this._connectedSlaveIds.has(slaveId)) {
+      return;
+    }
+    this._connectedSlaveIds.delete(slaveId);
+    if (this._deviceStateHandler) {
+      this._deviceStateHandler(slaveId, false, { type: errorType, message: errorMessage });
+    }
   }
   async _notifyPortConnected() {
     this._wasEverConnected = true;
-    const slaveIds = await this.connectionTracker.getConnectedSlaveIds();
-    this.portConnectionTracker.notifyConnected(slaveIds);
+    if (this._portStateHandler) {
+      this._portStateHandler(true, [], void 0);
+    }
   }
   async _notifyPortDisconnected(errorType = import_modbus_types.ConnectionErrorType.UnknownError, errorMessage = "Port disconnected") {
     if (!this._wasEverConnected) {
       logger.debug("Skipping DISCONNECTED \u2014 port was never connected");
       return;
     }
-    const slaveIds = await this.connectionTracker.getConnectedSlaveIds();
-    this.portConnectionTracker.notifyDisconnected(errorType, errorMessage, slaveIds);
+    if (this._portStateHandler) {
+      this._portStateHandler(false, [], { type: errorType, message: errorMessage });
+    }
   }
   async _releaseAllResources() {
     logger.debug("Releasing NodeSerial resources");
@@ -191,6 +203,7 @@ class NodeSerialTransport {
     this.port = null;
     this.isOpen = false;
     this.readBuffer = (0, import_utils.allocUint8Array)(0);
+    this._connectedSlaveIds.clear();
   }
   _removeAllListeners() {
     if (this.port) {
@@ -339,17 +352,6 @@ class NodeSerialTransport {
     this.isOpen = false;
     this._notifyPortDisconnected(import_modbus_types.ConnectionErrorType.PortClosed, "Port was closed").catch(() => {
     });
-    (async () => {
-      const states = await this.connectionTracker.getAllStates();
-      for (const state of states) {
-        this.connectionTracker.notifyDisconnected(
-          state.slaveId,
-          import_modbus_types.ConnectionErrorType.PortClosed,
-          "Port was closed"
-        );
-      }
-      this.connectionTracker.clear();
-    })();
   }
   _scheduleReconnect(_err) {
     if (!this._shouldReconnect || this._isDisconnecting) return;
@@ -358,17 +360,6 @@ class NodeSerialTransport {
       const maxError = new import_errors.NodeSerialConnectionError(`Max reconnect attempts reached`);
       if (this._rejectConnection) this._rejectConnection(maxError);
       this._shouldReconnect = false;
-      (async () => {
-        const states = await this.connectionTracker.getAllStates();
-        for (const state of states) {
-          this.connectionTracker.notifyDisconnected(
-            state.slaveId,
-            import_modbus_types.ConnectionErrorType.MaxReconnect,
-            maxError.message
-          );
-        }
-        this.connectionTracker.clear();
-      })();
       return;
     }
     this._reconnectAttempts++;
@@ -382,7 +373,6 @@ class NodeSerialTransport {
       if (this.port && this.port.isOpen) await this._releaseAllResources();
       await this._createAndOpenPort();
       this._reconnectAttempts = 0;
-      this.connectionTracker.clear();
       await this._notifyPortConnected();
       if (this._resolveConnection) this._resolveConnection();
     } catch (error) {
@@ -395,17 +385,6 @@ class NodeSerialTransport {
         if (this._rejectConnection) this._rejectConnection(maxError);
         this._shouldReconnect = false;
         await this._notifyPortDisconnected(import_modbus_types.ConnectionErrorType.MaxReconnect, maxError.message);
-        (async () => {
-          const states = await this.connectionTracker.getAllStates();
-          for (const state of states) {
-            this.connectionTracker.notifyDisconnected(
-              state.slaveId,
-              import_modbus_types.ConnectionErrorType.MaxReconnect,
-              maxError.message
-            );
-          }
-          this.connectionTracker.clear();
-        })();
       }
     }
   }
@@ -455,31 +434,29 @@ class NodeSerialTransport {
   async read(length, timeout = this.options.readTimeout) {
     if (length <= 0) throw new import_errors.ModbusDataConversionError(length, "positive");
     const release = await this._operationMutex.acquire();
-    let emptyAttempts = 0;
     const start = Date.now();
     try {
       return new Promise((resolve, reject) => {
         const check = () => {
-          if (!this.isOpen || !this.port?.isOpen)
-            return reject(new import_errors.NodeSerialReadError("Port closed"));
-          if (this._isFlushing) return reject(new import_errors.ModbusFlushError());
+          if (!this.isOpen || !this.port?.isOpen) {
+            return reject(new import_errors.NodeSerialReadError("Port is closed"));
+          }
+          if (this._isFlushing) {
+            return reject(new import_errors.ModbusFlushError());
+          }
           if (this.readBuffer.length >= length) {
             const data = (0, import_utils.sliceUint8Array)(this.readBuffer, 0, length);
             this.readBuffer = (0, import_utils.sliceUint8Array)(this.readBuffer, length);
-            emptyAttempts = 0;
-            if (data.length !== length)
+            if (data.length !== length) {
               return reject(new import_errors.ModbusInsufficientDataError(data.length, length));
+            }
             return resolve(data);
           }
-          if (this.readBuffer.length === 0) {
-            emptyAttempts++;
-            if (emptyAttempts >= 3) {
-              emptyAttempts = 0;
-              this.connect().catch(() => {
-              });
-            }
-          } else emptyAttempts = 0;
-          if (Date.now() - start > timeout) return reject(new import_errors.ModbusTimeoutError("Read timeout"));
+          if (Date.now() - start > timeout) {
+            return reject(
+              new import_errors.ModbusTimeoutError(`Read timeout: No data received within ${timeout}ms`)
+            );
+          }
           setTimeout(check, NODE_SERIAL_CONSTANTS.POLL_INTERVAL_MS);
         };
         check();
@@ -502,15 +479,6 @@ class NodeSerialTransport {
           "Port closed by user"
         );
       }
-      const states2 = await this.connectionTracker.getAllStates();
-      for (const state of states2) {
-        this.connectionTracker.notifyDisconnected(
-          state.slaveId,
-          import_modbus_types.ConnectionErrorType.ManualDisconnect,
-          "Port closed by user"
-        );
-      }
-      this.connectionTracker.clear();
       return;
     }
     await this._releaseAllResources();
@@ -520,15 +488,6 @@ class NodeSerialTransport {
         "Port closed by user"
       );
     }
-    const states = await this.connectionTracker.getAllStates();
-    for (const state of states) {
-      this.connectionTracker.notifyDisconnected(
-        state.slaveId,
-        import_modbus_types.ConnectionErrorType.ManualDisconnect,
-        "Port closed by user"
-      );
-    }
-    this.connectionTracker.clear();
     this._isDisconnecting = false;
   }
   destroy() {
@@ -543,18 +502,6 @@ class NodeSerialTransport {
         }
       );
     }
-    (async () => {
-      const states = await this.connectionTracker.getAllStates();
-      for (const state of states) {
-        this.connectionTracker.notifyDisconnected(
-          state.slaveId,
-          import_modbus_types.ConnectionErrorType.Destroyed,
-          "Transport destroyed"
-        );
-      }
-      this.connectionTracker.clear();
-      await this.portConnectionTracker.clear();
-    })();
   }
   _handleError(err) {
     handleModbusError(err);
@@ -568,17 +515,6 @@ class NodeSerialTransport {
       this._notifyPortDisconnected(import_modbus_types.ConnectionErrorType.ConnectionLost, reason).catch(() => {
       });
     }
-    (async () => {
-      const states = await this.connectionTracker.getAllStates();
-      for (const state of states) {
-        this.connectionTracker.notifyDisconnected(
-          state.slaveId,
-          import_modbus_types.ConnectionErrorType.ConnectionLost,
-          reason
-        );
-      }
-      this.connectionTracker.clear();
-    })();
   }
 }
 module.exports = NodeSerialTransport;

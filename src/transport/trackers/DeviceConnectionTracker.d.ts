@@ -1,72 +1,91 @@
+// src/transport/trackers/DeviceConnectionTracker.d.ts
+
+import {
+  DeviceStateHandler,
+  DeviceConnectionStateObject,
+  DeviceConnectionTrackerOptions,
+  ConnectionErrorType,
+} from '../../types/modbus-types.js';
+
 /**
- * Трекер состояния подключения устройств (slave-ов) в Modbus-транспорте.
- * Обеспечивает:
- * - Дебонсинг уведомлений об отключении
- * - Централизованное хранение состояний
- * - Восстановление состояния при смене обработчика
+ * Отслеживает состояние подключения Modbus-устройств (slave).
+ * Поддерживает:
+ * - Уведомления с debounce
+ * - Потокобезопасность через `async-mutex`
+ * - Валидацию `slaveId` (1–255)
+ * - Иммутабельные возвращаемые данные
+ * - Отключение обработчика
  */
-export class DeviceConnectionTracker {
+export declare class DeviceConnectionTracker {
   /**
-   * Устанавливает обработчик событий изменения состояния устройства.
-   * При установке — вызывает обработчик для всех текущих состояний.
+   * Создаёт экземпляр трекера состояний.
    *
-   * @param handler Функция-обработчик: (slaveId, connected, error?)
+   * @param options Настройки трекера
    */
-  setHandler(handler: import('../../types/modbus-types.js').DeviceStateHandler): void;
+  constructor(options?: DeviceConnectionTrackerOptions);
 
   /**
-   * Удаляет обработчик событий изменения состояния устройства.
-   * После вызова уведомления прекращаются.
+   * Устанавливает обработчик изменения состояния устройства.
+   * При установке — вызывает обработчик для всех текущих состояний.
+   *
+   * @param handler Функция: `(slaveId: number, connected: boolean, error?) => void`
    */
-  removeHandler(): void;
+  setHandler(handler: DeviceStateHandler): Promise<void>;
+
+  /**
+   * Удаляет обработчик изменения состояния.
+   * После вызова — уведомления прекращаются.
+   */
+  removeHandler(): Promise<void>;
 
   /**
    * Уведомляет о подключении устройства.
-   * Игнорируется, если устройство уже в состоянии "подключено".
+   * Игнорируется, если устройство уже подключено.
    *
-   * @param slaveId Идентификатор slave-устройства
+   * @param slaveId Идентификатор устройства (1–255)
    */
-  notifyConnected(slaveId: number): void;
+  notifyConnected(slaveId: number): Promise<void>;
 
   /**
-   * Уведомляет об отключении устройства с дебонсингом.
+   * Уведомляет об отключении устройства с **trailing debounce**.
+   * Последний вызов в серии будет выполнен через `debounceMs`.
    *
-   * @param slaveId Идентификатор устройства
-   * @param errorType Тип ошибки (по умолчанию: 'UnknownError')
-   * @param errorMessage Сообщение об ошибке (по умолчанию: 'Device disconnected')
+   * @param slaveId Идентификатор устройства (1–255)
+   * @param errorType Тип ошибки, по умолчанию: `UnknownError`
+   * @param errorMessage Подробное сообщение, по умолчанию: `'Device disconnected'`
    */
-  notifyDisconnected(slaveId: number, errorType?: string, errorMessage?: string): void;
+  notifyDisconnected(slaveId: number, errorType?: ConnectionErrorType, errorMessage?: string): void;
 
   /**
-   * Возвращает текущее состояние конкретного устройства.
-   *
-   * @param slaveId Идентификатор устройства
-   * @returns Объект состояния или undefined
+   * Возвращает копию состояния конкретного устройства.
    */
-  getState(
-    slaveId: number
-  ): import('../../types/modbus-types.js').DeviceConnectionStateObject | undefined;
+  getState(slaveId: number): Promise<DeviceConnectionStateObject | undefined>;
 
   /**
-   * Возвращает копию всех текущих состояний устройств.
-   *
-   * @returns Массив объектов состояния
+   * Возвращает копии всех текущих состояний устройств.
    */
-  getAllStates(): import('../../types/modbus-types.js').DeviceConnectionStateObject[];
+  getAllStates(): Promise<DeviceConnectionStateObject[]>;
 
   /**
-   * Очищает все состояния и таймеры дебонса.
-   * Используется при закрытии порта или пересоздании транспорта.
+   * Очищает все состояния и отменяет все таймеры дебонса.
    */
-  clear(): void;
+  clear(): Promise<void>;
 
   /**
-   * Внутренний метод для тестирования.
-   * Сбрасывает таймер дебонса для конкретного slave.
-   * Не предназначен для использования в продакшене.
+   * Проверяет, отслеживается ли устройство.
+   */
+  hasState(slaveId: number): boolean;
+
+  /**
+   * Возвращает список `slaveId` всех подключённых устройств.
+   */
+  getConnectedSlaveIds(): number[];
+
+  /**
+   * Сбрасывает таймер дебонса для указанного устройства.
+   * **Только для тестов.**
    *
    * @internal
-   * @param slaveId
    */
   __resetDebounce(slaveId: number): void;
 }

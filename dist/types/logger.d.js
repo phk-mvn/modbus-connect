@@ -19,14 +19,13 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var logger_d_exports = {};
 __export(logger_d_exports, {
   Logger: () => Logger,
-  LoggerInstance: () => import_modbus_types.LoggerInstance,
-  default: () => logger_d_default
+  LoggerInstance: () => import_modbus_types.LoggerInstance
 });
 module.exports = __toCommonJS(logger_d_exports);
 var import_modbus_types = require("./modbus-types.js");
 class Logger {
 }
-var logger_d_default = Logger;
+logger_d_module.exports = Logger;
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   Logger,

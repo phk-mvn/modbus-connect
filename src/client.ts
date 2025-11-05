@@ -108,10 +108,7 @@ import {
   ModbusInvalidFrameLengthError,
   ModbusInvalidTransactionIdError,
   ModbusUnexpectedFunctionCodeError,
-  ModbusConnectionRefusedError,
-  ModbusConnectionTimeoutError,
   ModbusNotConnectedError,
-  ModbusAlreadyConnectedError,
   ModbusInsufficientDataError,
   ModbusTooManyEmptyReadsError,
   ModbusInterFrameTimeoutError,
@@ -163,13 +160,13 @@ import {
   RestartControllerResponse,
   GetControllerTimeResponse,
   SetControllerTimeResponse,
+  TransportControllerInterface,
+  ConnectionErrorType,
 } from './types/modbus-types.js';
-
-// Import TransportController
-import TransportController from './transport/transport-controller.js';
 
 // Type for CRC function
 type CrcFunction = (data: Uint8Array) => Uint8Array;
+
 // Map of explicitly typed CRC algorithms
 const crcAlgorithmMap: Record<string, CrcFunction> = {
   crc16Modbus,
@@ -185,21 +182,16 @@ const crcAlgorithmMap: Record<string, CrcFunction> = {
   crc32mpeg,
   crcjam,
 };
+
 const logger = new Logger();
 logger.setLevel('error');
+
 type DataViewMethod32 = 'getUint32' | 'getInt32' | 'getFloat32';
 type DataViewMethod64 = 'getUint64' | 'getInt64' | 'getFloat64';
 type SwapMode = 'sw' | 'sb' | 'sbw' | 'le' | 'le_sw' | 'le_sb' | 'le_sbw';
 
-// Интерфейс расширенного транспорта для отслеживания состояния устройств
-interface ExtendedTransport extends Transport {
-  notifyDeviceConnected?(slaveId: number): void;
-  notifyDeviceDisconnected?(slaveId: number, errorType?: string, errorMessage?: string): void;
-}
-
 class ModbusClient {
-  private transport: ExtendedTransport | null;
-  private transportController: TransportController | null;
+  private transportController: TransportControllerInterface;
   private slaveId: number;
   private defaultTimeout: number;
   private retryCount: number;
@@ -209,6 +201,7 @@ class ModbusClient {
   private diagnostics: Diagnostics;
   private crcFunc: CrcFunction;
   private _mutex: Mutex;
+
   private static readonly FUNCTION_CODE_MAP = new Map<number, ModbusFunctionCode>([
     [0x01, ModbusFunctionCode.READ_COILS],
     [0x02, ModbusFunctionCode.READ_DISCRETE_INPUTS],
@@ -230,6 +223,7 @@ class ModbusClient {
     [0x6e, ModbusFunctionCode.GET_CONTROLLER_TIME],
     [0x6f, ModbusFunctionCode.SET_CONTROLLER_TIME],
   ]);
+
   private static readonly EXCEPTION_CODE_MAP = new Map<number, ModbusExceptionCode>([
     [1, ModbusExceptionCode.ILLEGAL_FUNCTION],
     [2, ModbusExceptionCode.ILLEGAL_DATA_ADDRESS],
@@ -243,21 +237,15 @@ class ModbusClient {
   ]);
 
   constructor(
-    transportOrController: Transport | TransportController,
+    transportController: TransportControllerInterface,
     slaveId: number = 1,
     options: ModbusClientOptions = {}
   ) {
     if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 255) {
       throw new ModbusInvalidAddressError(slaveId);
     }
-    if (transportOrController instanceof TransportController) {
-      this.transportController = transportOrController;
-      this.transport = null;
-    } else {
-      this.transport = transportOrController as ExtendedTransport;
-      this.transportController = null;
-    }
-    // this.transport = transport as ExtendedTransport;
+
+    this.transportController = transportController;
     this.slaveId = slaveId;
     this.defaultTimeout = options.timeout ?? 2000;
     this.retryCount = options.retryCount ?? 0;
@@ -267,6 +255,7 @@ class ModbusClient {
     this.diagnostics = this.diagnosticsEnabled
       ? new Diagnostics({ loggerName: 'ModbusClient' })
       : new Diagnostics({ loggerName: 'Noop' });
+
     const algorithm = options.crcAlgorithm ?? 'crc16Modbus';
     const crcFunc = crcAlgorithmMap[algorithm];
     if (!crcFunc) {
@@ -280,13 +269,8 @@ class ModbusClient {
   /**
    * Returns the effective transport for the client
    */
-  private get _effectiveTransport(): ExtendedTransport | null {
-    if (this.transportController) {
-      return this.transportController.getTransportForSlave(
-        this.slaveId
-      ) as ExtendedTransport | null;
-    }
-    return this.transport;
+  private get _effectiveTransport(): Transport | null {
+    return this.transportController.getTransportForSlave(this.slaveId);
   }
 
   /**
@@ -329,63 +313,59 @@ class ModbusClient {
   }
 
   /**
-   * Establishes a connection to the Modbus transport.
-   * Logs the connection status upon successful connection.
+   * Performs a logical connection check to ensure the client is ready for communication.
+   * This method verifies that a transport is available and has been connected by the TransportController.
+   * It does NOT initiate the physical connection itself.
+   * Throws ModbusNotConnectedError if the transport is not ready.
    */
   public async connect(): Promise<void> {
     const release = await this._mutex.acquire();
     try {
       const transport = this._effectiveTransport;
+
+      // Проверка 1: Назначен ли вообще транспорт для этого slaveId?
       if (!transport) {
-        throw new Error(`No transport available for slaveId ${this.slaveId}`);
+        // ИСПРАВЛЕНО: Вызываем конструктор без аргументов
+        throw new ModbusNotConnectedError();
       }
-      await transport.connect();
+
+      // Проверка 2: Был ли транспорт подключен через контроллер?
+      // (Теперь это будет работать, так как мы добавили `isOpen` в интерфейс)
+      if (!transport.isOpen) {
+        // ИСПРАВЛЕНО: Вызываем конструктор без аргументов
+        throw new ModbusNotConnectedError();
+      }
+
+      // Все проверки пройдены. Клиент готов к работе.
       this._setAutoLoggerContext();
-      logger.info('Transport connected', { transport: transport.constructor.name });
-    } catch (err: unknown) {
-      if (err instanceof ModbusConnectionRefusedError) {
-        logger.error('Connection refused');
-      } else if (err instanceof ModbusConnectionTimeoutError) {
-        logger.error('Connection timeout');
-      } else if (err instanceof ModbusNotConnectedError) {
-        logger.error('Not connected');
-      } else if (err instanceof ModbusAlreadyConnectedError) {
-        logger.error('Already connected');
-      } else {
-        logger.error('Connection error', { error: err });
-      }
-      throw err;
+      logger.info('Client is ready. Transport is connected and available.', {
+        slaveId: this.slaveId,
+        transport: transport.constructor.name,
+      });
     } finally {
       release();
     }
   }
 
   /**
-   * Closes the connection to the Modbus transport.
-   * Logs the disconnection status upon successful disconnection.
+   * Performs a logical disconnection for the client.
+   * This method is a no-op regarding the physical transport layer, which should be managed
+   * exclusively by the TransportController. It simply logs the client's logical disconnection.
    */
   public async disconnect(): Promise<void> {
     const release = await this._mutex.acquire();
     try {
       const transport = this._effectiveTransport;
-      if (!transport) {
-        logger.warn('No transport available to disconnect');
-        return;
-      }
-      await transport.disconnect();
       this._setAutoLoggerContext();
-      logger.info('Transport disconnected', { transport: transport.constructor.name });
-    } catch (err: unknown) {
-      if (err instanceof ModbusConnectionRefusedError) {
-        logger.error('Connection refused during disconnect');
-      } else if (err instanceof ModbusConnectionTimeoutError) {
-        logger.error('Connection timeout during disconnect');
-      } else if (err instanceof ModbusNotConnectedError) {
-        logger.error('Not connected during disconnect');
-      } else {
-        logger.error('Disconnection error', { error: err });
-      }
-      throw err;
+      logger.info(
+        'Client logically disconnected. The physical transport connection is not affected.',
+        {
+          slaveId: this.slaveId,
+          transport: transport ? transport.constructor.name : 'N/A',
+        }
+      );
+      // Мы намеренно не вызываем transport.disconnect() здесь.
+      // Это задача TransportController.disconnectAll() или disconnectTransport().
     } finally {
       release();
     }
@@ -415,7 +395,7 @@ class ModbusClient {
       if (funcCode! & 0x80) {
         return 5; // slave(1) + func(1) + errorCode(1) + CRC(2)
       }
-      return null; // Неизвестный код функции
+      return null;
     }
     switch (modbusFuncCode) {
       case ModbusFunctionCode.READ_COILS:
@@ -425,7 +405,7 @@ class ModbusClient {
         if (bitCount < 1 || bitCount > 2000) {
           throw new ModbusInvalidQuantityError(bitCount, 1, 2000);
         }
-        return 5 + Math.ceil(bitCount / 8); // slave(1) + func(1) + byteCount(1) + data(N) + CRC(2)
+        return 5 + Math.ceil(bitCount / 8);
       }
       case ModbusFunctionCode.READ_HOLDING_REGISTERS:
       case ModbusFunctionCode.READ_INPUT_REGISTERS: {
@@ -434,38 +414,38 @@ class ModbusClient {
         if (regCount < 1 || regCount > 125) {
           throw new ModbusInvalidQuantityError(regCount, 1, 125);
         }
-        return 5 + regCount * 2; // slave(1) + func(1) + byteCount(1) + data(N*2) + CRC(2)
+        return 5 + regCount * 2;
       }
       case ModbusFunctionCode.WRITE_SINGLE_COIL:
       case ModbusFunctionCode.WRITE_SINGLE_REGISTER:
-        return 8; // slave(1) + func(1) + address(2) + value(2) + CRC(2)
+        return 8;
       case ModbusFunctionCode.WRITE_MULTIPLE_COILS:
       case ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS:
-        return 8; // slave(1) + func(1) + address(2) + quantity(2) + CRC(2)
+        return 8;
       case ModbusFunctionCode.READ_DEVICE_COMMENT:
         return null;
       case ModbusFunctionCode.WRITE_DEVICE_COMMENT:
-        return 5; // slave(1) + func(1) + channel(1) + length(1) + CRC(2)
+        return 5;
       case ModbusFunctionCode.READ_DEVICE_IDENTIFICATION: {
         if (pdu.length < 4) return null;
-        if (pdu[2] === 0x00) return 6; // slave(1) + func(1) + interface(1) + error(1) + CRC(2)
-        if (pdu[2] === 0x04) return null; // Длина строки неизвестна заранее
-        return null; // Количество строк и их длины неизвестны заранее
+        if (pdu[2] === 0x00) return 6;
+        if (pdu[2] === 0x04) return null;
+        return null;
       }
       case ModbusFunctionCode.READ_FILE_LENGTH:
-        return 8; // slave(1) + func(1) + length(4) + CRC(2)
+        return 8;
       case ModbusFunctionCode.OPEN_FILE:
-        return 8; // slave(1) + func(1) + length(4) + CRC(2)
+        return 8;
       case ModbusFunctionCode.CLOSE_FILE:
-        return 5; // slave(1) + func(1) + status(1) + CRC(2)
+        return 5;
       case ModbusFunctionCode.RESTART_CONTROLLER:
-        return 0; // Ответа не ожидается
+        return 0;
       case ModbusFunctionCode.GET_CONTROLLER_TIME:
-        return 10; // slave(1) + func(1) + time(6) + CRC(2)
+        return 10;
       case ModbusFunctionCode.SET_CONTROLLER_TIME:
-        return 8; // slave(1) + func(1) + status(2) + CRC(2)
+        return 8;
       default:
-        return null; // Неизвестный код функции (для полноты покрытия)
+        return null;
     }
   }
 
@@ -487,6 +467,7 @@ class ModbusClient {
     while (true) {
       const timeLeft = timeout - (Date.now() - start);
       if (timeLeft <= 0) throw new ModbusTimeoutError('Read timeout');
+
       const minPacketLength = 5;
       const bytesToRead = expectedLength
         ? Math.max(1, expectedLength - buffer.length)
@@ -505,7 +486,7 @@ class ModbusClient {
       newBuffer.set(chunk, buffer.length);
       buffer = newBuffer;
 
-      const funcCode = requestPdu ? requestPdu[0] : undefined; // <-- Поменяй на undefined
+      const funcCode = requestPdu ? requestPdu[0] : undefined;
       this._setAutoLoggerContext(funcCode);
       logger.debug('Received chunk:', { bytes: chunk.length, total: buffer.length });
 
@@ -613,30 +594,36 @@ class ModbusClient {
       const funcCode = pdu[0];
       const funcCodeEnum = ModbusClient.FUNCTION_CODE_MAP.get(funcCode!) ?? funcCode;
       const slaveId = this.slaveId;
+
       if (this.diagnosticsEnabled) {
         this.diagnostics.recordRequest(slaveId, funcCode);
         this.diagnostics.recordFunctionCall(funcCode!, slaveId);
       }
+
       let lastError: unknown;
       const startTime = Date.now();
+
       for (let attempt = 0; attempt <= this.retryCount; attempt++) {
+        const transport = this._effectiveTransport;
+        if (!transport) {
+          throw new Error(`No transport available for slaveId ${this.slaveId}`);
+        }
+
         try {
           const attemptStart = Date.now();
           const timeLeft = timeout - (attemptStart - startTime);
           if (timeLeft <= 0) throw new ModbusTimeoutError('Timeout before request');
+
           this._setAutoLoggerContext(funcCodeEnum);
           logger.debug(`Attempt #${attempt + 1} — sending request`, {
             slaveId,
             funcCode,
           });
+
           const packet = buildPacket(slaveId, pdu, this.crcFunc);
+
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
-          }
-
-          const transport = this._effectiveTransport;
-          if (!transport) {
-            throw new Error(`No transport available for slaveId ${this.slaveId}`);
           }
 
           await transport.write(packet);
@@ -669,21 +656,26 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed,
             });
-            if (transport.notifyDeviceConnected) {
-              transport.notifyDeviceConnected(slaveId);
-            }
             return undefined;
           }
 
           const response = await this._readPacket(timeLeft, pdu);
+
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordDataReceived(response.length, slaveId, funcCode);
           }
+
           const elapsed = Date.now() - startTime;
           const { slaveAddress, pdu: responsePdu } = parsePacket(response, this.crcFunc);
+
           if (slaveAddress !== slaveId) {
             throw new Error(`Slave address mismatch (expected ${slaveId}, got ${slaveAddress})`);
           }
+
+          if (transport.notifyDeviceConnected) {
+            transport.notifyDeviceConnected(slaveId);
+          }
+
           const responseFuncCode = responsePdu[0];
           if ((responseFuncCode! & 0x80) !== 0) {
             const exceptionCode = responsePdu[1];
@@ -692,6 +684,7 @@ class ModbusClient {
             const exceptionMessage =
               MODBUS_EXCEPTION_MESSAGES[exceptionCode as ModbusExceptionCode] ??
               `Unknown exception code: ${exceptionCode}`;
+
             logger.warn('Modbus exception received', {
               slaveId,
               funcCode,
@@ -699,26 +692,39 @@ class ModbusClient {
               exceptionMessage,
               responseTime: elapsed,
             });
-            if (transport.notifyDeviceDisconnected) {
-              transport.notifyDeviceDisconnected(slaveId, 'ModbusException', exceptionMessage);
-            }
+
             throw new ModbusExceptionError(responseFuncCode! & 0x7f, modbusExceptionCode!);
           }
 
           if (this.diagnosticsEnabled) {
             this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
           }
+
           logger.info('Response received', {
             slaveId,
             funcCode,
             responseTime: elapsed,
           });
-          if (transport.notifyDeviceConnected) {
-            transport.notifyDeviceConnected(slaveId);
-          }
+
           return responsePdu;
         } catch (err: unknown) {
           const elapsed = Date.now() - startTime;
+
+          if (!(err instanceof ModbusExceptionError)) {
+            if (transport.notifyDeviceDisconnected) {
+              let errorType = ConnectionErrorType.UnknownError;
+              if (err instanceof ModbusTimeoutError) {
+                errorType = ConnectionErrorType.Timeout;
+              } else if (err instanceof ModbusCRCError) {
+                errorType = ConnectionErrorType.CRCError;
+              }
+              const errorMessage = err instanceof Error ? err.message : String(err);
+
+              // ТЕПЕРЬ ЭТОТ ВЫЗОВ С 3 АРГУМЕНТАМИ ВЕРНЫЙ
+              transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
+            }
+          }
+
           const isFlushedError = err instanceof ModbusFlushError;
           const errorCode =
             err instanceof Error && err.message.toLowerCase().includes('timeout')
@@ -729,28 +735,15 @@ class ModbusClient {
                   ? 'modbus-exception'
                   : null;
 
-          const isCriticalError =
-            err instanceof ModbusTimeoutError ||
-            err instanceof ModbusConnectionTimeoutError ||
-            err instanceof ModbusNotConnectedError ||
-            err instanceof ModbusConnectionRefusedError;
-
-          const transport = this._effectiveTransport;
-          if (isCriticalError && transport && transport.notifyDeviceDisconnected) {
-            const errorType = err.constructor.name;
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
-
-            if (transport.flush) {
-              try {
-                await transport.flush();
-                logger.debug('Transport flushed after critical error', { slaveId });
-              } catch (flushErr) {
-                logger.warn('Failed to flush transport after error', {
-                  slaveId,
-                  flushError: flushErr,
-                });
-              }
+          if (transport.flush) {
+            try {
+              await transport.flush();
+              logger.debug('Transport flushed after error', { slaveId });
+            } catch (flushErr) {
+              logger.warn('Failed to flush transport after error', {
+                slaveId,
+                flushError: flushErr,
+              });
             }
           }
 
@@ -763,6 +756,7 @@ class ModbusClient {
               exceptionCode: err instanceof ModbusExceptionError ? err.exceptionCode : null,
             });
           }
+
           this._setAutoLoggerContext(funcCodeEnum);
           logger.warn(
             `Attempt #${attempt + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -775,13 +769,16 @@ class ModbusClient {
               exceptionCode: err instanceof ModbusExceptionError ? err.exceptionCode : null,
             }
           );
+
           lastError = err;
+
           if (isFlushedError) {
             logger.info(`Attempt #${attempt + 1} failed due to flush, will retry`, {
               slaveId,
               funcCode,
             });
           }
+
           if (
             (ignoreNoResponse &&
               err instanceof Error &&
@@ -796,11 +793,9 @@ class ModbusClient {
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
             }
-            if (transport && transport.notifyDeviceConnected) {
-              transport.notifyDeviceConnected(slaveId);
-            }
             return undefined;
           }
+
           if (attempt < this.retryCount) {
             if (this.diagnosticsEnabled) {
               this.diagnostics.recordRetry(1, slaveId, funcCode);
@@ -817,13 +812,7 @@ class ModbusClient {
             }
             await new Promise(resolve => setTimeout(resolve, delay));
           } else {
-            if (!isCriticalError && transport && transport.notifyDeviceDisconnected) {
-              const errorType = err!.constructor.name;
-              const errorMessage = err instanceof Error ? err.message : String(err);
-              transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
-            }
-
-            if (transport && transport.flush) {
+            if (transport.flush) {
               try {
                 await transport.flush();
                 logger.debug('Final transport flush after all retries failed', { slaveId });
@@ -831,7 +820,6 @@ class ModbusClient {
                 logger.warn('Failed to final flush transport', { slaveId, flushError: flushErr });
               }
             }
-
             logger.error(`All ${this.retryCount + 1} attempts exhausted`, {
               error: lastError,
               slaveId,
@@ -861,6 +849,7 @@ class ModbusClient {
     if (!registers || !Array.isArray(registers)) {
       throw new ModbusDataConversionError(registers, 'non-empty array');
     }
+
     const buffer = new ArrayBuffer(registers.length * 2);
     const view = new DataView(buffer);
     registers.forEach((reg, i) => {
@@ -1056,13 +1045,6 @@ class ModbusClient {
     }
   }
 
-  /**
-   * Reads holding registers from the Modbus device.
-   * @param startAddress - The starting address of the registers to read (0–65535).
-   * @param quantity - The number of registers to read (1–125 for Modbus standard).
-   * @param options - The options for the read operation.
-   * @returns The converted registers.
-   */
   public async readHoldingRegisters<T extends RegisterType>(
     startAddress: number,
     quantity: number,
@@ -1084,13 +1066,6 @@ class ModbusClient {
     return this._convertRegisters(registers, type) as ConvertedRegisters<T>;
   }
 
-  /**
-   * Reads input registers from the Modbus device.
-   * @param startAddress - The starting address of the registers to read (0–65535).
-   * @param quantity - The number of registers to read (1–125 for Modbus standard).
-   * @param options - The options for the read operation.
-   * @returns The converted registers.
-   */
   public async readInputRegisters<T extends RegisterType>(
     startAddress: number,
     quantity: number,
@@ -1112,13 +1087,6 @@ class ModbusClient {
     return this._convertRegisters(registers, type) as ConvertedRegisters<T>;
   }
 
-  /**
-   * Writes a single register to the Modbus device.
-   * @param address - The address of the register to write (0–65535).
-   * @param value - The value to write to the register (0–65535).
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async writeSingleRegister(
     address: number,
     value: number,
@@ -1138,13 +1106,6 @@ class ModbusClient {
     return parseWriteSingleRegisterResponse(responsePdu);
   }
 
-  /**
-   * Writes multiple registers to the Modbus device.
-   * @param startAddress - The starting address of the registers to write (0–65535).
-   * @param values - The values to write to the registers (each 0–65535).
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async writeMultipleRegisters(
     startAddress: number,
     values: number[],
@@ -1168,13 +1129,6 @@ class ModbusClient {
     return parseWriteMultipleRegistersResponse(responsePdu);
   }
 
-  /**
-   * Reads coils from the Modbus device.
-   * @param startAddress - The starting address of the coils to read (0–65535).
-   * @param quantity - The number of coils to read (1–2000 for Modbus standard).
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async readCoils(
     startAddress: number,
     quantity: number,
@@ -1194,13 +1148,6 @@ class ModbusClient {
     return parseReadCoilsResponse(responsePdu);
   }
 
-  /**
-   * Reads discrete inputs from the Modbus device.
-   * @param startAddress - The starting address of the discrete inputs to read (0–65535).
-   * @param quantity - The number of discrete inputs to read (1–2000 for Modbus standard).
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async readDiscreteInputs(
     startAddress: number,
     quantity: number,
@@ -1220,13 +1167,6 @@ class ModbusClient {
     return parseReadDiscreteInputsResponse(responsePdu);
   }
 
-  /**
-   * Writes a single coil to the Modbus device.
-   * @param address - The address of the coil to write (0–65535).
-   * @param value - The value to write to the coil (boolean or 0/1).
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async writeSingleCoil(
     address: number,
     value: boolean | number,
@@ -1246,13 +1186,6 @@ class ModbusClient {
     return parseWriteSingleCoilResponse(responsePdu);
   }
 
-  /**
-   * Writes multiple coils to the Modbus device.
-   * @param startAddress - The starting address of the coils to write (0–65535).
-   * @param values - The values to write to the coils.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async writeMultipleCoils(
     startAddress: number,
     values: boolean[],
@@ -1272,11 +1205,6 @@ class ModbusClient {
     return parseWriteMultipleCoilsResponse(responsePdu);
   }
 
-  /**
-   * Reports the slave ID of the Modbus device.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async reportSlaveId(timeout?: number): Promise<ReportSlaveIdResponse> {
     const pdu = buildReportSlaveIdRequest();
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -1286,11 +1214,6 @@ class ModbusClient {
     return parseReportSlaveIdResponse(responsePdu);
   }
 
-  /**
-   * Reads the device identification from the Modbus device.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async readDeviceIdentification(
     timeout?: number
   ): Promise<ReadDeviceIdentificationResponse> {
@@ -1307,11 +1230,6 @@ class ModbusClient {
     }
   }
 
-  /**
-   * Reads the file length from the Modbus device.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async readFileLength(timeout?: number): Promise<ReadFileLengthResponse> {
     const pdu = buildReadFileLengthRequest('');
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -1321,12 +1239,6 @@ class ModbusClient {
     return parseReadFileLengthResponse(responsePdu);
   }
 
-  /**
-   * Opens a file on the Modbus device.
-   * @param filename - The name of the file to open.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async openFile(filename: string, timeout?: number): Promise<OpenFileResponse> {
     if (typeof filename !== 'string' || filename.length === 0) {
       throw new ModbusDataConversionError(filename, 'non-empty string');
@@ -1339,11 +1251,6 @@ class ModbusClient {
     return parseOpenFileResponse(responsePdu);
   }
 
-  /**
-   * Closes a file on the Modbus device.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async closeFile(timeout?: number): Promise<CloseFileResponse> {
     const pdu = buildCloseFileRequest();
     const responsePdu = await this._sendRequest(pdu, timeout, true);
@@ -1364,11 +1271,6 @@ class ModbusClient {
     return result;
   }
 
-  /**
-   * Restarts the controller on the Modbus device.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async restartController(timeout?: number): Promise<RestartControllerResponse> {
     const pdu = buildRestartControllerRequest();
     const responsePdu = await this._sendRequest(pdu, timeout, true);
@@ -1378,11 +1280,6 @@ class ModbusClient {
     return parseRestartControllerResponse(responsePdu);
   }
 
-  /**
-   * Gets the controller time from the Modbus device.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async getControllerTime(timeout?: number): Promise<GetControllerTimeResponse> {
     const pdu = buildGetControllerTimeRequest();
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -1392,12 +1289,6 @@ class ModbusClient {
     return parseGetControllerTimeResponse(responsePdu);
   }
 
-  /**
-   * Sets the controller time on the Modbus device.
-   * @param datetime - The datetime to set on the controller.
-   * @param timeout - The timeout in milliseconds.
-   * @returns The response from the Modbus device.
-   */
   public async setControllerTime(
     datetime: Date,
     timeout?: number

@@ -84,14 +84,20 @@ class DeviceConnectionTracker {
     if (this._validateSlaveId && (slaveId < 1 || slaveId > 255)) return;
     const release = await this._mutex.acquire();
     try {
+      const existingTimeout = this._debounceTimeouts.get(slaveId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        this._debounceTimeouts.delete(slaveId);
+      }
       const existing = this._states.get(slaveId);
-      if (existing?.hasConnectionDevice) return;
+      if (existing?.hasConnectionDevice) {
+        return;
+      }
       const state = {
         slaveId,
         hasConnectionDevice: true
       };
       this._states.set(slaveId, state);
-      this._debounceTimeouts.delete(slaveId);
       this._handler?.(slaveId, true);
     } finally {
       release();
@@ -122,16 +128,17 @@ class DeviceConnectionTracker {
     const release = await this._mutex.acquire();
     try {
       const existing = this._states.get(slaveId);
-      if (!existing || existing.hasConnectionDevice) {
-        const state = {
-          slaveId,
-          hasConnectionDevice: false,
-          errorType,
-          errorMessage
-        };
-        this._states.set(slaveId, state);
-        this._handler?.(slaveId, false, { type: errorType, message: errorMessage });
+      if (existing && !existing.hasConnectionDevice && existing.errorType === errorType) {
+        return;
       }
+      const newState = {
+        slaveId,
+        hasConnectionDevice: false,
+        errorType,
+        errorMessage
+      };
+      this._states.set(slaveId, newState);
+      this._handler?.(slaveId, false, { type: errorType, message: errorMessage });
     } finally {
       release();
     }

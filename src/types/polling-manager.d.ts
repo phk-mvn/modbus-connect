@@ -54,4 +54,4 @@ declare class PollingManager {
   setLogLevelForAll(level: LogLevel): void;
 }
 
-export default PollingManager;
+export = PollingManager;

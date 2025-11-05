@@ -85,8 +85,16 @@ export class DeviceConnectionTracker {
 
     const release = await this._mutex.acquire();
     try {
+      const existingTimeout = this._debounceTimeouts.get(slaveId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        this._debounceTimeouts.delete(slaveId);
+      }
+
       const existing = this._states.get(slaveId);
-      if (existing?.hasConnectionDevice) return;
+      if (existing?.hasConnectionDevice) {
+        return;
+      }
 
       const state: DeviceConnectionStateObject = {
         slaveId,
@@ -94,7 +102,7 @@ export class DeviceConnectionTracker {
       };
 
       this._states.set(slaveId, state);
-      this._debounceTimeouts.delete(slaveId);
+
       this._handler?.(slaveId, true);
     } finally {
       release();
@@ -138,16 +146,20 @@ export class DeviceConnectionTracker {
     const release = await this._mutex.acquire();
     try {
       const existing = this._states.get(slaveId);
-      if (!existing || existing.hasConnectionDevice) {
-        const state: DeviceConnectionStateObject = {
-          slaveId,
-          hasConnectionDevice: false,
-          errorType,
-          errorMessage,
-        };
-        this._states.set(slaveId, state);
-        this._handler?.(slaveId, false, { type: errorType, message: errorMessage });
+
+      if (existing && !existing.hasConnectionDevice && existing.errorType === errorType) {
+        return;
       }
+
+      const newState: DeviceConnectionStateObject = {
+        slaveId,
+        hasConnectionDevice: false,
+        errorType,
+        errorMessage,
+      };
+
+      this._states.set(slaveId, newState);
+      this._handler?.(slaveId, false, { type: errorType, message: errorMessage });
     } finally {
       release();
     }
