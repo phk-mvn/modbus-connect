@@ -65,9 +65,11 @@ import {
   ModbusInterFrameTimeoutError,
   ModbusSilentIntervalError,
 } from './errors.js';
+
 function hasTransportProperty(obj: unknown): obj is { transport: unknown } {
   return typeof obj === 'object' && obj !== null && 'transport' in obj;
 }
+
 function hasFlushMethod(obj: unknown): obj is { flush: () => Promise<void> } {
   return (
     typeof obj === 'object' &&
@@ -76,6 +78,7 @@ function hasFlushMethod(obj: unknown): obj is { flush: () => Promise<void> } {
     typeof (obj as { flush: unknown }).flush === 'function'
   );
 }
+
 /**
  * TaskController управляет логикой одной задачи.
  */
@@ -107,6 +110,7 @@ class TaskController {
   private transportMutex: Mutex;
   public logger: LoggerInstance;
   private pollingManager: PollingManager;
+
   constructor(options: PollingTaskOptions, pollingManager: PollingManager) {
     const {
       id,
@@ -129,6 +133,7 @@ class TaskController {
       backoffDelay = 1000,
       taskTimeout = 5000,
     } = options;
+
     this.id = id;
     this.resourceId = resourceId;
     this.priority = priority;
@@ -176,6 +181,7 @@ class TaskController {
       taskTimeout,
     } as LogContext);
   }
+
   /**
    * Запускает задачу.
    */
@@ -188,12 +194,14 @@ class TaskController {
     this.loopRunning = true;
     this.logger.info('Task started', { id: this.id } as LogContext);
     this.onStart?.();
+
     if (this.resourceId) {
       this.scheduleRun();
     } else {
       this._runLoop();
     }
   }
+
   /**
    * Останавливает задачу.
    */
@@ -207,6 +215,7 @@ class TaskController {
     this.logger.info('Task stopped', { id: this.id } as LogContext);
     this.onStop?.();
   }
+
   /**
    * Ставит задачу на паузу.
    */
@@ -218,6 +227,7 @@ class TaskController {
     this.paused = true;
     this.logger.info('Task paused', { id: this.id } as LogContext);
   }
+
   /**
    * Возобновляет задачу.
    */
@@ -232,6 +242,7 @@ class TaskController {
       } as LogContext);
     }
   }
+
   /**
    * Планирует запуск задачи.
    */
@@ -252,8 +263,9 @@ class TaskController {
       }
     }
   }
+
   /**
-   * Выполняет задачу один раз.
+   * Выполняет задачу один раз. Используется для задач с resourceId.
    * @returns {Promise<void>}
    */
   async executeOnce(): Promise<void> {
@@ -263,26 +275,35 @@ class TaskController {
       } as LogContext);
       return;
     }
-    if (this.shouldRun && this.shouldRun() === false) {
+    if (this.shouldRun && !this.shouldRun()) {
       this.logger.debug('Task should not run according to shouldRun function', {
         id: this.id,
       } as LogContext);
       this._scheduleNextRun();
       return;
     }
+
+    await this._performExecution();
+    this._scheduleNextRun();
+  }
+
+  /**
+   * Единая логика выполнения задачи, обработки ошибок и повторов.
+   * @private
+   */
+  private async _performExecution(): Promise<void> {
     this.onBeforeEach?.();
     this.executionInProgress = true;
     this.stats.totalRuns++;
-    this.logger.debug('Executing task once', { id: this.id } as LogContext);
+    this.logger.debug('Executing task', { id: this.id } as LogContext);
+
     const release = await this.transportMutex.acquire();
     try {
-      // Проверяем существование transport перед обращением к его методам
+      // Очистка буфера transport перед выполнением
       const firstFunction = this.fn[0];
       if (firstFunction && typeof firstFunction === 'function') {
         const result = firstFunction();
-        // Используем type guard для проверки наличия свойства transport
         if (result && hasTransportProperty(result) && result.transport) {
-          // Используем type guard для проверки наличия метода flush у transport
           if (hasFlushMethod(result.transport)) {
             try {
               await result.transport.flush();
@@ -295,287 +316,52 @@ class TaskController {
           }
         }
       }
-      let success = false;
+
+      let overallSuccess = false;
       const results: unknown[] = [];
+
       for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
         let retryCount = 0;
         let result: unknown = null;
         let fnSuccess = false;
+
         while (!this.stopped && retryCount <= this.maxRetries) {
           if (this.paused) {
             this.logger.debug('Task paused during execution', { id: this.id } as LogContext);
             this.executionInProgress = false;
+            // Выходим из цикла, так как задача на паузе
             return;
           }
+
           try {
-            const fnResult = this.fn[fnIndex]; // Извлекаем элемент массива
-            if (typeof fnResult !== 'function') {
-              // Проверяем, что это функция
+            const fnToExecute = this.fn[fnIndex];
+            if (typeof fnToExecute !== 'function') {
               throw new PollingManagerError(
                 `Task ${this.id} fn at index ${fnIndex} is not a function`
               );
             }
-            const promiseResult = fnResult(); // Вызываем функцию
+
+            const promiseResult = fnToExecute();
             if (!(promiseResult instanceof Promise)) {
               throw new PollingManagerError(
                 `Task ${this.id} fn ${fnIndex} did not return a Promise`
               );
             }
-            result = await this._withTimeout(promiseResult, this.taskTimeout); // Ждем результата
+
+            result = await this._withTimeout(promiseResult, this.taskTimeout);
             fnSuccess = true;
             this.stats.successes++;
             this.stats.lastError = null;
-            break;
+            break; // Успешное выполнение, выходим из цикла ретраев
           } catch (err: unknown) {
             const error = err instanceof Error ? err : new PollingManagerError(String(err));
-            // Обработка конкретных ошибок Modbus
-            if (error instanceof ModbusTimeoutError) {
-              this.logger.error('Modbus timeout error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusCRCError) {
-              this.logger.error('Modbus CRC error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusParityError) {
-              this.logger.error('Modbus parity error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusNoiseError) {
-              this.logger.error('Modbus noise error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusFramingError) {
-              this.logger.error('Modbus framing error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusOverrunError) {
-              this.logger.error('Modbus overrun error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusCollisionError) {
-              this.logger.error('Modbus collision error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusConfigError) {
-              this.logger.error('Modbus config error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusBaudRateError) {
-              this.logger.error('Modbus baud rate error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusSyncError) {
-              this.logger.error('Modbus sync error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusFrameBoundaryError) {
-              this.logger.error('Modbus frame boundary error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusLRCError) {
-              this.logger.error('Modbus LRC error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusChecksumError) {
-              this.logger.error('Modbus checksum error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusDataConversionError) {
-              this.logger.error('Modbus data conversion error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusBufferOverflowError) {
-              this.logger.error('Modbus buffer overflow error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusBufferUnderrunError) {
-              this.logger.error('Modbus buffer underrun error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusMemoryError) {
-              this.logger.error('Modbus memory error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusStackOverflowError) {
-              this.logger.error('Modbus stack overflow error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusResponseError) {
-              this.logger.error('Modbus response error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInvalidAddressError) {
-              this.logger.error('Modbus invalid address error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInvalidFunctionCodeError) {
-              this.logger.error('Modbus invalid function code error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInvalidQuantityError) {
-              this.logger.error('Modbus invalid quantity error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusIllegalDataAddressError) {
-              this.logger.error('Modbus illegal data address error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusIllegalDataValueError) {
-              this.logger.error('Modbus illegal data value error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusSlaveBusyError) {
-              this.logger.error('Modbus slave busy error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusAcknowledgeError) {
-              this.logger.error('Modbus acknowledge error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusSlaveDeviceFailureError) {
-              this.logger.error('Modbus slave device failure error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusMalformedFrameError) {
-              this.logger.error('Modbus malformed frame error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInvalidFrameLengthError) {
-              this.logger.error('Modbus invalid frame length error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInvalidTransactionIdError) {
-              this.logger.error('Modbus invalid transaction ID error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusUnexpectedFunctionCodeError) {
-              this.logger.error('Modbus unexpected function code error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusConnectionRefusedError) {
-              this.logger.error('Modbus connection refused error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusConnectionTimeoutError) {
-              this.logger.error('Modbus connection timeout error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusNotConnectedError) {
-              this.logger.error('Modbus not connected error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusAlreadyConnectedError) {
-              this.logger.error('Modbus already connected error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInsufficientDataError) {
-              this.logger.error('Modbus insufficient data error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusGatewayPathUnavailableError) {
-              this.logger.error('Modbus gateway path unavailable error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusGatewayTargetDeviceError) {
-              this.logger.error('Modbus gateway target device error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInvalidStartingAddressError) {
-              this.logger.error('Modbus invalid starting address error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusMemoryParityError) {
-              this.logger.error('Modbus memory parity error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusBroadcastError) {
-              this.logger.error('Modbus broadcast error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusGatewayBusyError) {
-              this.logger.error('Modbus gateway busy error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusDataOverrunError) {
-              this.logger.error('Modbus data overrun error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusTooManyEmptyReadsError) {
-              this.logger.error('Modbus too many empty reads error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusInterFrameTimeoutError) {
-              this.logger.error('Modbus inter-frame timeout error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            } else if (error instanceof ModbusSilentIntervalError) {
-              this.logger.error('Modbus silent interval error', {
-                id: this.id,
-                error: error.message,
-              } as LogContext);
-            }
+            this._logSpecificError(error); // Логирование специфичных ошибок Modbus
             retryCount++;
             this.stats.totalErrors++;
             this.stats.retries++;
             this.stats.lastError = error;
             this.onRetry?.(error, fnIndex, retryCount);
-            const isFlushedError = error instanceof ModbusFlushError;
-            let backoffDelay = this.backoffDelay;
-            if (isFlushedError) {
-              this.logger.debug('Flush error detected, resetting backoff', {
-                id: this.id,
-              } as LogContext);
-              backoffDelay = this.backoffDelay;
-            }
-            const delay = isFlushedError
-              ? Math.min(50, backoffDelay)
-              : backoffDelay * Math.pow(2, retryCount - 1);
+
             if (retryCount > this.maxRetries) {
               this.stats.failures++;
               this.onFailure?.(error);
@@ -587,27 +373,31 @@ class TaskController {
                 error: error.message,
               } as LogContext);
             } else {
+              const isFlushedError = error instanceof ModbusFlushError;
+              const baseDelay = isFlushedError
+                ? 50
+                : this.backoffDelay * Math.pow(2, retryCount - 1);
+              // Добавляем джиттер (случайную задержку) для предотвращения "thundering herd"
+              const jitter = Math.random() * baseDelay * 0.5;
+              const delay = baseDelay + jitter;
+
               this.logger.debug('Retrying fn[' + fnIndex + '] with delay', {
                 id: this.id,
                 delay,
                 retryCount,
               } as LogContext);
               await this._sleep(delay);
-              if (this.stopped) {
-                this.executionInProgress = false;
-                return;
-              }
             }
           }
         }
         results.push(result);
-        success = success || fnSuccess;
+        overallSuccess = overallSuccess || fnSuccess;
       }
+
       this.stats.lastResult = results;
       this.stats.lastRunTime = Date.now();
       if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
         this.onData?.(results);
-        // Используем только разрешенные поля в LogContext
         this.logger.debug('Data callback executed', {
           id: this.id,
           resultsCount: results.length,
@@ -618,11 +408,10 @@ class TaskController {
           results: 'invalid',
         } as LogContext);
       }
-      this.onFinish?.(success, results);
-      // Используем только разрешенные поля в LogContext
+      this.onFinish?.(overallSuccess, results);
       this.logger.info('Task execution completed', {
         id: this.id,
-        success,
+        success: overallSuccess,
         resultsCount: results.length,
       } as LogContext);
       this.pollingManager.loggerInstance.flush();
@@ -630,52 +419,55 @@ class TaskController {
       release();
       this.executionInProgress = false;
     }
-    this._scheduleNextRun();
   }
+
   /**
    * Планирует следующий запуск задачи.
    * @private
    */
-  _scheduleNextRun(): void {
-    if (!this.stopped && this.resourceId) {
-      setTimeout(() => {
-        if (!this.stopped) {
-          this.logger.debug('Scheduling next run (queued)', { id: this.id } as LogContext);
-          this.scheduleRun();
-        }
-      }, this.interval);
-    } else if (!this.stopped && !this.resourceId) {
-      setTimeout(() => {
-        if (!this.stopped && this.loopRunning) {
-          this.logger.debug('Scheduling next run (loop)', { id: this.id } as LogContext);
-          this._runLoop();
-        }
-      }, this.interval);
-    }
+  private _scheduleNextRun(): void {
+    if (this.stopped) return;
+
+    const scheduleFn = () => {
+      if (this.stopped) return;
+      if (this.resourceId) {
+        this.logger.debug('Scheduling next run (queued)', { id: this.id } as LogContext);
+        this.scheduleRun();
+      } else if (this.loopRunning) {
+        this.logger.debug('Scheduling next run (loop)', { id: this.id } as LogContext);
+        // _runLoop сам управляет своим циклом, поэтому здесь ничего делать не нужно.
+      }
+    };
+
+    setTimeout(scheduleFn, this.interval);
   }
+
   /**
    * Проверяет, запущена ли задача.
    */
-  isRunning(): boolean {
+  public isRunning(): boolean {
     return !this.stopped;
   }
+
   /**
    * Проверяет, приостановлена ли задача.
    */
-  isPaused(): boolean {
+  public isPaused(): boolean {
     return this.paused;
   }
+
   /**
    * Устанавливает интервал задачи.
    */
-  setInterval(ms: number): void {
+  public setInterval(ms: number): void {
     this.interval = ms;
     this.logger.info('Interval updated', { id: this.id, interval: ms } as LogContext);
   }
+
   /**
    * Возвращает состояние задачи.
    */
-  getState(): PollingTaskState {
+  public getState(): PollingTaskState {
     return {
       stopped: this.stopped,
       paused: this.paused,
@@ -683,18 +475,19 @@ class TaskController {
       inProgress: this.executionInProgress,
     };
   }
+
   /**
    * Возвращает статистику задачи.
    */
-  getStats(): PollingTaskStats {
+  public getStats(): PollingTaskStats {
     return { ...this.stats };
   }
+
   /**
-   * Оригинальный цикл выполнения задачи (для задач без resourceId).
+   * Цикл выполнения для задач без resourceId.
    * @private
    */
-  async _runLoop(): Promise<void> {
-    let backoffDelay = this.backoffDelay;
+  private async _runLoop(): Promise<void> {
     this.logger.info('Starting run loop', { id: this.id } as LogContext);
     while (this.loopRunning && !this.stopped) {
       if (this.paused) {
@@ -702,388 +495,136 @@ class TaskController {
         await this._sleep(this.interval);
         continue;
       }
-      if (this.shouldRun && this.shouldRun() === false) {
+      if (this.shouldRun && !this.shouldRun()) {
         this.logger.debug('Task should not run according to shouldRun function', {
           id: this.id,
         } as LogContext);
         await this._sleep(this.interval);
         continue;
       }
-      this.onBeforeEach?.();
-      this.executionInProgress = true;
-      this.stats.totalRuns++;
-      const release = await this.transportMutex.acquire();
-      try {
-        // Проверяем существование transport перед обращением к его методам
-        const firstFunction = this.fn[0];
-        if (firstFunction && typeof firstFunction === 'function') {
-          const result = firstFunction();
-          // Используем type guard для проверки наличия свойства transport
-          if (result && hasTransportProperty(result) && result.transport) {
-            // Используем type guard для проверки наличия метода flush у transport
-            if (hasFlushMethod(result.transport)) {
-              try {
-                await result.transport.flush();
-                this.logger.debug('Transport flushed successfully', { id: this.id } as LogContext);
-              } catch (flushErr: unknown) {
-                const error =
-                  flushErr instanceof Error ? flushErr : new PollingManagerError(String(flushErr));
-                this.logger.warn('Flush failed', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              }
-            }
-          }
-        }
-        let success = false;
-        const results: unknown[] = [];
-        for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
-          let retryCount = 0;
-          let result: unknown = null;
-          let fnSuccess = false;
-          while (this.loopRunning && !this.stopped && retryCount <= this.maxRetries) {
-            try {
-              const fnResult = this.fn[fnIndex]; // Извлекаем элемент массива
-              if (typeof fnResult !== 'function') {
-                // Проверяем, что это функция
-                throw new PollingManagerError(
-                  `Task ${this.id} fn at index ${fnIndex} is not a function`
-                );
-              }
-              const promiseResult = fnResult(); // Вызываем функцию
-              if (!(promiseResult instanceof Promise)) {
-                throw new PollingManagerError(
-                  `Task ${this.id} fn ${fnIndex} did not return a Promise`
-                );
-              }
-              result = await this._withTimeout(promiseResult, this.taskTimeout); // Ждем результата
-              fnSuccess = true;
-              this.stats.successes++;
-              this.stats.lastError = null;
-              backoffDelay = this.backoffDelay;
-              break;
-            } catch (err: unknown) {
-              const error = err instanceof Error ? err : new PollingManagerError(String(err));
-              // Обработка конкретных ошибок Modbus
-              if (error instanceof ModbusTimeoutError) {
-                this.logger.error('Modbus timeout error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusCRCError) {
-                this.logger.error('Modbus CRC error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusParityError) {
-                this.logger.error('Modbus parity error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusNoiseError) {
-                this.logger.error('Modbus noise error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusFramingError) {
-                this.logger.error('Modbus framing error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusOverrunError) {
-                this.logger.error('Modbus overrun error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusCollisionError) {
-                this.logger.error('Modbus collision error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusConfigError) {
-                this.logger.error('Modbus config error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusBaudRateError) {
-                this.logger.error('Modbus baud rate error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusSyncError) {
-                this.logger.error('Modbus sync error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusFrameBoundaryError) {
-                this.logger.error('Modbus frame boundary error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusLRCError) {
-                this.logger.error('Modbus LRC error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusChecksumError) {
-                this.logger.error('Modbus checksum error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusDataConversionError) {
-                this.logger.error('Modbus data conversion error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusBufferOverflowError) {
-                this.logger.error('Modbus buffer overflow error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusBufferUnderrunError) {
-                this.logger.error('Modbus buffer underrun error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusMemoryError) {
-                this.logger.error('Modbus memory error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusStackOverflowError) {
-                this.logger.error('Modbus stack overflow error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusResponseError) {
-                this.logger.error('Modbus response error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInvalidAddressError) {
-                this.logger.error('Modbus invalid address error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInvalidFunctionCodeError) {
-                this.logger.error('Modbus invalid function code error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInvalidQuantityError) {
-                this.logger.error('Modbus invalid quantity error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusIllegalDataAddressError) {
-                this.logger.error('Modbus illegal data address error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusIllegalDataValueError) {
-                this.logger.error('Modbus illegal data value error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusSlaveBusyError) {
-                this.logger.error('Modbus slave busy error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusAcknowledgeError) {
-                this.logger.error('Modbus acknowledge error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusSlaveDeviceFailureError) {
-                this.logger.error('Modbus slave device failure error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusMalformedFrameError) {
-                this.logger.error('Modbus malformed frame error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInvalidFrameLengthError) {
-                this.logger.error('Modbus invalid frame length error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInvalidTransactionIdError) {
-                this.logger.error('Modbus invalid transaction ID error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusUnexpectedFunctionCodeError) {
-                this.logger.error('Modbus unexpected function code error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusConnectionRefusedError) {
-                this.logger.error('Modbus connection refused error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusConnectionTimeoutError) {
-                this.logger.error('Modbus connection timeout error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusNotConnectedError) {
-                this.logger.error('Modbus not connected error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusAlreadyConnectedError) {
-                this.logger.error('Modbus already connected error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInsufficientDataError) {
-                this.logger.error('Modbus insufficient data error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusGatewayPathUnavailableError) {
-                this.logger.error('Modbus gateway path unavailable error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusGatewayTargetDeviceError) {
-                this.logger.error('Modbus gateway target device error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInvalidStartingAddressError) {
-                this.logger.error('Modbus invalid starting address error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusMemoryParityError) {
-                this.logger.error('Modbus memory parity error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusBroadcastError) {
-                this.logger.error('Modbus broadcast error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusGatewayBusyError) {
-                this.logger.error('Modbus gateway busy error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusDataOverrunError) {
-                this.logger.error('Modbus data overrun error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusTooManyEmptyReadsError) {
-                this.logger.error('Modbus too many empty reads error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusInterFrameTimeoutError) {
-                this.logger.error('Modbus inter-frame timeout error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              } else if (error instanceof ModbusSilentIntervalError) {
-                this.logger.error('Modbus silent interval error', {
-                  id: this.id,
-                  error: error.message,
-                } as LogContext);
-              }
-              retryCount++;
-              this.stats.totalErrors++;
-              this.stats.retries++;
-              this.stats.lastError = error;
-              this.onRetry?.(error, fnIndex, retryCount);
-              const isFlushedError = error instanceof ModbusFlushError;
-              if (isFlushedError) {
-                this.logger.debug('Flush error detected, resetting backoff', {
-                  id: this.id,
-                } as LogContext);
-                backoffDelay = this.backoffDelay;
-              }
-              const delay = isFlushedError
-                ? Math.min(50, backoffDelay)
-                : backoffDelay * Math.pow(2, retryCount - 1);
-              if (retryCount > this.maxRetries) {
-                this.stats.failures++;
-                this.onFailure?.(error);
-                this.onError?.(error, fnIndex, retryCount);
-                this.logger.warn('Max retries exhausted for fn[' + fnIndex + ']', {
-                  id: this.id,
-                  fnIndex,
-                  retryCount,
-                  error: error.message,
-                } as LogContext);
-              } else {
-                this.logger.debug('Retrying fn[' + fnIndex + '] with delay', {
-                  id: this.id,
-                  delay,
-                  retryCount,
-                } as LogContext);
-                await this._sleep(delay);
-              }
-            }
-          }
-          results.push(result);
-          success = success || fnSuccess;
-        }
-        this.stats.lastResult = results;
-        this.stats.lastRunTime = Date.now();
-        if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
-          this.onData?.(results);
-          // Используем только разрешенные поля в LogContext
-          this.logger.debug('Data callback executed', {
-            id: this.id,
-            resultsCount: results.length,
-          } as LogContext);
-        } else {
-          this.logger.warn('Skipping onData - all results invalid', {
-            id: this.id,
-            results: 'invalid',
-          } as LogContext);
-        }
-        this.onFinish?.(success, results);
-        // Используем только разрешенные поля в LogContext
-        this.logger.info('Task execution completed', {
-          id: this.id,
-          success,
-          resultsCount: results.length,
-        } as LogContext);
-        this.pollingManager.loggerInstance.flush();
-      } finally {
-        release();
-        this.executionInProgress = false;
+
+      await this._performExecution();
+
+      if (this.loopRunning && !this.stopped) {
+        await this._sleep(this.interval);
       }
-      await this._sleep(this.interval);
     }
     this.loopRunning = false;
     this.logger.debug('Run loop finished', { id: this.id } as LogContext);
   }
+
+  /**
+   * Инкапсулирует логирование специфичных ошибок Modbus для чистоты кода.
+   * @param {Error} error - Ошибка для логирования.
+   * @private
+   */
+  private _logSpecificError(error: Error): void {
+    const logContext = { id: this.id, error: error.message } as LogContext;
+    if (error instanceof ModbusTimeoutError) this.logger.error('Modbus timeout error', logContext);
+    else if (error instanceof ModbusCRCError) this.logger.error('Modbus CRC error', logContext);
+    else if (error instanceof ModbusParityError)
+      this.logger.error('Modbus parity error', logContext);
+    else if (error instanceof ModbusNoiseError) this.logger.error('Modbus noise error', logContext);
+    else if (error instanceof ModbusFramingError)
+      this.logger.error('Modbus framing error', logContext);
+    else if (error instanceof ModbusOverrunError)
+      this.logger.error('Modbus overrun error', logContext);
+    else if (error instanceof ModbusCollisionError)
+      this.logger.error('Modbus collision error', logContext);
+    else if (error instanceof ModbusConfigError)
+      this.logger.error('Modbus config error', logContext);
+    else if (error instanceof ModbusBaudRateError)
+      this.logger.error('Modbus baud rate error', logContext);
+    else if (error instanceof ModbusSyncError) this.logger.error('Modbus sync error', logContext);
+    else if (error instanceof ModbusFrameBoundaryError)
+      this.logger.error('Modbus frame boundary error', logContext);
+    else if (error instanceof ModbusLRCError) this.logger.error('Modbus LRC error', logContext);
+    else if (error instanceof ModbusChecksumError)
+      this.logger.error('Modbus checksum error', logContext);
+    else if (error instanceof ModbusDataConversionError)
+      this.logger.error('Modbus data conversion error', logContext);
+    else if (error instanceof ModbusBufferOverflowError)
+      this.logger.error('Modbus buffer overflow error', logContext);
+    else if (error instanceof ModbusBufferUnderrunError)
+      this.logger.error('Modbus buffer underrun error', logContext);
+    else if (error instanceof ModbusMemoryError)
+      this.logger.error('Modbus memory error', logContext);
+    else if (error instanceof ModbusStackOverflowError)
+      this.logger.error('Modbus stack overflow error', logContext);
+    else if (error instanceof ModbusResponseError)
+      this.logger.error('Modbus response error', logContext);
+    else if (error instanceof ModbusInvalidAddressError)
+      this.logger.error('Modbus invalid address error', logContext);
+    else if (error instanceof ModbusInvalidFunctionCodeError)
+      this.logger.error('Modbus invalid function code error', logContext);
+    else if (error instanceof ModbusInvalidQuantityError)
+      this.logger.error('Modbus invalid quantity error', logContext);
+    else if (error instanceof ModbusIllegalDataAddressError)
+      this.logger.error('Modbus illegal data address error', logContext);
+    else if (error instanceof ModbusIllegalDataValueError)
+      this.logger.error('Modbus illegal data value error', logContext);
+    else if (error instanceof ModbusSlaveBusyError)
+      this.logger.error('Modbus slave busy error', logContext);
+    else if (error instanceof ModbusAcknowledgeError)
+      this.logger.error('Modbus acknowledge error', logContext);
+    else if (error instanceof ModbusSlaveDeviceFailureError)
+      this.logger.error('Modbus slave device failure error', logContext);
+    else if (error instanceof ModbusMalformedFrameError)
+      this.logger.error('Modbus malformed frame error', logContext);
+    else if (error instanceof ModbusInvalidFrameLengthError)
+      this.logger.error('Modbus invalid frame length error', logContext);
+    else if (error instanceof ModbusInvalidTransactionIdError)
+      this.logger.error('Modbus invalid transaction ID error', logContext);
+    else if (error instanceof ModbusUnexpectedFunctionCodeError)
+      this.logger.error('Modbus unexpected function code error', logContext);
+    else if (error instanceof ModbusConnectionRefusedError)
+      this.logger.error('Modbus connection refused error', logContext);
+    else if (error instanceof ModbusConnectionTimeoutError)
+      this.logger.error('Modbus connection timeout error', logContext);
+    else if (error instanceof ModbusNotConnectedError)
+      this.logger.error('Modbus not connected error', logContext);
+    else if (error instanceof ModbusAlreadyConnectedError)
+      this.logger.error('Modbus already connected error', logContext);
+    else if (error instanceof ModbusInsufficientDataError)
+      this.logger.error('Modbus insufficient data error', logContext);
+    else if (error instanceof ModbusGatewayPathUnavailableError)
+      this.logger.error('Modbus gateway path unavailable error', logContext);
+    else if (error instanceof ModbusGatewayTargetDeviceError)
+      this.logger.error('Modbus gateway target device error', logContext);
+    else if (error instanceof ModbusInvalidStartingAddressError)
+      this.logger.error('Modbus invalid starting address error', logContext);
+    else if (error instanceof ModbusMemoryParityError)
+      this.logger.error('Modbus memory parity error', logContext);
+    else if (error instanceof ModbusBroadcastError)
+      this.logger.error('Modbus broadcast error', logContext);
+    else if (error instanceof ModbusGatewayBusyError)
+      this.logger.error('Modbus gateway busy error', logContext);
+    else if (error instanceof ModbusDataOverrunError)
+      this.logger.error('Modbus data overrun error', logContext);
+    else if (error instanceof ModbusTooManyEmptyReadsError)
+      this.logger.error('Modbus too many empty reads error', logContext);
+    else if (error instanceof ModbusInterFrameTimeoutError)
+      this.logger.error('Modbus inter-frame timeout error', logContext);
+    else if (error instanceof ModbusSilentIntervalError)
+      this.logger.error('Modbus silent interval error', logContext);
+  }
+
   /**
    * Sleeps for given amount of milliseconds.
    * @param {number} ms
-   * @returns {Promise}
    * @private
    */
-  _sleep(ms: number): Promise<void> {
+  private _sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+
   /**
    * Wraps a promise with a timeout.
    * @param {Promise} promise
    * @param {number} timeout
-   * @returns {Promise}
    * @private
    */
-  _withTimeout<T>(promise: Promise<T>, timeout: number): Promise<T> {
+  private _withTimeout<T>(promise: Promise<T>, timeout: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => reject(new ModbusTimeoutError('Task timed out')), timeout);
       promise
@@ -1098,9 +639,9 @@ class TaskController {
     });
   }
 }
+
 /**
  * TaskQueue управляет очередью задач для конкретного ресурса.
- * Гарантирует отсутствие дубликатов и последовательное выполнение.
  */
 class TaskQueue {
   public resourceId: string;
@@ -1110,6 +651,7 @@ class TaskQueue {
   private mutex: Mutex;
   private processing: boolean;
   public logger: LoggerInstance;
+
   constructor(
     resourceId: string,
     pollingManager: PollingManager,
@@ -1125,11 +667,12 @@ class TaskQueue {
     this.logger = loggerInstance.createLogger('TaskQueue');
     this.logger.setLevel('error');
   }
+
   /**
    * Добавляет задачу в очередь на обработку.
    * @param {TaskController} taskController
    */
-  enqueue(taskController: TaskController): void {
+  public enqueue(taskController: TaskController): void {
     if (!taskController.stopped && taskController.resourceId === this.resourceId) {
       const taskKey = `${this.resourceId}:${taskController.id}`;
       if (!this.queuedOrProcessingTasks.has(taskKey)) {
@@ -1142,27 +685,30 @@ class TaskQueue {
       }
     }
   }
+
   /**
    * Удаляет задачу из очереди.
    * @param {string} taskId
    */
-  removeTask(taskId: string): void {
+  public removeTask(taskId: string): void {
     const taskKey = `${this.resourceId}:${taskId}`;
     this.queuedOrProcessingTasks.delete(taskKey);
     this.taskQueue = this.taskQueue.filter(id => id !== taskId);
     this.logger.debug('Task removed from queue', { taskId } as LogContext);
   }
+
   /**
    * Проверяет, пуста ли очередь.
    * @returns {boolean}
    */
-  isEmpty(): boolean {
+  public isEmpty(): boolean {
     return this.taskQueue.length === 0;
   }
+
   /**
    * Очищает очередь.
    */
-  clear(): void {
+  public clear(): void {
     for (const taskId of this.taskQueue) {
       const taskKey = `${this.resourceId}:${taskId}`;
       this.queuedOrProcessingTasks.delete(taskKey);
@@ -1170,11 +716,12 @@ class TaskQueue {
     this.taskQueue = [];
     this.logger.debug('Queue cleared', { resourceId: this.resourceId } as LogContext);
   }
+
   /**
    * Сообщает очереди, что задача готова к следующему запуску.
    * @param {TaskController} taskController
    */
-  markTaskReady(taskController: TaskController): void {
+  public markTaskReady(taskController: TaskController): void {
     if (!taskController.stopped && taskController.resourceId === this.resourceId) {
       const taskKey = `${this.resourceId}:${taskController.id}`;
       if (!this.queuedOrProcessingTasks.has(taskKey)) {
@@ -1185,11 +732,12 @@ class TaskQueue {
       }
     }
   }
+
   /**
    * Обрабатывает очередь задач.
    * @private
    */
-  async _processNext(): Promise<void> {
+  private async _processNext(): Promise<void> {
     if (this.processing || this.taskQueue.length === 0) {
       if (this.taskQueue.length === 0) {
         this.logger.debug('Queue is empty', { resourceId: this.resourceId } as LogContext);
@@ -1200,14 +748,17 @@ class TaskQueue {
     this.logger.debug('Acquiring mutex for task processing', {
       resourceId: this.resourceId,
     } as LogContext);
+
     const release = await this.mutex.acquire();
     let taskKey: string | null = null;
     try {
       const taskId = this.taskQueue.shift();
       if (!taskId) return;
+
       taskKey = `${this.resourceId}:${taskId}`;
       this.logger.debug('Processing task', { taskId } as LogContext);
       const taskController = this.pollingManager.tasks.get(taskId);
+
       if (!taskController || taskController.stopped) {
         this.logger.debug('Task is stopped or does not exist', { taskId } as LogContext);
         this.queuedOrProcessingTasks.delete(taskKey);
@@ -1223,238 +774,7 @@ class TaskQueue {
       this.logger.debug('Task executed successfully', { taskId } as LogContext);
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new PollingManagerError(String(error));
-      // Обработка конкретных ошибок Modbus
-      if (err instanceof ModbusTimeoutError) {
-        this.logger.error('Modbus timeout error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusCRCError) {
-        this.logger.error('Modbus CRC error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusParityError) {
-        this.logger.error('Modbus parity error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusNoiseError) {
-        this.logger.error('Modbus noise error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusFramingError) {
-        this.logger.error('Modbus framing error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusOverrunError) {
-        this.logger.error('Modbus overrun error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusCollisionError) {
-        this.logger.error('Modbus collision error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusConfigError) {
-        this.logger.error('Modbus config error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBaudRateError) {
-        this.logger.error('Modbus baud rate error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSyncError) {
-        this.logger.error('Modbus sync error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusFrameBoundaryError) {
-        this.logger.error('Modbus frame boundary error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusLRCError) {
-        this.logger.error('Modbus LRC error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusChecksumError) {
-        this.logger.error('Modbus checksum error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusDataConversionError) {
-        this.logger.error('Modbus data conversion error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBufferOverflowError) {
-        this.logger.error('Modbus buffer overflow error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBufferUnderrunError) {
-        this.logger.error('Modbus buffer underrun error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusMemoryError) {
-        this.logger.error('Modbus memory error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusStackOverflowError) {
-        this.logger.error('Modbus stack overflow error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusResponseError) {
-        this.logger.error('Modbus response error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidAddressError) {
-        this.logger.error('Modbus invalid address error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidFunctionCodeError) {
-        this.logger.error('Modbus invalid function code error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidQuantityError) {
-        this.logger.error('Modbus invalid quantity error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusIllegalDataAddressError) {
-        this.logger.error('Modbus illegal data address error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusIllegalDataValueError) {
-        this.logger.error('Modbus illegal data value error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSlaveBusyError) {
-        this.logger.error('Modbus slave busy error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusAcknowledgeError) {
-        this.logger.error('Modbus acknowledge error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSlaveDeviceFailureError) {
-        this.logger.error('Modbus slave device failure error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusMalformedFrameError) {
-        this.logger.error('Modbus malformed frame error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidFrameLengthError) {
-        this.logger.error('Modbus invalid frame length error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidTransactionIdError) {
-        this.logger.error('Modbus invalid transaction ID error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusUnexpectedFunctionCodeError) {
-        this.logger.error('Modbus unexpected function code error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusConnectionRefusedError) {
-        this.logger.error('Modbus connection refused error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusConnectionTimeoutError) {
-        this.logger.error('Modbus connection timeout error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusNotConnectedError) {
-        this.logger.error('Modbus not connected error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusAlreadyConnectedError) {
-        this.logger.error('Modbus already connected error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInsufficientDataError) {
-        this.logger.error('Modbus insufficient data error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusGatewayPathUnavailableError) {
-        this.logger.error('Modbus gateway path unavailable error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusGatewayTargetDeviceError) {
-        this.logger.error('Modbus gateway target device error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidStartingAddressError) {
-        this.logger.error('Modbus invalid starting address error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusMemoryParityError) {
-        this.logger.error('Modbus memory parity error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBroadcastError) {
-        this.logger.error('Modbus broadcast error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusGatewayBusyError) {
-        this.logger.error('Modbus gateway busy error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusDataOverrunError) {
-        this.logger.error('Modbus data overrun error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusTooManyEmptyReadsError) {
-        this.logger.error('Modbus too many empty reads error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInterFrameTimeoutError) {
-        this.logger.error('Modbus inter-frame timeout error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSilentIntervalError) {
-        this.logger.error('Modbus silent interval error in queue processing', {
-          resourceId: this.resourceId,
-          error: err.message,
-        } as LogContext);
-      }
+      this._logSpecificError(err); // Инкапсулированное логирование
       this.logger.error('Error executing task in queue', {
         resourceId: this.resourceId,
         error: err.message,
@@ -1470,10 +790,111 @@ class TaskQueue {
       }
     }
   }
+
+  /**
+   * Инкапсулирует логирование специфичных ошибок Modbus для чистоты кода.
+   * @param {Error} error - Ошибка для логирования.
+   * @private
+   */
+  private _logSpecificError(error: Error): void {
+    const logContext = { resourceId: this.resourceId, error: error.message } as LogContext;
+    if (error instanceof ModbusTimeoutError)
+      this.logger.error('Modbus timeout error in queue processing', logContext);
+    else if (error instanceof ModbusCRCError)
+      this.logger.error('Modbus CRC error in queue processing', logContext);
+    else if (error instanceof ModbusParityError)
+      this.logger.error('Modbus parity error in queue processing', logContext);
+    else if (error instanceof ModbusNoiseError)
+      this.logger.error('Modbus noise error in queue processing', logContext);
+    else if (error instanceof ModbusFramingError)
+      this.logger.error('Modbus framing error in queue processing', logContext);
+    else if (error instanceof ModbusOverrunError)
+      this.logger.error('Modbus overrun error in queue processing', logContext);
+    else if (error instanceof ModbusCollisionError)
+      this.logger.error('Modbus collision error in queue processing', logContext);
+    else if (error instanceof ModbusConfigError)
+      this.logger.error('Modbus config error in queue processing', logContext);
+    else if (error instanceof ModbusBaudRateError)
+      this.logger.error('Modbus baud rate error in queue processing', logContext);
+    else if (error instanceof ModbusSyncError)
+      this.logger.error('Modbus sync error in queue processing', logContext);
+    else if (error instanceof ModbusFrameBoundaryError)
+      this.logger.error('Modbus frame boundary error in queue processing', logContext);
+    else if (error instanceof ModbusLRCError)
+      this.logger.error('Modbus LRC error in queue processing', logContext);
+    else if (error instanceof ModbusChecksumError)
+      this.logger.error('Modbus checksum error in queue processing', logContext);
+    else if (error instanceof ModbusDataConversionError)
+      this.logger.error('Modbus data conversion error in queue processing', logContext);
+    else if (error instanceof ModbusBufferOverflowError)
+      this.logger.error('Modbus buffer overflow error in queue processing', logContext);
+    else if (error instanceof ModbusBufferUnderrunError)
+      this.logger.error('Modbus buffer underrun error in queue processing', logContext);
+    else if (error instanceof ModbusMemoryError)
+      this.logger.error('Modbus memory error in queue processing', logContext);
+    else if (error instanceof ModbusStackOverflowError)
+      this.logger.error('Modbus stack overflow error in queue processing', logContext);
+    else if (error instanceof ModbusResponseError)
+      this.logger.error('Modbus response error in queue processing', logContext);
+    else if (error instanceof ModbusInvalidAddressError)
+      this.logger.error('Modbus invalid address error in queue processing', logContext);
+    else if (error instanceof ModbusInvalidFunctionCodeError)
+      this.logger.error('Modbus invalid function code error in queue processing', logContext);
+    else if (error instanceof ModbusInvalidQuantityError)
+      this.logger.error('Modbus invalid quantity error in queue processing', logContext);
+    else if (error instanceof ModbusIllegalDataAddressError)
+      this.logger.error('Modbus illegal data address error in queue processing', logContext);
+    else if (error instanceof ModbusIllegalDataValueError)
+      this.logger.error('Modbus illegal data value error in queue processing', logContext);
+    else if (error instanceof ModbusSlaveBusyError)
+      this.logger.error('Modbus slave busy error in queue processing', logContext);
+    else if (error instanceof ModbusAcknowledgeError)
+      this.logger.error('Modbus acknowledge error in queue processing', logContext);
+    else if (error instanceof ModbusSlaveDeviceFailureError)
+      this.logger.error('Modbus slave device failure error in queue processing', logContext);
+    else if (error instanceof ModbusMalformedFrameError)
+      this.logger.error('Modbus malformed frame error in queue processing', logContext);
+    else if (error instanceof ModbusInvalidFrameLengthError)
+      this.logger.error('Modbus invalid frame length error in queue processing', logContext);
+    else if (error instanceof ModbusInvalidTransactionIdError)
+      this.logger.error('Modbus invalid transaction ID error in queue processing', logContext);
+    else if (error instanceof ModbusUnexpectedFunctionCodeError)
+      this.logger.error('Modbus unexpected function code error in queue processing', logContext);
+    else if (error instanceof ModbusConnectionRefusedError)
+      this.logger.error('Modbus connection refused error in queue processing', logContext);
+    else if (error instanceof ModbusConnectionTimeoutError)
+      this.logger.error('Modbus connection timeout error in queue processing', logContext);
+    else if (error instanceof ModbusNotConnectedError)
+      this.logger.error('Modbus not connected error in queue processing', logContext);
+    else if (error instanceof ModbusAlreadyConnectedError)
+      this.logger.error('Modbus already connected error in queue processing', logContext);
+    else if (error instanceof ModbusInsufficientDataError)
+      this.logger.error('Modbus insufficient data error in queue processing', logContext);
+    else if (error instanceof ModbusGatewayPathUnavailableError)
+      this.logger.error('Modbus gateway path unavailable error in queue processing', logContext);
+    else if (error instanceof ModbusGatewayTargetDeviceError)
+      this.logger.error('Modbus gateway target device error in queue processing', logContext);
+    else if (error instanceof ModbusInvalidStartingAddressError)
+      this.logger.error('Modbus invalid starting address error in queue processing', logContext);
+    else if (error instanceof ModbusMemoryParityError)
+      this.logger.error('Modbus memory parity error in queue processing', logContext);
+    else if (error instanceof ModbusBroadcastError)
+      this.logger.error('Modbus broadcast error in queue processing', logContext);
+    else if (error instanceof ModbusGatewayBusyError)
+      this.logger.error('Modbus gateway busy error in queue processing', logContext);
+    else if (error instanceof ModbusDataOverrunError)
+      this.logger.error('Modbus data overrun error in queue processing', logContext);
+    else if (error instanceof ModbusTooManyEmptyReadsError)
+      this.logger.error('Modbus too many empty reads error in queue processing', logContext);
+    else if (error instanceof ModbusInterFrameTimeoutError)
+      this.logger.error('Modbus inter-frame timeout error in queue processing', logContext);
+    else if (error instanceof ModbusSilentIntervalError)
+      this.logger.error('Modbus silent interval error in queue processing', logContext);
+  }
 }
+
 /**
  * PollingManager управляет набором задач и очередями для ресурсов.
- * Обеспечивает последовательное выполнение задач, связанных с одним ресурсом.
  */
 class PollingManager {
   private config: Required<PollingManagerConfig>;
@@ -1482,13 +903,7 @@ class PollingManager {
   private queuedOrProcessingTasks: Set<string>;
   public loggerInstance: Logger;
   public logger: LoggerInstance;
-  /**
-   * @param {Object} config - Конфигурация менеджера
-   * @param {number} [config.defaultMaxRetries=3] - Максимальное количество попыток по умолчанию
-   * @param {number} [config.defaultBackoffDelay=1000] - Задержка между попытками по умолчанию
-   * @param {number} [config.defaultTaskTimeout=5000] - Таймаут задачи по умолчанию
-   * @param {string} [config.logLevel='info'] - Уровень логирования
-   */
+
   constructor(config: PollingManagerConfig = {}) {
     this.config = {
       defaultMaxRetries: 3,
@@ -1497,6 +912,7 @@ class PollingManager {
       logLevel: 'trace',
       ...config,
     } as Required<PollingManagerConfig>;
+
     this.tasks = new Map();
     this.queues = new Map();
     this.queuedOrProcessingTasks = new Set();
@@ -1507,12 +923,12 @@ class PollingManager {
     });
     this.logger = this.loggerInstance.createLogger('PollingManager');
     this.logger.setLevel('error');
-    // Используем только разрешенные поля в LogContext
     this.logger.info('PollingManager initialized', {
       config: JSON.stringify(this.config),
     } as LogContext);
     this.loggerInstance.flush();
   }
+
   /**
    * Валидирует опции задачи
    * @param {Object} options - Опции задачи
@@ -1525,53 +941,44 @@ class PollingManager {
     if (!options.id) {
       throw new PollingTaskValidationError('Task must have an "id"');
     }
-    if (options.interval && (typeof options.interval !== 'number' || options.interval <= 0)) {
+    if (
+      options.interval === undefined ||
+      typeof options.interval !== 'number' ||
+      options.interval <= 0
+    ) {
       throw new PollingTaskValidationError('Interval must be a positive number');
     }
-    if (options.fn && !Array.isArray(options.fn) && typeof options.fn !== 'function') {
-      throw new PollingTaskValidationError('Function must be a function or array of functions');
+    if (
+      options.fn === undefined ||
+      (!Array.isArray(options.fn) && typeof options.fn !== 'function')
+    ) {
+      throw new PollingTaskValidationError('fn must be a function or array of functions');
     }
-    if (options.maxRetries && (typeof options.maxRetries !== 'number' || options.maxRetries < 0)) {
+    if (
+      options.maxRetries !== undefined &&
+      (typeof options.maxRetries !== 'number' || options.maxRetries < 0)
+    ) {
       throw new PollingTaskValidationError('maxRetries must be a non-negative number');
     }
     if (
-      options.backoffDelay &&
+      options.backoffDelay !== undefined &&
       (typeof options.backoffDelay !== 'number' || options.backoffDelay <= 0)
     ) {
       throw new PollingTaskValidationError('backoffDelay must be a positive number');
     }
     if (
-      options.taskTimeout &&
+      options.taskTimeout !== undefined &&
       (typeof options.taskTimeout !== 'number' || options.taskTimeout <= 0)
     ) {
       throw new PollingTaskValidationError('taskTimeout must be a positive number');
     }
   }
+
   /**
    * Добавляет новую задачу в менеджер.
-   * @param {Object} options - Опции задачи
-   * @param {string} options.id - Уникальный идентификатор задачи
-   * @param {string} [options.resourceId] - Идентификатор ресурса для очереди
-   * @param {number} [options.priority=0] - Приоритет задачи
-   * @param {number} options.interval - Интервал выполнения в миллисекундах
-   * @param {Function|Function[]} options.fn - Функция(и) для выполнения
-   * @param {Function} [options.onData] - Callback для данных
-   * @param {Function} [options.onError] - Callback для ошибок
-   * @param {Function} [options.onStart] - Callback при запуске
-   * @param {Function} [options.onStop] - Callback при остановке
-   * @param {Function} [options.onFinish] - Callback при завершении
-   * @param {Function} [options.onBeforeEach] - Callback перед каждой итерацией
-   * @param {Function} [options.onRetry] - Callback при повторной попытке
-   * @param {Function} [options.shouldRun] - Функция проверки возможности запуска
-   * @param {Function} [options.onSuccess] - Callback при успешном выполнении
-   * @param {Function} [options.onFailure] - Callback при неудачном выполнении
-   * @param {string} [options.name] - Имя задачи
-   * @param {boolean} [options.immediate=false] - Немедленный запуск
-   * @param {number} [options.maxRetries] - Максимальное количество попыток
-   * @param {number} [options.backoffDelay] - Задержка между попытками
-   * @param {number} [options.taskTimeout] - Таймаут задачи
+   * @param {PollingTaskOptions} options - Опции задачи
    */
-  addTask(options: PollingTaskOptions): void {
+  public addTask(options: PollingTaskOptions): void {
     try {
       this._validateTaskOptions(options);
       const { id, resourceId } = options;
@@ -1583,9 +990,11 @@ class PollingManager {
         } as LogContext);
         throw error;
       }
+
       this.logger.trace('Creating TaskController', { id, resourceId } as LogContext);
       const controller = new TaskController(options, this);
       this.tasks.set(id, controller);
+
       if (resourceId) {
         if (!this.queues.has(resourceId)) {
           this.logger.debug('Creating new TaskQueue', { resourceId } as LogContext);
@@ -1594,8 +1003,8 @@ class PollingManager {
             new TaskQueue(resourceId, this, this.queuedOrProcessingTasks, this.loggerInstance)
           );
         }
-        this.queues.get(resourceId)?.enqueue(controller);
       }
+
       if (options.immediate) {
         if (resourceId) {
           controller.scheduleRun();
@@ -1603,6 +1012,7 @@ class PollingManager {
           controller.start();
         }
       }
+
       this.logger.info('Task added successfully', {
         id,
         resourceId,
@@ -1611,208 +1021,23 @@ class PollingManager {
       this.loggerInstance.flush();
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new PollingManagerError(String(error));
-      // Обработка конкретных ошибок Modbus
-      if (err instanceof ModbusTimeoutError) {
-        this.logger.error('Modbus timeout error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusCRCError) {
-        this.logger.error('Modbus CRC error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusParityError) {
-        this.logger.error('Modbus parity error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusNoiseError) {
-        this.logger.error('Modbus noise error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusFramingError) {
-        this.logger.error('Modbus framing error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusOverrunError) {
-        this.logger.error('Modbus overrun error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusCollisionError) {
-        this.logger.error('Modbus collision error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusConfigError) {
-        this.logger.error('Modbus config error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBaudRateError) {
-        this.logger.error('Modbus baud rate error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSyncError) {
-        this.logger.error('Modbus sync error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusFrameBoundaryError) {
-        this.logger.error('Modbus frame boundary error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusLRCError) {
-        this.logger.error('Modbus LRC error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusChecksumError) {
-        this.logger.error('Modbus checksum error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusDataConversionError) {
-        this.logger.error('Modbus data conversion error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBufferOverflowError) {
-        this.logger.error('Modbus buffer overflow error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBufferUnderrunError) {
-        this.logger.error('Modbus buffer underrun error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusMemoryError) {
-        this.logger.error('Modbus memory error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusStackOverflowError) {
-        this.logger.error('Modbus stack overflow error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusResponseError) {
-        this.logger.error('Modbus response error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidAddressError) {
-        this.logger.error('Modbus invalid address error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidFunctionCodeError) {
-        this.logger.error('Modbus invalid function code error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidQuantityError) {
-        this.logger.error('Modbus invalid quantity error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusIllegalDataAddressError) {
-        this.logger.error('Modbus illegal data address error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusIllegalDataValueError) {
-        this.logger.error('Modbus illegal data value error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSlaveBusyError) {
-        this.logger.error('Modbus slave busy error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusAcknowledgeError) {
-        this.logger.error('Modbus acknowledge error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSlaveDeviceFailureError) {
-        this.logger.error('Modbus slave device failure error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusMalformedFrameError) {
-        this.logger.error('Modbus malformed frame error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidFrameLengthError) {
-        this.logger.error('Modbus invalid frame length error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidTransactionIdError) {
-        this.logger.error('Modbus invalid transaction ID error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusUnexpectedFunctionCodeError) {
-        this.logger.error('Modbus unexpected function code error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusConnectionRefusedError) {
-        this.logger.error('Modbus connection refused error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusConnectionTimeoutError) {
-        this.logger.error('Modbus connection timeout error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusNotConnectedError) {
-        this.logger.error('Modbus not connected error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusAlreadyConnectedError) {
-        this.logger.error('Modbus already connected error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInsufficientDataError) {
-        this.logger.error('Modbus insufficient data error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusGatewayPathUnavailableError) {
-        this.logger.error('Modbus gateway path unavailable error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusGatewayTargetDeviceError) {
-        this.logger.error('Modbus gateway target device error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInvalidStartingAddressError) {
-        this.logger.error('Modbus invalid starting address error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusMemoryParityError) {
-        this.logger.error('Modbus memory parity error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusBroadcastError) {
-        this.logger.error('Modbus broadcast error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusGatewayBusyError) {
-        this.logger.error('Modbus gateway busy error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusDataOverrunError) {
-        this.logger.error('Modbus data overrun error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusTooManyEmptyReadsError) {
-        this.logger.error('Modbus too many empty reads error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusInterFrameTimeoutError) {
-        this.logger.error('Modbus inter-frame timeout error in task validation', {
-          error: err.message,
-        } as LogContext);
-      } else if (err instanceof ModbusSilentIntervalError) {
-        this.logger.error('Modbus silent interval error in task validation', {
-          error: err.message,
-        } as LogContext);
-      }
-      // Используем только разрешенные поля в LogContext
       this.logger.error('Failed to add task', {
         error: err.message,
-        options: JSON.stringify(options),
+        options: JSON.stringify(options, null, 2),
       } as LogContext);
       this.loggerInstance.flush();
       throw err;
     }
   }
+
   /**
    * Обновляет задачу новыми опциями.
    * @param {string} id - Идентификатор задачи
    * @param {Object} newOptions - Новые опции задачи
    */
-  updateTask(id: string, newOptions: Partial<PollingTaskOptions>): void {
-    if (!this.tasks.has(id)) {
+  public updateTask(id: string, newOptions: Partial<PollingTaskOptions>): void {
+    const oldTask = this.tasks.get(id);
+    if (!oldTask) {
       const error = new PollingTaskNotFoundError(id);
       this.logger.error('Failed to update task - not found', {
         id,
@@ -1820,16 +1045,48 @@ class PollingManager {
       } as LogContext);
       throw error;
     }
-    // Используем только разрешенные поля в LogContext
+
+    // Собираем все старые опции, чтобы не потерять их при частичном обновлении
+    const oldOptions: PollingTaskOptions = {
+      id: oldTask.id,
+      resourceId: oldTask.resourceId,
+      priority: oldTask.priority,
+      interval: oldTask.interval,
+      fn: oldTask.fn,
+      onData: oldTask.onData,
+      onError: oldTask.onError,
+      onStart: oldTask.onStart,
+      onStop: oldTask.onStop,
+      onFinish: oldTask.onFinish,
+      onBeforeEach: oldTask.onBeforeEach,
+      onRetry: oldTask.onRetry,
+      shouldRun: oldTask.shouldRun,
+      onSuccess: oldTask.onSuccess,
+      onFailure: oldTask.onFailure,
+      name: oldTask.name ?? undefined, // ИСПРАВЛЕНИЕ: Преобразуем null в undefined
+      maxRetries: oldTask.maxRetries,
+      backoffDelay: oldTask.backoffDelay,
+      taskTimeout: oldTask.taskTimeout,
+    };
+
+    const mergedOptions = { ...oldOptions, ...newOptions };
+
     this.logger.info('Updating task', { id, newOptions: JSON.stringify(newOptions) } as LogContext);
+
+    const wasRunning = oldTask.isRunning();
     this.removeTask(id);
-    this.addTask({ id, ...newOptions } as PollingTaskOptions);
+    this.addTask(mergedOptions);
+
+    if (wasRunning) {
+      this.startTask(id);
+    }
   }
+
   /**
    * Удаляет задачу из менеджера и очереди.
    * @param {string} id - Идентификатор задачи
    */
-  removeTask(id: string): void {
+  public removeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       task.stop();
@@ -1847,42 +1104,52 @@ class PollingManager {
       this.logger.warn('Attempt to remove non-existent task', { id } as LogContext);
     }
   }
+
   /**
    * Перезапускает задачу.
    * @param {string} id - Идентификатор задачи
    */
-  restartTask(id: string): void {
+  public restartTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       this.logger.info('Restarting task', { id } as LogContext);
       task.stop();
-      if (task.resourceId && this.queues.has(task.resourceId)) {
-        task.scheduleRun();
-      } else {
-        task.start();
-      }
+      // Даем время на полную остановку асинхронных операций
+      setTimeout(() => {
+        const freshTask = this.tasks.get(id);
+        if (freshTask) {
+          // Убедимся, что задача не была удалена
+          if (freshTask.resourceId) {
+            freshTask.scheduleRun();
+          } else {
+            freshTask.start();
+          }
+        }
+      }, 0);
     } else {
       this.logger.warn('Attempt to restart non-existent task', { id } as LogContext);
     }
   }
+
   /**
    * Запускает задачу.
    * @param {string} id - Идентификатор задачи
    */
-  startTask(id: string): void {
+  public startTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       this.logger.info('Starting task', { id } as LogContext);
       task.start();
     } else {
-      this.logger.warn('Attempt to start non-existent task', { id } as LogContext);
+      throw new PollingTaskNotFoundError(id);
     }
   }
+
   /**
    * Останавливает задачу.
    * @param {string} id - Идентификатор задачи
    */
-  stopTask(id: string): void {
+  public stopTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       this.logger.info('Stopping task', { id } as LogContext);
@@ -1891,11 +1158,12 @@ class PollingManager {
       this.logger.warn('Attempt to stop non-existent task', { id } as LogContext);
     }
   }
+
   /**
    * Ставит задачу на паузу.
    * @param {string} id - Идентификатор задачи
    */
-  pauseTask(id: string): void {
+  public pauseTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       this.logger.info('Pausing task', { id } as LogContext);
@@ -1904,11 +1172,12 @@ class PollingManager {
       this.logger.warn('Attempt to pause non-existent task', { id } as LogContext);
     }
   }
+
   /**
    * Возобновляет задачу.
    * @param {string} id - Идентификатор задачи
    */
-  resumeTask(id: string): void {
+  public resumeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       this.logger.info('Resuming task', { id } as LogContext);
@@ -1917,12 +1186,13 @@ class PollingManager {
       this.logger.warn('Attempt to resume non-existent task', { id } as LogContext);
     }
   }
+
   /**
    * Обновляет интервал задачи.
    * @param {string} id - Идентификатор задачи
    * @param {number} interval - Новый интервал
    */
-  setTaskInterval(id: string, interval: number): void {
+  public setTaskInterval(id: string, interval: number): void {
     const task = this.tasks.get(id);
     if (task) {
       this.logger.info('Setting task interval', { id, interval } as LogContext);
@@ -1931,66 +1201,68 @@ class PollingManager {
       this.logger.warn('Attempt to set interval for non-existent task', { id } as LogContext);
     }
   }
+
   /**
    * Проверяет, запущена ли задача.
    * @param {string} id - Идентификатор задачи
    * @returns {boolean}
    */
-  isTaskRunning(id: string): boolean {
+  public isTaskRunning(id: string): boolean {
     const task = this.tasks.get(id);
-    const result = task ? task.isRunning() : false;
-    return result;
+    return task ? task.isRunning() : false;
   }
+
   /**
    * Проверяет, приостановлена ли задача.
    * @param {string} id - Идентификатор задачи
    * @returns {boolean}
    */
-  isTaskPaused(id: string): boolean {
+  public isTaskPaused(id: string): boolean {
     const task = this.tasks.get(id);
-    const result = task ? task.isPaused() : false;
-    return result;
+    return task ? task.isPaused() : false;
   }
+
   /**
    * Получает состояние задачи.
    * @param {string} id - Идентификатор задачи
-   * @returns {Object|null}
+   * @returns {PollingTaskState | null}
    */
-  getTaskState(id: string): PollingTaskState | null {
+  public getTaskState(id: string): PollingTaskState | null {
     const task = this.tasks.get(id);
-    const result = task ? task.getState() : null;
-    return result;
+    return task ? task.getState() : null;
   }
+
   /**
    * Получает статистику задачи.
    * @param {string} id - Идентификатор задачи
-   * @returns {Object|null}
+   * @returns {PollingTaskStats | null}
    */
-  getTaskStats(id: string): PollingTaskStats | null {
+  public getTaskStats(id: string): PollingTaskStats | null {
     const task = this.tasks.get(id);
-    const result = task ? task.getStats() : null;
-    return result;
+    return task ? task.getStats() : null;
   }
+
   /**
    * Проверяет, существует ли задача.
    * @param {string} id - Идентификатор задачи
    * @returns {boolean}
    */
-  hasTask(id: string): boolean {
-    const result = this.tasks.has(id);
-    return result;
+  public hasTask(id: string): boolean {
+    return this.tasks.has(id);
   }
+
   /**
    * Возвращает массив ID всех задач.
    * @returns {string[]}
    */
-  getTaskIds(): string[] {
+  public getTaskIds(): string[] {
     return Array.from(this.tasks.keys());
   }
+
   /**
    * Очищает все задачи.
    */
-  clearAll(): void {
+  public clearAll(): void {
     this.logger.info('Clearing all tasks');
     for (const task of this.tasks.values()) {
       task.stop();
@@ -2003,82 +1275,90 @@ class PollingManager {
     this.queuedOrProcessingTasks.clear();
     this.logger.info('All tasks cleared');
   }
+
   /**
    * Перезапускает все задачи.
    */
-  restartAllTasks(): void {
+  public restartAllTasks(): void {
     this.logger.info('Restarting all tasks');
-    for (const task of this.tasks.values()) {
-      task.stop();
-      task.scheduleRun();
+    for (const id of this.tasks.keys()) {
+      this.restartTask(id);
     }
-    this.logger.info('All tasks restarted');
+    this.logger.info('All tasks scheduled for restart');
   }
+
   /**
    * Ставит на паузу все задачи.
    */
-  pauseAllTasks(): void {
+  public pauseAllTasks(): void {
     this.logger.info('Pausing all tasks');
     for (const task of this.tasks.values()) {
       task.pause();
     }
     this.logger.info('All tasks paused');
   }
+
   /**
    * Возобновляет все задачи.
    */
-  resumeAllTasks(): void {
+  public resumeAllTasks(): void {
     this.logger.info('Resuming all tasks');
     for (const task of this.tasks.values()) {
       task.resume();
     }
     this.logger.info('All tasks resumed');
   }
+
   /**
    * Запускает все задачи.
    */
-  startAllTasks(): void {
+  public startAllTasks(): void {
     this.logger.info('Starting all tasks');
     for (const task of this.tasks.values()) {
-      task.scheduleRun();
+      task.start();
     }
     this.logger.info('All tasks started');
   }
+
   /**
    * Останавливает все задачи.
    */
-  stopAllTasks(): void {
+  public stopAllTasks(): void {
     this.logger.info('Stopping all tasks');
     for (const task of this.tasks.values()) {
       task.stop();
     }
     this.logger.info('All tasks stopped');
   }
+
   /**
    * Возвращает статистику всех задач.
-   * @returns {Object}
+   * @returns {Record<string, PollingTaskStats>}
    */
-  getAllTaskStats(): Record<string, PollingTaskStats> {
+  public getAllTaskStats(): Record<string, PollingTaskStats> {
     const stats: Record<string, PollingTaskStats> = {};
     for (const [id, task] of this.tasks.entries()) {
       stats[id] = task.getStats();
     }
     return stats;
   }
+
   /**
    * Внутренний метод для запуска задачи менеджером очереди.
    * @param {TaskController} taskController - Контроллер задачи.
    * @returns {Promise<void>}
+   * @internal
    */
-  async _executeQueuedTask(taskController: TaskController): Promise<void> {
+  public async _executeQueuedTask(taskController: TaskController): Promise<void> {
     return taskController.executeOnce();
   }
+
   /**
    * Получает информацию о очереди
    * @param {string} resourceId - Идентификатор ресурса
-   * @returns {Object|null}
+   * @returns {PollingQueueInfo | null}
    */
-  getQueueInfo(resourceId: string): PollingQueueInfo | null {
+  public getQueueInfo(resourceId: string): PollingQueueInfo | null {
     const queue = this.queues.get(resourceId);
     if (!queue) return null;
     return {
@@ -2088,21 +1368,18 @@ class PollingManager {
         .map(id => {
           const task = this.tasks.get(id);
           const state = task?.getState();
-          // Пропускаем задачи, которые не найдены или у которых состояние undefined
           if (!state) return null;
-          return {
-            id,
-            state,
-          };
+          return { id, state };
         })
-        .filter((item): item is { id: string; state: PollingTaskState } => item !== null), // Фильтруем null значения
+        .filter((item): item is { id: string; state: PollingTaskState } => item !== null),
     };
   }
+
   /**
    * Получает статистику системы
-   * @returns {Object}
+   * @returns {PollingSystemStats}
    */
-  getSystemStats(): PollingSystemStats {
+  public getSystemStats(): PollingSystemStats {
     return {
       totalTasks: this.tasks.size,
       totalQueues: this.queues.size,
@@ -2110,118 +1387,69 @@ class PollingManager {
       tasks: this.getAllTaskStats(),
     };
   }
+
   // === Методы для управления логгерами ===
-  /**
-   * Включает логгер PollingManager
-   * @param {string} [level='info'] - Уровень логирования
-   */
-  enablePollingManagerLogger(level: LogLevel = 'info'): void {
+  public enablePollingManagerLogger(level: LogLevel = 'info'): void {
     this.logger.setLevel(level);
   }
-  /**
-   * Отключает логгер PollingManager
-   */
-  disablePollingManagerLogger(): void {
+
+  public disablePollingManagerLogger(): void {
     this.logger.setLevel('error');
   }
-  /**
-   * Включает логгеры всех TaskQueue
-   * @param {string} [level='info'] - Уровень логирования
-   */
-  enableTaskQueueLoggers(level: LogLevel = 'info'): void {
+
+  public enableTaskQueueLoggers(level: LogLevel = 'info'): void {
     for (const queue of this.queues.values()) {
       queue.logger.setLevel(level);
     }
   }
-  /**
-   * Отключает логгеры всех TaskQueue
-   */
-  disableTaskQueueLoggers(): void {
+
+  public disableTaskQueueLoggers(): void {
     for (const queue of this.queues.values()) {
       queue.logger.setLevel('error');
     }
   }
-  /**
-   * Включает логгеры всех TaskController
-   * @param {string} [level='info'] - Уровень логирования
-   */
-  enableTaskControllerLoggers(level: LogLevel = 'info'): void {
+
+  public enableTaskControllerLoggers(level: LogLevel = 'info'): void {
     for (const task of this.tasks.values()) {
       task.logger.setLevel(level);
     }
   }
-  /**
-   * Отключает логгеры всех TaskController
-   */
-  disableTaskControllerLoggers(): void {
+
+  public disableTaskControllerLoggers(): void {
     for (const task of this.tasks.values()) {
       task.logger.setLevel('error');
     }
   }
-  /**
-   * Включает логгеры для конкретной очереди
-   * @param {string} resourceId - Идентификатор ресурса очереди
-   * @param {string} [level='info'] - Уровень логирования
-   */
-  enableTaskQueueLogger(resourceId: string, level: LogLevel = 'info'): void {
-    const queue = this.queues.get(resourceId);
-    if (queue) {
-      queue.logger.setLevel(level);
-    }
+
+  public enableTaskQueueLogger(resourceId: string, level: LogLevel = 'info'): void {
+    this.queues.get(resourceId)?.logger.setLevel(level);
   }
-  /**
-   * Отключает логгеры для конкретной очереди
-   * @param {string} resourceId - Идентификатор ресурса очереди
-   */
-  disableTaskQueueLogger(resourceId: string): void {
-    const queue = this.queues.get(resourceId);
-    if (queue) {
-      queue.logger.setLevel('error');
-    }
+
+  public disableTaskQueueLogger(resourceId: string): void {
+    this.queues.get(resourceId)?.logger.setLevel('error');
   }
-  /**
-   * Включает логгер для конкретной задачи
-   * @param {string} taskId - Идентификатор задачи
-   * @param {string} [level='info'] - Уровень логирования
-   */
-  enableTaskControllerLogger(taskId: string, level: LogLevel = 'info'): void {
-    const task = this.tasks.get(taskId);
-    if (task) {
-      task.logger.setLevel(level);
-    }
+
+  public enableTaskControllerLogger(taskId: string, level: LogLevel = 'info'): void {
+    this.tasks.get(taskId)?.logger.setLevel(level);
   }
-  /**
-   * Отключает логгер для конкретной задачи
-   * @param {string} taskId - Идентификатор задачи
-   */
-  disableTaskControllerLogger(taskId: string): void {
-    const task = this.tasks.get(taskId);
-    if (task) {
-      task.logger.setLevel('error');
-    }
+
+  public disableTaskControllerLogger(taskId: string): void {
+    this.tasks.get(taskId)?.logger.setLevel('error');
   }
-  /**
-   * Включает все логгеры
-   * @param {string} [level='info'] - Уровень логирования
-   */
-  enableAllLoggers(level: LogLevel = 'info'): void {
+
+  public enableAllLoggers(level: LogLevel = 'info'): void {
     this.enablePollingManagerLogger(level);
     this.enableTaskQueueLoggers(level);
     this.enableTaskControllerLoggers(level);
   }
-  /**
-   * Отключает все логгеры
-   */
-  disableAllLoggers(): void {
+
+  public disableAllLoggers(): void {
     this.disablePollingManagerLogger();
     this.disableTaskQueueLoggers();
     this.disableTaskControllerLoggers();
   }
-  /**
-   * Устанавливает уровень логирования для всех компонентов
-   * @param {string} level - Уровень логирования
-   */
-  setLogLevelForAll(level: LogLevel): void {
+
+  public setLogLevelForAll(level: LogLevel): void {
     this.logger.setLevel(level);
     for (const queue of this.queues.values()) {
       queue.logger.setLevel(level);
@@ -2231,4 +1459,5 @@ class PollingManager {
     }
   }
 }
+
 export = PollingManager;

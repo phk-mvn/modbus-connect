@@ -204,7 +204,7 @@ class TaskController {
     }
   }
   /**
-   * Выполняет задачу один раз.
+   * Выполняет задачу один раз. Используется для задач с resourceId.
    * @returns {Promise<void>}
    */
   async executeOnce() {
@@ -214,17 +214,25 @@ class TaskController {
       });
       return;
     }
-    if (this.shouldRun && this.shouldRun() === false) {
+    if (this.shouldRun && !this.shouldRun()) {
       this.logger.debug("Task should not run according to shouldRun function", {
         id: this.id
       });
       this._scheduleNextRun();
       return;
     }
+    await this._performExecution();
+    this._scheduleNextRun();
+  }
+  /**
+   * Единая логика выполнения задачи, обработки ошибок и повторов.
+   * @private
+   */
+  async _performExecution() {
     this.onBeforeEach?.();
     this.executionInProgress = true;
     this.stats.totalRuns++;
-    this.logger.debug("Executing task once", { id: this.id });
+    this.logger.debug("Executing task", { id: this.id });
     const release = await this.transportMutex.acquire();
     try {
       const firstFunction = this.fn[0];
@@ -242,7 +250,7 @@ class TaskController {
           }
         }
       }
-      let success = false;
+      let overallSuccess = false;
       const results = [];
       for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
         let retryCount = 0;
@@ -255,13 +263,13 @@ class TaskController {
             return;
           }
           try {
-            const fnResult = this.fn[fnIndex];
-            if (typeof fnResult !== "function") {
+            const fnToExecute = this.fn[fnIndex];
+            if (typeof fnToExecute !== "function") {
               throw new import_errors.PollingManagerError(
                 `Task ${this.id} fn at index ${fnIndex} is not a function`
               );
             }
-            const promiseResult = fnResult();
+            const promiseResult = fnToExecute();
             if (!(promiseResult instanceof Promise)) {
               throw new import_errors.PollingManagerError(
                 `Task ${this.id} fn ${fnIndex} did not return a Promise`
@@ -274,251 +282,12 @@ class TaskController {
             break;
           } catch (err) {
             const error = err instanceof Error ? err : new import_errors.PollingManagerError(String(err));
-            if (error instanceof import_errors.ModbusTimeoutError) {
-              this.logger.error("Modbus timeout error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusCRCError) {
-              this.logger.error("Modbus CRC error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusParityError) {
-              this.logger.error("Modbus parity error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusNoiseError) {
-              this.logger.error("Modbus noise error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusFramingError) {
-              this.logger.error("Modbus framing error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusOverrunError) {
-              this.logger.error("Modbus overrun error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusCollisionError) {
-              this.logger.error("Modbus collision error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusConfigError) {
-              this.logger.error("Modbus config error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusBaudRateError) {
-              this.logger.error("Modbus baud rate error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusSyncError) {
-              this.logger.error("Modbus sync error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusFrameBoundaryError) {
-              this.logger.error("Modbus frame boundary error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusLRCError) {
-              this.logger.error("Modbus LRC error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusChecksumError) {
-              this.logger.error("Modbus checksum error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusDataConversionError) {
-              this.logger.error("Modbus data conversion error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusBufferOverflowError) {
-              this.logger.error("Modbus buffer overflow error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusBufferUnderrunError) {
-              this.logger.error("Modbus buffer underrun error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusMemoryError) {
-              this.logger.error("Modbus memory error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusStackOverflowError) {
-              this.logger.error("Modbus stack overflow error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusResponseError) {
-              this.logger.error("Modbus response error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInvalidAddressError) {
-              this.logger.error("Modbus invalid address error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInvalidFunctionCodeError) {
-              this.logger.error("Modbus invalid function code error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInvalidQuantityError) {
-              this.logger.error("Modbus invalid quantity error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusIllegalDataAddressError) {
-              this.logger.error("Modbus illegal data address error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusIllegalDataValueError) {
-              this.logger.error("Modbus illegal data value error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusSlaveBusyError) {
-              this.logger.error("Modbus slave busy error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusAcknowledgeError) {
-              this.logger.error("Modbus acknowledge error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusSlaveDeviceFailureError) {
-              this.logger.error("Modbus slave device failure error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusMalformedFrameError) {
-              this.logger.error("Modbus malformed frame error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInvalidFrameLengthError) {
-              this.logger.error("Modbus invalid frame length error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInvalidTransactionIdError) {
-              this.logger.error("Modbus invalid transaction ID error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
-              this.logger.error("Modbus unexpected function code error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusConnectionRefusedError) {
-              this.logger.error("Modbus connection refused error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusConnectionTimeoutError) {
-              this.logger.error("Modbus connection timeout error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusNotConnectedError) {
-              this.logger.error("Modbus not connected error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusAlreadyConnectedError) {
-              this.logger.error("Modbus already connected error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInsufficientDataError) {
-              this.logger.error("Modbus insufficient data error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusGatewayPathUnavailableError) {
-              this.logger.error("Modbus gateway path unavailable error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusGatewayTargetDeviceError) {
-              this.logger.error("Modbus gateway target device error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInvalidStartingAddressError) {
-              this.logger.error("Modbus invalid starting address error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusMemoryParityError) {
-              this.logger.error("Modbus memory parity error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusBroadcastError) {
-              this.logger.error("Modbus broadcast error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusGatewayBusyError) {
-              this.logger.error("Modbus gateway busy error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusDataOverrunError) {
-              this.logger.error("Modbus data overrun error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusTooManyEmptyReadsError) {
-              this.logger.error("Modbus too many empty reads error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusInterFrameTimeoutError) {
-              this.logger.error("Modbus inter-frame timeout error", {
-                id: this.id,
-                error: error.message
-              });
-            } else if (error instanceof import_errors.ModbusSilentIntervalError) {
-              this.logger.error("Modbus silent interval error", {
-                id: this.id,
-                error: error.message
-              });
-            }
+            this._logSpecificError(error);
             retryCount++;
             this.stats.totalErrors++;
             this.stats.retries++;
             this.stats.lastError = error;
             this.onRetry?.(error, fnIndex, retryCount);
-            const isFlushedError = error instanceof import_errors.ModbusFlushError;
-            let backoffDelay = this.backoffDelay;
-            if (isFlushedError) {
-              this.logger.debug("Flush error detected, resetting backoff", {
-                id: this.id
-              });
-              backoffDelay = this.backoffDelay;
-            }
-            const delay = isFlushedError ? Math.min(50, backoffDelay) : backoffDelay * Math.pow(2, retryCount - 1);
             if (retryCount > this.maxRetries) {
               this.stats.failures++;
               this.onFailure?.(error);
@@ -530,21 +299,21 @@ class TaskController {
                 error: error.message
               });
             } else {
+              const isFlushedError = error instanceof import_errors.ModbusFlushError;
+              const baseDelay = isFlushedError ? 50 : this.backoffDelay * Math.pow(2, retryCount - 1);
+              const jitter = Math.random() * baseDelay * 0.5;
+              const delay = baseDelay + jitter;
               this.logger.debug("Retrying fn[" + fnIndex + "] with delay", {
                 id: this.id,
                 delay,
                 retryCount
               });
               await this._sleep(delay);
-              if (this.stopped) {
-                this.executionInProgress = false;
-                return;
-              }
             }
           }
         }
         results.push(result);
-        success = success || fnSuccess;
+        overallSuccess = overallSuccess || fnSuccess;
       }
       this.stats.lastResult = results;
       this.stats.lastRunTime = Date.now();
@@ -560,10 +329,10 @@ class TaskController {
           results: "invalid"
         });
       }
-      this.onFinish?.(success, results);
+      this.onFinish?.(overallSuccess, results);
       this.logger.info("Task execution completed", {
         id: this.id,
-        success,
+        success: overallSuccess,
         resultsCount: results.length
       });
       this.pollingManager.loggerInstance.flush();
@@ -571,28 +340,23 @@ class TaskController {
       release();
       this.executionInProgress = false;
     }
-    this._scheduleNextRun();
   }
   /**
    * Планирует следующий запуск задачи.
    * @private
    */
   _scheduleNextRun() {
-    if (!this.stopped && this.resourceId) {
-      setTimeout(() => {
-        if (!this.stopped) {
-          this.logger.debug("Scheduling next run (queued)", { id: this.id });
-          this.scheduleRun();
-        }
-      }, this.interval);
-    } else if (!this.stopped && !this.resourceId) {
-      setTimeout(() => {
-        if (!this.stopped && this.loopRunning) {
-          this.logger.debug("Scheduling next run (loop)", { id: this.id });
-          this._runLoop();
-        }
-      }, this.interval);
-    }
+    if (this.stopped) return;
+    const scheduleFn = () => {
+      if (this.stopped) return;
+      if (this.resourceId) {
+        this.logger.debug("Scheduling next run (queued)", { id: this.id });
+        this.scheduleRun();
+      } else if (this.loopRunning) {
+        this.logger.debug("Scheduling next run (loop)", { id: this.id });
+      }
+    };
+    setTimeout(scheduleFn, this.interval);
   }
   /**
    * Проверяет, запущена ли задача.
@@ -631,11 +395,10 @@ class TaskController {
     return { ...this.stats };
   }
   /**
-   * Оригинальный цикл выполнения задачи (для задач без resourceId).
+   * Цикл выполнения для задач без resourceId.
    * @private
    */
   async _runLoop() {
-    let backoffDelay = this.backoffDelay;
     this.logger.info("Starting run loop", { id: this.id });
     while (this.loopRunning && !this.stopped) {
       if (this.paused) {
@@ -643,365 +406,119 @@ class TaskController {
         await this._sleep(this.interval);
         continue;
       }
-      if (this.shouldRun && this.shouldRun() === false) {
+      if (this.shouldRun && !this.shouldRun()) {
         this.logger.debug("Task should not run according to shouldRun function", {
           id: this.id
         });
         await this._sleep(this.interval);
         continue;
       }
-      this.onBeforeEach?.();
-      this.executionInProgress = true;
-      this.stats.totalRuns++;
-      const release = await this.transportMutex.acquire();
-      try {
-        const firstFunction = this.fn[0];
-        if (firstFunction && typeof firstFunction === "function") {
-          const result = firstFunction();
-          if (result && hasTransportProperty(result) && result.transport) {
-            if (hasFlushMethod(result.transport)) {
-              try {
-                await result.transport.flush();
-                this.logger.debug("Transport flushed successfully", { id: this.id });
-              } catch (flushErr) {
-                const error = flushErr instanceof Error ? flushErr : new import_errors.PollingManagerError(String(flushErr));
-                this.logger.warn("Flush failed", {
-                  id: this.id,
-                  error: error.message
-                });
-              }
-            }
-          }
-        }
-        let success = false;
-        const results = [];
-        for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
-          let retryCount = 0;
-          let result = null;
-          let fnSuccess = false;
-          while (this.loopRunning && !this.stopped && retryCount <= this.maxRetries) {
-            try {
-              const fnResult = this.fn[fnIndex];
-              if (typeof fnResult !== "function") {
-                throw new import_errors.PollingManagerError(
-                  `Task ${this.id} fn at index ${fnIndex} is not a function`
-                );
-              }
-              const promiseResult = fnResult();
-              if (!(promiseResult instanceof Promise)) {
-                throw new import_errors.PollingManagerError(
-                  `Task ${this.id} fn ${fnIndex} did not return a Promise`
-                );
-              }
-              result = await this._withTimeout(promiseResult, this.taskTimeout);
-              fnSuccess = true;
-              this.stats.successes++;
-              this.stats.lastError = null;
-              backoffDelay = this.backoffDelay;
-              break;
-            } catch (err) {
-              const error = err instanceof Error ? err : new import_errors.PollingManagerError(String(err));
-              if (error instanceof import_errors.ModbusTimeoutError) {
-                this.logger.error("Modbus timeout error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusCRCError) {
-                this.logger.error("Modbus CRC error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusParityError) {
-                this.logger.error("Modbus parity error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusNoiseError) {
-                this.logger.error("Modbus noise error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusFramingError) {
-                this.logger.error("Modbus framing error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusOverrunError) {
-                this.logger.error("Modbus overrun error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusCollisionError) {
-                this.logger.error("Modbus collision error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusConfigError) {
-                this.logger.error("Modbus config error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusBaudRateError) {
-                this.logger.error("Modbus baud rate error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusSyncError) {
-                this.logger.error("Modbus sync error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusFrameBoundaryError) {
-                this.logger.error("Modbus frame boundary error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusLRCError) {
-                this.logger.error("Modbus LRC error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusChecksumError) {
-                this.logger.error("Modbus checksum error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusDataConversionError) {
-                this.logger.error("Modbus data conversion error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusBufferOverflowError) {
-                this.logger.error("Modbus buffer overflow error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusBufferUnderrunError) {
-                this.logger.error("Modbus buffer underrun error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusMemoryError) {
-                this.logger.error("Modbus memory error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusStackOverflowError) {
-                this.logger.error("Modbus stack overflow error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusResponseError) {
-                this.logger.error("Modbus response error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInvalidAddressError) {
-                this.logger.error("Modbus invalid address error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInvalidFunctionCodeError) {
-                this.logger.error("Modbus invalid function code error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInvalidQuantityError) {
-                this.logger.error("Modbus invalid quantity error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusIllegalDataAddressError) {
-                this.logger.error("Modbus illegal data address error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusIllegalDataValueError) {
-                this.logger.error("Modbus illegal data value error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusSlaveBusyError) {
-                this.logger.error("Modbus slave busy error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusAcknowledgeError) {
-                this.logger.error("Modbus acknowledge error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusSlaveDeviceFailureError) {
-                this.logger.error("Modbus slave device failure error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusMalformedFrameError) {
-                this.logger.error("Modbus malformed frame error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInvalidFrameLengthError) {
-                this.logger.error("Modbus invalid frame length error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInvalidTransactionIdError) {
-                this.logger.error("Modbus invalid transaction ID error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
-                this.logger.error("Modbus unexpected function code error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusConnectionRefusedError) {
-                this.logger.error("Modbus connection refused error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusConnectionTimeoutError) {
-                this.logger.error("Modbus connection timeout error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusNotConnectedError) {
-                this.logger.error("Modbus not connected error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusAlreadyConnectedError) {
-                this.logger.error("Modbus already connected error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInsufficientDataError) {
-                this.logger.error("Modbus insufficient data error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusGatewayPathUnavailableError) {
-                this.logger.error("Modbus gateway path unavailable error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusGatewayTargetDeviceError) {
-                this.logger.error("Modbus gateway target device error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInvalidStartingAddressError) {
-                this.logger.error("Modbus invalid starting address error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusMemoryParityError) {
-                this.logger.error("Modbus memory parity error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusBroadcastError) {
-                this.logger.error("Modbus broadcast error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusGatewayBusyError) {
-                this.logger.error("Modbus gateway busy error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusDataOverrunError) {
-                this.logger.error("Modbus data overrun error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusTooManyEmptyReadsError) {
-                this.logger.error("Modbus too many empty reads error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusInterFrameTimeoutError) {
-                this.logger.error("Modbus inter-frame timeout error", {
-                  id: this.id,
-                  error: error.message
-                });
-              } else if (error instanceof import_errors.ModbusSilentIntervalError) {
-                this.logger.error("Modbus silent interval error", {
-                  id: this.id,
-                  error: error.message
-                });
-              }
-              retryCount++;
-              this.stats.totalErrors++;
-              this.stats.retries++;
-              this.stats.lastError = error;
-              this.onRetry?.(error, fnIndex, retryCount);
-              const isFlushedError = error instanceof import_errors.ModbusFlushError;
-              if (isFlushedError) {
-                this.logger.debug("Flush error detected, resetting backoff", {
-                  id: this.id
-                });
-                backoffDelay = this.backoffDelay;
-              }
-              const delay = isFlushedError ? Math.min(50, backoffDelay) : backoffDelay * Math.pow(2, retryCount - 1);
-              if (retryCount > this.maxRetries) {
-                this.stats.failures++;
-                this.onFailure?.(error);
-                this.onError?.(error, fnIndex, retryCount);
-                this.logger.warn("Max retries exhausted for fn[" + fnIndex + "]", {
-                  id: this.id,
-                  fnIndex,
-                  retryCount,
-                  error: error.message
-                });
-              } else {
-                this.logger.debug("Retrying fn[" + fnIndex + "] with delay", {
-                  id: this.id,
-                  delay,
-                  retryCount
-                });
-                await this._sleep(delay);
-              }
-            }
-          }
-          results.push(result);
-          success = success || fnSuccess;
-        }
-        this.stats.lastResult = results;
-        this.stats.lastRunTime = Date.now();
-        if (results.length > 0 && results.some((r) => r !== null && r !== void 0)) {
-          this.onData?.(results);
-          this.logger.debug("Data callback executed", {
-            id: this.id,
-            resultsCount: results.length
-          });
-        } else {
-          this.logger.warn("Skipping onData - all results invalid", {
-            id: this.id,
-            results: "invalid"
-          });
-        }
-        this.onFinish?.(success, results);
-        this.logger.info("Task execution completed", {
-          id: this.id,
-          success,
-          resultsCount: results.length
-        });
-        this.pollingManager.loggerInstance.flush();
-      } finally {
-        release();
-        this.executionInProgress = false;
+      await this._performExecution();
+      if (this.loopRunning && !this.stopped) {
+        await this._sleep(this.interval);
       }
-      await this._sleep(this.interval);
     }
     this.loopRunning = false;
     this.logger.debug("Run loop finished", { id: this.id });
   }
   /**
+   * Инкапсулирует логирование специфичных ошибок Modbus для чистоты кода.
+   * @param {Error} error - Ошибка для логирования.
+   * @private
+   */
+  _logSpecificError(error) {
+    const logContext = { id: this.id, error: error.message };
+    if (error instanceof import_errors.ModbusTimeoutError) this.logger.error("Modbus timeout error", logContext);
+    else if (error instanceof import_errors.ModbusCRCError) this.logger.error("Modbus CRC error", logContext);
+    else if (error instanceof import_errors.ModbusParityError)
+      this.logger.error("Modbus parity error", logContext);
+    else if (error instanceof import_errors.ModbusNoiseError) this.logger.error("Modbus noise error", logContext);
+    else if (error instanceof import_errors.ModbusFramingError)
+      this.logger.error("Modbus framing error", logContext);
+    else if (error instanceof import_errors.ModbusOverrunError)
+      this.logger.error("Modbus overrun error", logContext);
+    else if (error instanceof import_errors.ModbusCollisionError)
+      this.logger.error("Modbus collision error", logContext);
+    else if (error instanceof import_errors.ModbusConfigError)
+      this.logger.error("Modbus config error", logContext);
+    else if (error instanceof import_errors.ModbusBaudRateError)
+      this.logger.error("Modbus baud rate error", logContext);
+    else if (error instanceof import_errors.ModbusSyncError) this.logger.error("Modbus sync error", logContext);
+    else if (error instanceof import_errors.ModbusFrameBoundaryError)
+      this.logger.error("Modbus frame boundary error", logContext);
+    else if (error instanceof import_errors.ModbusLRCError) this.logger.error("Modbus LRC error", logContext);
+    else if (error instanceof import_errors.ModbusChecksumError)
+      this.logger.error("Modbus checksum error", logContext);
+    else if (error instanceof import_errors.ModbusDataConversionError)
+      this.logger.error("Modbus data conversion error", logContext);
+    else if (error instanceof import_errors.ModbusBufferOverflowError)
+      this.logger.error("Modbus buffer overflow error", logContext);
+    else if (error instanceof import_errors.ModbusBufferUnderrunError)
+      this.logger.error("Modbus buffer underrun error", logContext);
+    else if (error instanceof import_errors.ModbusMemoryError)
+      this.logger.error("Modbus memory error", logContext);
+    else if (error instanceof import_errors.ModbusStackOverflowError)
+      this.logger.error("Modbus stack overflow error", logContext);
+    else if (error instanceof import_errors.ModbusResponseError)
+      this.logger.error("Modbus response error", logContext);
+    else if (error instanceof import_errors.ModbusInvalidAddressError)
+      this.logger.error("Modbus invalid address error", logContext);
+    else if (error instanceof import_errors.ModbusInvalidFunctionCodeError)
+      this.logger.error("Modbus invalid function code error", logContext);
+    else if (error instanceof import_errors.ModbusInvalidQuantityError)
+      this.logger.error("Modbus invalid quantity error", logContext);
+    else if (error instanceof import_errors.ModbusIllegalDataAddressError)
+      this.logger.error("Modbus illegal data address error", logContext);
+    else if (error instanceof import_errors.ModbusIllegalDataValueError)
+      this.logger.error("Modbus illegal data value error", logContext);
+    else if (error instanceof import_errors.ModbusSlaveBusyError)
+      this.logger.error("Modbus slave busy error", logContext);
+    else if (error instanceof import_errors.ModbusAcknowledgeError)
+      this.logger.error("Modbus acknowledge error", logContext);
+    else if (error instanceof import_errors.ModbusSlaveDeviceFailureError)
+      this.logger.error("Modbus slave device failure error", logContext);
+    else if (error instanceof import_errors.ModbusMalformedFrameError)
+      this.logger.error("Modbus malformed frame error", logContext);
+    else if (error instanceof import_errors.ModbusInvalidFrameLengthError)
+      this.logger.error("Modbus invalid frame length error", logContext);
+    else if (error instanceof import_errors.ModbusInvalidTransactionIdError)
+      this.logger.error("Modbus invalid transaction ID error", logContext);
+    else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError)
+      this.logger.error("Modbus unexpected function code error", logContext);
+    else if (error instanceof import_errors.ModbusConnectionRefusedError)
+      this.logger.error("Modbus connection refused error", logContext);
+    else if (error instanceof import_errors.ModbusConnectionTimeoutError)
+      this.logger.error("Modbus connection timeout error", logContext);
+    else if (error instanceof import_errors.ModbusNotConnectedError)
+      this.logger.error("Modbus not connected error", logContext);
+    else if (error instanceof import_errors.ModbusAlreadyConnectedError)
+      this.logger.error("Modbus already connected error", logContext);
+    else if (error instanceof import_errors.ModbusInsufficientDataError)
+      this.logger.error("Modbus insufficient data error", logContext);
+    else if (error instanceof import_errors.ModbusGatewayPathUnavailableError)
+      this.logger.error("Modbus gateway path unavailable error", logContext);
+    else if (error instanceof import_errors.ModbusGatewayTargetDeviceError)
+      this.logger.error("Modbus gateway target device error", logContext);
+    else if (error instanceof import_errors.ModbusInvalidStartingAddressError)
+      this.logger.error("Modbus invalid starting address error", logContext);
+    else if (error instanceof import_errors.ModbusMemoryParityError)
+      this.logger.error("Modbus memory parity error", logContext);
+    else if (error instanceof import_errors.ModbusBroadcastError)
+      this.logger.error("Modbus broadcast error", logContext);
+    else if (error instanceof import_errors.ModbusGatewayBusyError)
+      this.logger.error("Modbus gateway busy error", logContext);
+    else if (error instanceof import_errors.ModbusDataOverrunError)
+      this.logger.error("Modbus data overrun error", logContext);
+    else if (error instanceof import_errors.ModbusTooManyEmptyReadsError)
+      this.logger.error("Modbus too many empty reads error", logContext);
+    else if (error instanceof import_errors.ModbusInterFrameTimeoutError)
+      this.logger.error("Modbus inter-frame timeout error", logContext);
+    else if (error instanceof import_errors.ModbusSilentIntervalError)
+      this.logger.error("Modbus silent interval error", logContext);
+  }
+  /**
    * Sleeps for given amount of milliseconds.
    * @param {number} ms
-   * @returns {Promise}
    * @private
    */
   _sleep(ms) {
@@ -1011,7 +528,6 @@ class TaskController {
    * Wraps a promise with a timeout.
    * @param {Promise} promise
    * @param {number} timeout
-   * @returns {Promise}
    * @private
    */
   _withTimeout(promise, timeout) {
@@ -1143,237 +659,7 @@ class TaskQueue {
       this.logger.debug("Task executed successfully", { taskId });
     } catch (error) {
       const err = error instanceof Error ? error : new import_errors.PollingManagerError(String(error));
-      if (err instanceof import_errors.ModbusTimeoutError) {
-        this.logger.error("Modbus timeout error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusCRCError) {
-        this.logger.error("Modbus CRC error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusParityError) {
-        this.logger.error("Modbus parity error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusNoiseError) {
-        this.logger.error("Modbus noise error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusFramingError) {
-        this.logger.error("Modbus framing error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusOverrunError) {
-        this.logger.error("Modbus overrun error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusCollisionError) {
-        this.logger.error("Modbus collision error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusConfigError) {
-        this.logger.error("Modbus config error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBaudRateError) {
-        this.logger.error("Modbus baud rate error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSyncError) {
-        this.logger.error("Modbus sync error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusFrameBoundaryError) {
-        this.logger.error("Modbus frame boundary error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusLRCError) {
-        this.logger.error("Modbus LRC error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusChecksumError) {
-        this.logger.error("Modbus checksum error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusDataConversionError) {
-        this.logger.error("Modbus data conversion error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBufferOverflowError) {
-        this.logger.error("Modbus buffer overflow error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBufferUnderrunError) {
-        this.logger.error("Modbus buffer underrun error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusMemoryError) {
-        this.logger.error("Modbus memory error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusStackOverflowError) {
-        this.logger.error("Modbus stack overflow error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusResponseError) {
-        this.logger.error("Modbus response error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidAddressError) {
-        this.logger.error("Modbus invalid address error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidFunctionCodeError) {
-        this.logger.error("Modbus invalid function code error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidQuantityError) {
-        this.logger.error("Modbus invalid quantity error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusIllegalDataAddressError) {
-        this.logger.error("Modbus illegal data address error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusIllegalDataValueError) {
-        this.logger.error("Modbus illegal data value error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSlaveBusyError) {
-        this.logger.error("Modbus slave busy error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusAcknowledgeError) {
-        this.logger.error("Modbus acknowledge error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSlaveDeviceFailureError) {
-        this.logger.error("Modbus slave device failure error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusMalformedFrameError) {
-        this.logger.error("Modbus malformed frame error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidFrameLengthError) {
-        this.logger.error("Modbus invalid frame length error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidTransactionIdError) {
-        this.logger.error("Modbus invalid transaction ID error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
-        this.logger.error("Modbus unexpected function code error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusConnectionRefusedError) {
-        this.logger.error("Modbus connection refused error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusConnectionTimeoutError) {
-        this.logger.error("Modbus connection timeout error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusNotConnectedError) {
-        this.logger.error("Modbus not connected error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusAlreadyConnectedError) {
-        this.logger.error("Modbus already connected error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInsufficientDataError) {
-        this.logger.error("Modbus insufficient data error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusGatewayPathUnavailableError) {
-        this.logger.error("Modbus gateway path unavailable error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusGatewayTargetDeviceError) {
-        this.logger.error("Modbus gateway target device error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidStartingAddressError) {
-        this.logger.error("Modbus invalid starting address error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusMemoryParityError) {
-        this.logger.error("Modbus memory parity error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBroadcastError) {
-        this.logger.error("Modbus broadcast error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusGatewayBusyError) {
-        this.logger.error("Modbus gateway busy error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusDataOverrunError) {
-        this.logger.error("Modbus data overrun error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusTooManyEmptyReadsError) {
-        this.logger.error("Modbus too many empty reads error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInterFrameTimeoutError) {
-        this.logger.error("Modbus inter-frame timeout error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSilentIntervalError) {
-        this.logger.error("Modbus silent interval error in queue processing", {
-          resourceId: this.resourceId,
-          error: err.message
-        });
-      }
+      this._logSpecificError(err);
       this.logger.error("Error executing task in queue", {
         resourceId: this.resourceId,
         error: err.message
@@ -1389,6 +675,106 @@ class TaskQueue {
       }
     }
   }
+  /**
+   * Инкапсулирует логирование специфичных ошибок Modbus для чистоты кода.
+   * @param {Error} error - Ошибка для логирования.
+   * @private
+   */
+  _logSpecificError(error) {
+    const logContext = { resourceId: this.resourceId, error: error.message };
+    if (error instanceof import_errors.ModbusTimeoutError)
+      this.logger.error("Modbus timeout error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusCRCError)
+      this.logger.error("Modbus CRC error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusParityError)
+      this.logger.error("Modbus parity error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusNoiseError)
+      this.logger.error("Modbus noise error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusFramingError)
+      this.logger.error("Modbus framing error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusOverrunError)
+      this.logger.error("Modbus overrun error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusCollisionError)
+      this.logger.error("Modbus collision error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusConfigError)
+      this.logger.error("Modbus config error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusBaudRateError)
+      this.logger.error("Modbus baud rate error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusSyncError)
+      this.logger.error("Modbus sync error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusFrameBoundaryError)
+      this.logger.error("Modbus frame boundary error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusLRCError)
+      this.logger.error("Modbus LRC error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusChecksumError)
+      this.logger.error("Modbus checksum error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusDataConversionError)
+      this.logger.error("Modbus data conversion error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusBufferOverflowError)
+      this.logger.error("Modbus buffer overflow error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusBufferUnderrunError)
+      this.logger.error("Modbus buffer underrun error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusMemoryError)
+      this.logger.error("Modbus memory error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusStackOverflowError)
+      this.logger.error("Modbus stack overflow error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusResponseError)
+      this.logger.error("Modbus response error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInvalidAddressError)
+      this.logger.error("Modbus invalid address error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInvalidFunctionCodeError)
+      this.logger.error("Modbus invalid function code error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInvalidQuantityError)
+      this.logger.error("Modbus invalid quantity error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusIllegalDataAddressError)
+      this.logger.error("Modbus illegal data address error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusIllegalDataValueError)
+      this.logger.error("Modbus illegal data value error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusSlaveBusyError)
+      this.logger.error("Modbus slave busy error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusAcknowledgeError)
+      this.logger.error("Modbus acknowledge error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusSlaveDeviceFailureError)
+      this.logger.error("Modbus slave device failure error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusMalformedFrameError)
+      this.logger.error("Modbus malformed frame error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInvalidFrameLengthError)
+      this.logger.error("Modbus invalid frame length error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInvalidTransactionIdError)
+      this.logger.error("Modbus invalid transaction ID error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError)
+      this.logger.error("Modbus unexpected function code error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusConnectionRefusedError)
+      this.logger.error("Modbus connection refused error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusConnectionTimeoutError)
+      this.logger.error("Modbus connection timeout error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusNotConnectedError)
+      this.logger.error("Modbus not connected error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusAlreadyConnectedError)
+      this.logger.error("Modbus already connected error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInsufficientDataError)
+      this.logger.error("Modbus insufficient data error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusGatewayPathUnavailableError)
+      this.logger.error("Modbus gateway path unavailable error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusGatewayTargetDeviceError)
+      this.logger.error("Modbus gateway target device error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInvalidStartingAddressError)
+      this.logger.error("Modbus invalid starting address error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusMemoryParityError)
+      this.logger.error("Modbus memory parity error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusBroadcastError)
+      this.logger.error("Modbus broadcast error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusGatewayBusyError)
+      this.logger.error("Modbus gateway busy error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusDataOverrunError)
+      this.logger.error("Modbus data overrun error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusTooManyEmptyReadsError)
+      this.logger.error("Modbus too many empty reads error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusInterFrameTimeoutError)
+      this.logger.error("Modbus inter-frame timeout error in queue processing", logContext);
+    else if (error instanceof import_errors.ModbusSilentIntervalError)
+      this.logger.error("Modbus silent interval error in queue processing", logContext);
+  }
 }
 class PollingManager {
   config;
@@ -1397,13 +783,6 @@ class PollingManager {
   queuedOrProcessingTasks;
   loggerInstance;
   logger;
-  /**
-   * @param {Object} config - Конфигурация менеджера
-   * @param {number} [config.defaultMaxRetries=3] - Максимальное количество попыток по умолчанию
-   * @param {number} [config.defaultBackoffDelay=1000] - Задержка между попытками по умолчанию
-   * @param {number} [config.defaultTaskTimeout=5000] - Таймаут задачи по умолчанию
-   * @param {string} [config.logLevel='info'] - Уровень логирования
-   */
   constructor(config = {}) {
     this.config = {
       defaultMaxRetries: 3,
@@ -1439,45 +818,25 @@ class PollingManager {
     if (!options.id) {
       throw new import_errors.PollingTaskValidationError('Task must have an "id"');
     }
-    if (options.interval && (typeof options.interval !== "number" || options.interval <= 0)) {
+    if (options.interval === void 0 || typeof options.interval !== "number" || options.interval <= 0) {
       throw new import_errors.PollingTaskValidationError("Interval must be a positive number");
     }
-    if (options.fn && !Array.isArray(options.fn) && typeof options.fn !== "function") {
-      throw new import_errors.PollingTaskValidationError("Function must be a function or array of functions");
+    if (options.fn === void 0 || !Array.isArray(options.fn) && typeof options.fn !== "function") {
+      throw new import_errors.PollingTaskValidationError("fn must be a function or array of functions");
     }
-    if (options.maxRetries && (typeof options.maxRetries !== "number" || options.maxRetries < 0)) {
+    if (options.maxRetries !== void 0 && (typeof options.maxRetries !== "number" || options.maxRetries < 0)) {
       throw new import_errors.PollingTaskValidationError("maxRetries must be a non-negative number");
     }
-    if (options.backoffDelay && (typeof options.backoffDelay !== "number" || options.backoffDelay <= 0)) {
+    if (options.backoffDelay !== void 0 && (typeof options.backoffDelay !== "number" || options.backoffDelay <= 0)) {
       throw new import_errors.PollingTaskValidationError("backoffDelay must be a positive number");
     }
-    if (options.taskTimeout && (typeof options.taskTimeout !== "number" || options.taskTimeout <= 0)) {
+    if (options.taskTimeout !== void 0 && (typeof options.taskTimeout !== "number" || options.taskTimeout <= 0)) {
       throw new import_errors.PollingTaskValidationError("taskTimeout must be a positive number");
     }
   }
   /**
    * Добавляет новую задачу в менеджер.
-   * @param {Object} options - Опции задачи
-   * @param {string} options.id - Уникальный идентификатор задачи
-   * @param {string} [options.resourceId] - Идентификатор ресурса для очереди
-   * @param {number} [options.priority=0] - Приоритет задачи
-   * @param {number} options.interval - Интервал выполнения в миллисекундах
-   * @param {Function|Function[]} options.fn - Функция(и) для выполнения
-   * @param {Function} [options.onData] - Callback для данных
-   * @param {Function} [options.onError] - Callback для ошибок
-   * @param {Function} [options.onStart] - Callback при запуске
-   * @param {Function} [options.onStop] - Callback при остановке
-   * @param {Function} [options.onFinish] - Callback при завершении
-   * @param {Function} [options.onBeforeEach] - Callback перед каждой итерацией
-   * @param {Function} [options.onRetry] - Callback при повторной попытке
-   * @param {Function} [options.shouldRun] - Функция проверки возможности запуска
-   * @param {Function} [options.onSuccess] - Callback при успешном выполнении
-   * @param {Function} [options.onFailure] - Callback при неудачном выполнении
-   * @param {string} [options.name] - Имя задачи
-   * @param {boolean} [options.immediate=false] - Немедленный запуск
-   * @param {number} [options.maxRetries] - Максимальное количество попыток
-   * @param {number} [options.backoffDelay] - Задержка между попытками
-   * @param {number} [options.taskTimeout] - Таймаут задачи
+   * @param {PollingTaskOptions} options - Опции задачи
    */
   addTask(options) {
     try {
@@ -1502,7 +861,6 @@ class PollingManager {
             new TaskQueue(resourceId, this, this.queuedOrProcessingTasks, this.loggerInstance)
           );
         }
-        this.queues.get(resourceId)?.enqueue(controller);
       }
       if (options.immediate) {
         if (resourceId) {
@@ -1519,194 +877,9 @@ class PollingManager {
       this.loggerInstance.flush();
     } catch (error) {
       const err = error instanceof Error ? error : new import_errors.PollingManagerError(String(error));
-      if (err instanceof import_errors.ModbusTimeoutError) {
-        this.logger.error("Modbus timeout error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusCRCError) {
-        this.logger.error("Modbus CRC error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusParityError) {
-        this.logger.error("Modbus parity error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusNoiseError) {
-        this.logger.error("Modbus noise error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusFramingError) {
-        this.logger.error("Modbus framing error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusOverrunError) {
-        this.logger.error("Modbus overrun error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusCollisionError) {
-        this.logger.error("Modbus collision error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusConfigError) {
-        this.logger.error("Modbus config error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBaudRateError) {
-        this.logger.error("Modbus baud rate error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSyncError) {
-        this.logger.error("Modbus sync error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusFrameBoundaryError) {
-        this.logger.error("Modbus frame boundary error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusLRCError) {
-        this.logger.error("Modbus LRC error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusChecksumError) {
-        this.logger.error("Modbus checksum error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusDataConversionError) {
-        this.logger.error("Modbus data conversion error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBufferOverflowError) {
-        this.logger.error("Modbus buffer overflow error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBufferUnderrunError) {
-        this.logger.error("Modbus buffer underrun error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusMemoryError) {
-        this.logger.error("Modbus memory error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusStackOverflowError) {
-        this.logger.error("Modbus stack overflow error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusResponseError) {
-        this.logger.error("Modbus response error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidAddressError) {
-        this.logger.error("Modbus invalid address error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidFunctionCodeError) {
-        this.logger.error("Modbus invalid function code error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidQuantityError) {
-        this.logger.error("Modbus invalid quantity error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusIllegalDataAddressError) {
-        this.logger.error("Modbus illegal data address error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusIllegalDataValueError) {
-        this.logger.error("Modbus illegal data value error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSlaveBusyError) {
-        this.logger.error("Modbus slave busy error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusAcknowledgeError) {
-        this.logger.error("Modbus acknowledge error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSlaveDeviceFailureError) {
-        this.logger.error("Modbus slave device failure error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusMalformedFrameError) {
-        this.logger.error("Modbus malformed frame error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidFrameLengthError) {
-        this.logger.error("Modbus invalid frame length error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidTransactionIdError) {
-        this.logger.error("Modbus invalid transaction ID error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
-        this.logger.error("Modbus unexpected function code error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusConnectionRefusedError) {
-        this.logger.error("Modbus connection refused error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusConnectionTimeoutError) {
-        this.logger.error("Modbus connection timeout error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusNotConnectedError) {
-        this.logger.error("Modbus not connected error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusAlreadyConnectedError) {
-        this.logger.error("Modbus already connected error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInsufficientDataError) {
-        this.logger.error("Modbus insufficient data error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusGatewayPathUnavailableError) {
-        this.logger.error("Modbus gateway path unavailable error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusGatewayTargetDeviceError) {
-        this.logger.error("Modbus gateway target device error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInvalidStartingAddressError) {
-        this.logger.error("Modbus invalid starting address error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusMemoryParityError) {
-        this.logger.error("Modbus memory parity error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusBroadcastError) {
-        this.logger.error("Modbus broadcast error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusGatewayBusyError) {
-        this.logger.error("Modbus gateway busy error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusDataOverrunError) {
-        this.logger.error("Modbus data overrun error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusTooManyEmptyReadsError) {
-        this.logger.error("Modbus too many empty reads error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusInterFrameTimeoutError) {
-        this.logger.error("Modbus inter-frame timeout error in task validation", {
-          error: err.message
-        });
-      } else if (err instanceof import_errors.ModbusSilentIntervalError) {
-        this.logger.error("Modbus silent interval error in task validation", {
-          error: err.message
-        });
-      }
       this.logger.error("Failed to add task", {
         error: err.message,
-        options: JSON.stringify(options)
+        options: JSON.stringify(options, null, 2)
       });
       this.loggerInstance.flush();
       throw err;
@@ -1718,7 +891,8 @@ class PollingManager {
    * @param {Object} newOptions - Новые опции задачи
    */
   updateTask(id, newOptions) {
-    if (!this.tasks.has(id)) {
+    const oldTask = this.tasks.get(id);
+    if (!oldTask) {
       const error = new import_errors.PollingTaskNotFoundError(id);
       this.logger.error("Failed to update task - not found", {
         id,
@@ -1726,9 +900,36 @@ class PollingManager {
       });
       throw error;
     }
+    const oldOptions = {
+      id: oldTask.id,
+      resourceId: oldTask.resourceId,
+      priority: oldTask.priority,
+      interval: oldTask.interval,
+      fn: oldTask.fn,
+      onData: oldTask.onData,
+      onError: oldTask.onError,
+      onStart: oldTask.onStart,
+      onStop: oldTask.onStop,
+      onFinish: oldTask.onFinish,
+      onBeforeEach: oldTask.onBeforeEach,
+      onRetry: oldTask.onRetry,
+      shouldRun: oldTask.shouldRun,
+      onSuccess: oldTask.onSuccess,
+      onFailure: oldTask.onFailure,
+      name: oldTask.name ?? void 0,
+      // ИСПРАВЛЕНИЕ: Преобразуем null в undefined
+      maxRetries: oldTask.maxRetries,
+      backoffDelay: oldTask.backoffDelay,
+      taskTimeout: oldTask.taskTimeout
+    };
+    const mergedOptions = { ...oldOptions, ...newOptions };
     this.logger.info("Updating task", { id, newOptions: JSON.stringify(newOptions) });
+    const wasRunning = oldTask.isRunning();
     this.removeTask(id);
-    this.addTask({ id, ...newOptions });
+    this.addTask(mergedOptions);
+    if (wasRunning) {
+      this.startTask(id);
+    }
   }
   /**
    * Удаляет задачу из менеджера и очереди.
@@ -1761,11 +962,16 @@ class PollingManager {
     if (task) {
       this.logger.info("Restarting task", { id });
       task.stop();
-      if (task.resourceId && this.queues.has(task.resourceId)) {
-        task.scheduleRun();
-      } else {
-        task.start();
-      }
+      setTimeout(() => {
+        const freshTask = this.tasks.get(id);
+        if (freshTask) {
+          if (freshTask.resourceId) {
+            freshTask.scheduleRun();
+          } else {
+            freshTask.start();
+          }
+        }
+      }, 0);
     } else {
       this.logger.warn("Attempt to restart non-existent task", { id });
     }
@@ -1780,7 +986,7 @@ class PollingManager {
       this.logger.info("Starting task", { id });
       task.start();
     } else {
-      this.logger.warn("Attempt to start non-existent task", { id });
+      throw new import_errors.PollingTaskNotFoundError(id);
     }
   }
   /**
@@ -1843,8 +1049,7 @@ class PollingManager {
    */
   isTaskRunning(id) {
     const task = this.tasks.get(id);
-    const result = task ? task.isRunning() : false;
-    return result;
+    return task ? task.isRunning() : false;
   }
   /**
    * Проверяет, приостановлена ли задача.
@@ -1853,28 +1058,25 @@ class PollingManager {
    */
   isTaskPaused(id) {
     const task = this.tasks.get(id);
-    const result = task ? task.isPaused() : false;
-    return result;
+    return task ? task.isPaused() : false;
   }
   /**
    * Получает состояние задачи.
    * @param {string} id - Идентификатор задачи
-   * @returns {Object|null}
+   * @returns {PollingTaskState | null}
    */
   getTaskState(id) {
     const task = this.tasks.get(id);
-    const result = task ? task.getState() : null;
-    return result;
+    return task ? task.getState() : null;
   }
   /**
    * Получает статистику задачи.
    * @param {string} id - Идентификатор задачи
-   * @returns {Object|null}
+   * @returns {PollingTaskStats | null}
    */
   getTaskStats(id) {
     const task = this.tasks.get(id);
-    const result = task ? task.getStats() : null;
-    return result;
+    return task ? task.getStats() : null;
   }
   /**
    * Проверяет, существует ли задача.
@@ -1882,8 +1084,7 @@ class PollingManager {
    * @returns {boolean}
    */
   hasTask(id) {
-    const result = this.tasks.has(id);
-    return result;
+    return this.tasks.has(id);
   }
   /**
    * Возвращает массив ID всех задач.
@@ -1913,11 +1114,10 @@ class PollingManager {
    */
   restartAllTasks() {
     this.logger.info("Restarting all tasks");
-    for (const task of this.tasks.values()) {
-      task.stop();
-      task.scheduleRun();
+    for (const id of this.tasks.keys()) {
+      this.restartTask(id);
     }
-    this.logger.info("All tasks restarted");
+    this.logger.info("All tasks scheduled for restart");
   }
   /**
    * Ставит на паузу все задачи.
@@ -1945,7 +1145,7 @@ class PollingManager {
   startAllTasks() {
     this.logger.info("Starting all tasks");
     for (const task of this.tasks.values()) {
-      task.scheduleRun();
+      task.start();
     }
     this.logger.info("All tasks started");
   }
@@ -1961,7 +1161,7 @@ class PollingManager {
   }
   /**
    * Возвращает статистику всех задач.
-   * @returns {Object}
+   * @returns {Record<string, PollingTaskStats>}
    */
   getAllTaskStats() {
     const stats = {};
@@ -1974,6 +1174,7 @@ class PollingManager {
    * Внутренний метод для запуска задачи менеджером очереди.
    * @param {TaskController} taskController - Контроллер задачи.
    * @returns {Promise<void>}
+   * @internal
    */
   async _executeQueuedTask(taskController) {
     return taskController.executeOnce();
@@ -1981,7 +1182,7 @@ class PollingManager {
   /**
    * Получает информацию о очереди
    * @param {string} resourceId - Идентификатор ресурса
-   * @returns {Object|null}
+   * @returns {PollingQueueInfo | null}
    */
   getQueueInfo(resourceId) {
     const queue = this.queues.get(resourceId);
@@ -1993,17 +1194,13 @@ class PollingManager {
         const task = this.tasks.get(id);
         const state = task?.getState();
         if (!state) return null;
-        return {
-          id,
-          state
-        };
+        return { id, state };
       }).filter((item) => item !== null)
-      // Фильтруем null значения
     };
   }
   /**
    * Получает статистику системы
-   * @returns {Object}
+   * @returns {PollingSystemStats}
    */
   getSystemStats() {
     return {
@@ -2014,116 +1211,54 @@ class PollingManager {
     };
   }
   // === Методы для управления логгерами ===
-  /**
-   * Включает логгер PollingManager
-   * @param {string} [level='info'] - Уровень логирования
-   */
   enablePollingManagerLogger(level = "info") {
     this.logger.setLevel(level);
   }
-  /**
-   * Отключает логгер PollingManager
-   */
   disablePollingManagerLogger() {
     this.logger.setLevel("error");
   }
-  /**
-   * Включает логгеры всех TaskQueue
-   * @param {string} [level='info'] - Уровень логирования
-   */
   enableTaskQueueLoggers(level = "info") {
     for (const queue of this.queues.values()) {
       queue.logger.setLevel(level);
     }
   }
-  /**
-   * Отключает логгеры всех TaskQueue
-   */
   disableTaskQueueLoggers() {
     for (const queue of this.queues.values()) {
       queue.logger.setLevel("error");
     }
   }
-  /**
-   * Включает логгеры всех TaskController
-   * @param {string} [level='info'] - Уровень логирования
-   */
   enableTaskControllerLoggers(level = "info") {
     for (const task of this.tasks.values()) {
       task.logger.setLevel(level);
     }
   }
-  /**
-   * Отключает логгеры всех TaskController
-   */
   disableTaskControllerLoggers() {
     for (const task of this.tasks.values()) {
       task.logger.setLevel("error");
     }
   }
-  /**
-   * Включает логгеры для конкретной очереди
-   * @param {string} resourceId - Идентификатор ресурса очереди
-   * @param {string} [level='info'] - Уровень логирования
-   */
   enableTaskQueueLogger(resourceId, level = "info") {
-    const queue = this.queues.get(resourceId);
-    if (queue) {
-      queue.logger.setLevel(level);
-    }
+    this.queues.get(resourceId)?.logger.setLevel(level);
   }
-  /**
-   * Отключает логгеры для конкретной очереди
-   * @param {string} resourceId - Идентификатор ресурса очереди
-   */
   disableTaskQueueLogger(resourceId) {
-    const queue = this.queues.get(resourceId);
-    if (queue) {
-      queue.logger.setLevel("error");
-    }
+    this.queues.get(resourceId)?.logger.setLevel("error");
   }
-  /**
-   * Включает логгер для конкретной задачи
-   * @param {string} taskId - Идентификатор задачи
-   * @param {string} [level='info'] - Уровень логирования
-   */
   enableTaskControllerLogger(taskId, level = "info") {
-    const task = this.tasks.get(taskId);
-    if (task) {
-      task.logger.setLevel(level);
-    }
+    this.tasks.get(taskId)?.logger.setLevel(level);
   }
-  /**
-   * Отключает логгер для конкретной задачи
-   * @param {string} taskId - Идентификатор задачи
-   */
   disableTaskControllerLogger(taskId) {
-    const task = this.tasks.get(taskId);
-    if (task) {
-      task.logger.setLevel("error");
-    }
+    this.tasks.get(taskId)?.logger.setLevel("error");
   }
-  /**
-   * Включает все логгеры
-   * @param {string} [level='info'] - Уровень логирования
-   */
   enableAllLoggers(level = "info") {
     this.enablePollingManagerLogger(level);
     this.enableTaskQueueLoggers(level);
     this.enableTaskControllerLoggers(level);
   }
-  /**
-   * Отключает все логгеры
-   */
   disableAllLoggers() {
     this.disablePollingManagerLogger();
     this.disableTaskQueueLoggers();
     this.disableTaskControllerLoggers();
   }
-  /**
-   * Устанавливает уровень логирования для всех компонентов
-   * @param {string} level - Уровень логирования
-   */
   setLogLevelForAll(level) {
     this.logger.setLevel(level);
     for (const queue of this.queues.values()) {

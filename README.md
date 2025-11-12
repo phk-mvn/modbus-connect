@@ -3866,6 +3866,13 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.5.20 (2025-11-12)
+
+- Fixed a type mismatch (`string | null` vs `string | undefined`) in the `updateTask` method that caused a TypeScript compilation failure when updating a task with its `name` property set.
+- Implemented jitter in the exponential backoff strategy for task retries within `TaskController` to prevent the "thundering herd" problem under high load.
+- Performed a major internal refactoring of `TaskController` and `TaskQueue` to eliminate significant code duplication. Task execution, retry, and error handling logic has been centralized to improve maintainability and reduce the likelihood of future bugs.
+- Enhanced the reliability of the `updateTask` method to ensure atomic and safe replacement of task configurations, preventing potential race conditions.
+
 ### 2.5.11 (2025-11-05)
 
 - **TransportController** now manages transport creation internally, removing the need for factory.ts
