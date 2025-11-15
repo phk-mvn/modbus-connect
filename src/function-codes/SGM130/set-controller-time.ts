@@ -13,10 +13,8 @@ const RESPONSE_MIN_SIZE = 1;
  * @throws TypeError При некорректных значениях времени
  */
 export function buildSetControllerTimeRequest(time: ControllerTime): Uint8Array {
-  // Создаем буфер напрямую (без DataView)
   const buffer = new Uint8Array(REQUEST_SIZE);
 
-  // Заполняем данные напрямую (быстрее на 20-30%)
   buffer[0] = FUNCTION_CODE;
   buffer[1] = 0x00; // резерв
   buffer[2] = 0x00; // резерв
@@ -26,7 +24,6 @@ export function buildSetControllerTimeRequest(time: ControllerTime): Uint8Array 
   buffer[6] = time.day;
   buffer[7] = time.month;
 
-  // Little-endian для года (младший байт первый)
   buffer[8] = time.year & 0xff;
   buffer[9] = (time.year >> 8) & 0xff;
 
@@ -40,12 +37,10 @@ export function buildSetControllerTimeRequest(time: ControllerTime): Uint8Array 
  * @throws TypeError|Error При неверном формате ответа
  */
 export function parseSetControllerTimeResponse(pdu: Uint8Array): SetControllerTimeResponse {
-  // Быстрая проверка типа
   if (!(pdu instanceof Uint8Array)) {
     throw new TypeError(`Expected Uint8Array, got ${typeof pdu}`);
   }
 
-  // Проверка минимального размера и кода функции
   if (pdu.length < RESPONSE_MIN_SIZE || pdu[0] !== FUNCTION_CODE) {
     const receivedCode = pdu[0]?.toString(16).padStart(2, '0') || 'null';
     throw new Error(

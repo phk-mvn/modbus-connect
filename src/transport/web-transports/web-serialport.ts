@@ -64,6 +64,7 @@ import {
   DeviceStateHandler,
   ConnectionErrorType,
   PortStateHandler,
+  RSMode,
 } from '../../types/modbus-types.js';
 
 const WEB_SERIAL_CONSTANTS = {
@@ -199,10 +200,15 @@ class WebSerialTransport implements Transport {
       reconnectInterval: 3000,
       maxReconnectAttempts: Infinity,
       maxEmptyReadsBeforeReconnect: 10,
+      RSMode: options.RSMode || 'RS485',
       ...options,
     };
     this.readBuffer = new Uint8Array(0);
     this._operationMutex = new Mutex();
+  }
+
+  public getRSMode(): RSMode {
+    return this.options.RSMode;
   }
 
   public setDeviceStateHandler(handler: DeviceStateHandler): void {
@@ -508,9 +514,6 @@ class WebSerialTransport implements Transport {
               break;
             }
 
-            // === ГЛАВНОЕ ИЗМЕНЕНИЕ: УБРАНА ВСЯ ЛОГИКА С _emptyReadCount ===
-            // Единственная задача этого цикла - читать данные и складывать их в буфер.
-            // Он больше не принимает решений об отключении порта.
             if (value && value.length > 0) {
               if (
                 this.readBuffer.length + value.length >
@@ -529,7 +532,6 @@ class WebSerialTransport implements Transport {
               this.readBuffer = newBuffer;
             }
           } catch (readErr: unknown) {
-            // Эта логика остается, так как она обрабатывает РЕАЛЬНЫЕ ошибки порта
             if (this._readLoopAbortController.signal.aborted) {
               logger.debug('Read loop aborted');
               break;
@@ -645,9 +647,6 @@ class WebSerialTransport implements Transport {
             return resolve(data);
           }
 
-          // === ГЛАВНОЕ ИЗМЕНЕНИЕ: Логика идентична NodeSerialTransport ===
-          // Если за отведенное время данные не появились, возвращаем ошибку таймаута.
-          // Это ошибка устройства, а не порта.
           if (Date.now() - start > timeout) {
             return reject(
               new ModbusTimeoutError(`Read timeout: No data received within ${timeout}ms`)
@@ -744,11 +743,6 @@ class WebSerialTransport implements Transport {
       this._rejectConnection = null;
     }
 
-    // --- ГЛАВНЫЕ ИЗМЕНЕНИЯ ЗДЕСЬ ---
-    // Мы больше НЕ пытаемся закрыть порт и НЕ обнуляем this.port.
-    // Мы только очищаем внутреннее состояние и сообщаем об ошибке.
-    // Физическое закрытие порта произойдет только при вызове disconnect() или destroy().
-
     this.isOpen = false;
     this._isPortReady = false;
     this._readLoopActive = false;
@@ -769,7 +763,6 @@ class WebSerialTransport implements Transport {
 
     this._notifyPortDisconnected(ConnectionErrorType.ConnectionLost, reason);
 
-    // Логика переподключения остается, но она больше не зависит от isPhysicalDisconnect
     if (this._shouldReconnect && !this._isDisconnecting) {
       this._scheduleReconnect(new Error(reason));
     }

@@ -15,12 +15,10 @@ const RESPONSE_HEADER_SIZE = 2;
  * @returns Uint8Array
  */
 export function buildReadDiscreteInputsRequest(startAddress: number, quantity: number): Uint8Array {
-  // Быстрая проверка через побитовые операции
   if ((quantity | 0) !== quantity || quantity < MIN_QUANTITY || quantity > MAX_QUANTITY) {
     throw new RangeError(`Quantity must be integer ${MIN_QUANTITY}-${MAX_QUANTITY}`);
   }
 
-  // Используем ArrayBuffer + DataView
   const buffer = new ArrayBuffer(REQUEST_SIZE);
   const view = new DataView(buffer);
 
@@ -59,13 +57,11 @@ export function parseReadDiscreteInputsResponse(pdu: Uint8Array): ReadDiscreteIn
     throw new Error(`Invalid length: expected ${expectedLength}, got ${pduLength}`);
   }
 
-  // Получаем количество битов из PDU (первые 2 байта после function code)
   const quantity = (pdu[3]! << 8) | pdu[4]!; // Big-endian чтение
   if (quantity > byteCount * 8) {
     throw new Error(`Invalid quantity: ${quantity} exceeds byte capacity`);
   }
 
-  // Оптимизированное чтение битов
   const bits: ReadDiscreteInputsResponse = new Array(quantity);
   let bitIndex = 0;
   const dataStart = RESPONSE_HEADER_SIZE;
@@ -74,7 +70,6 @@ export function parseReadDiscreteInputsResponse(pdu: Uint8Array): ReadDiscreteIn
     const byte = pdu[dataStart + byteIndex]!;
     const maxBits = Math.min(8, quantity - bitIndex);
 
-    // Развернутый цикл для обработки битов
     if (maxBits > 0) bits[bitIndex++] = (byte & (1 << 0)) !== 0;
     if (maxBits > 1) bits[bitIndex++] = (byte & (1 << 1)) !== 0;
     if (maxBits > 2) bits[bitIndex++] = (byte & (1 << 2)) !== 0;

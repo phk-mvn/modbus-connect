@@ -58,7 +58,6 @@ function parsePacket(
   packet: Uint8Array,
   crcFn: (data: Uint8Array) => Uint8Array = crc16Modbus
 ): { slaveAddress: number; pdu: Uint8Array } {
-  // Ранний выход при коротком пакете
   if (!isUint8Array(packet) || packet.length < 4) {
     throw new Error('Invalid packet: too short');
   }

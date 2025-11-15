@@ -87,7 +87,6 @@ export function parseReadDeviceIdentificationResponse(
       throw new Error('Invalid object data length');
     }
 
-    // Декодируем строку напрямую из буфера
     result.objects[objectId] = TEXT_DECODER.decode(
       new Uint8Array(pdu.buffer, pdu.byteOffset + offset, length)
     );

@@ -41,7 +41,6 @@ class Logger {
   watchCallback = null;
   logRateLimit = 100;
   lastLogTime = 0;
-  // Кэшированные значения для производительности
   static FUNCTION_CODE_NAMES = /* @__PURE__ */ new Map([
     [import_constants.ModbusFunctionCode.READ_COILS, "READ_COILS"],
     [import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS, "READ_DISCRETE_INPUTS"],

@@ -7,6 +7,7 @@ import type {
   WebSerialTransportOptions,
   DeviceStateHandler,
   PortStateHandler,
+  RSMode, // <-- Убедись, что RSMode импортируется
 } from '../types/modbus-types.js';
 
 // ========== Типы ==========
@@ -17,6 +18,7 @@ interface TransportInfo {
   transport: Transport;
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
   slaveIds: number[];
+  rsMode: RSMode; // <-- ИЗМЕНЕНИЕ 1: Добавлено поле rsMode
   fallbacks: string[];
   createdAt: Date;
   lastError?: Error;
@@ -118,9 +120,10 @@ declare class TransportController {
   /**
    * Получить транспорт для конкретного slaveId.
    * @param slaveId - ID устройства
+   * @param requiredRSMode - Требуемый режим работы ('RS485' или 'RS232')
    * @returns Транспорт или null, если транспорт не найден
    */
-  getTransportForSlave(slaveId: number): Transport | null;
+  getTransportForSlave(slaveId: number, requiredRSMode: RSMode): Transport | null; // <-- ИЗМЕНЕНИЕ 2: Обновлена сигнатура
 
   /**
    * Назначить slaveId транспорту. Если транспорт уже обслуживает этот slaveId — игнорирует.

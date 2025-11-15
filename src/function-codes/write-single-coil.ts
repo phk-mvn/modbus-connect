@@ -24,7 +24,6 @@ function validateCoilAddress(address: number): void {
  * @param value - значение катушки
  */
 function validateCoilValue(value: boolean | number): void {
-  // Быстрая проверка булевых значений и 1/0
   if (typeof value === 'boolean' ? !value : value !== (value | 0)) {
     throw new TypeError(`Value must be boolean or 0/1, got ${typeof value} ${value}`);
   }
@@ -41,11 +40,9 @@ export function buildWriteSingleCoilRequest(address: number, value: boolean | nu
   validateCoilAddress(address);
   validateCoilValue(value);
 
-  // Создаем буфер и представление
   const buffer = new ArrayBuffer(PDU_SIZE);
   const view = new DataView(buffer);
 
-  // Заполняем PDU
   view.setUint8(0, FUNCTION_CODE);
   view.setUint16(1, address, false);
   view.setUint16(3, value ? COIL_ON : COIL_OFF, false);
@@ -76,7 +73,6 @@ export function parseWriteSingleCoilResponse(pdu: Uint8Array): WriteSingleCoilRe
     );
   }
 
-  // Используем оригинальный буфер без копирования
   const buffer = pdu.buffer || pdu;
   const byteOffset = pdu.byteOffset || 0;
   const view = new DataView(buffer, byteOffset, PDU_SIZE);

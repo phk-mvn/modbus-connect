@@ -19,12 +19,10 @@ export function buildReadHoldingRegistersRequest(
   startAddress: number,
   quantity: number
 ): Uint8Array {
-  // Быстрая проверка через побитовые операции
   if ((quantity | 0) !== quantity || quantity < MIN_QUANTITY || quantity > MAX_QUANTITY) {
     throw new RangeError(`Quantity must be integer ${MIN_QUANTITY}-${MAX_QUANTITY}`);
   }
 
-  // Используем ArrayBuffer + DataView
   const buffer = new ArrayBuffer(REQUEST_SIZE);
   const view = new DataView(buffer);
 
@@ -65,21 +63,17 @@ export function parseReadHoldingRegistersResponse(pdu: Uint8Array): ReadHoldingR
     return [];
   }
 
-  // Безопасное чтение с учетом выравнивания
   const buffer = pdu.buffer || pdu;
   const byteOffset = (pdu.byteOffset || 0) + RESPONSE_HEADER_SIZE;
   const registerCount = byteCount / UINT16_SIZE;
   const registers: number[] = new Array(registerCount);
 
-  // Проверяем выравнивание и используем оптимальный метод
   if (byteOffset % UINT16_SIZE === 0) {
-    // Оптимальный путь - прямое чтение через Uint16Array
     const uint16View = new Uint16Array(buffer, byteOffset, registerCount);
     for (let i = 0; i < registerCount; i++) {
       registers[i] = uint16View[i]!;
     }
   } else {
-    // Медленный путь - чтение через DataView
     const view = new DataView(
       buffer,
       byteOffset - RESPONSE_HEADER_SIZE,

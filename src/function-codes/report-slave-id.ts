@@ -14,7 +14,6 @@ const DATA_OFFSET = 4;
  * @returns Uint8Array
  */
 export function buildReportSlaveIdRequest(): Uint8Array {
-  // Используем статический Uint8Array для избежания лишних аллокаций
   const buffer = new ArrayBuffer(1);
   const view = new DataView(buffer);
   view.setUint8(0, FUNCTION_CODE);
@@ -53,16 +52,15 @@ export function parseReportSlaveIdResponse(pdu: Uint8Array): ReportSlaveIdRespon
     throw new Error(`Invalid byte count: expected ${expectedLength}, got ${pduLength}`);
   }
 
-  // Используем оригинальный буфер без копирования данных
   const buffer = pdu.buffer || pdu;
   const byteOffset = pdu.byteOffset || 0;
 
   return {
-    slaveId: pdu[SLAVE_ID_OFFSET]!, // Прямой доступ к Uint8Array быстрее, чем DataView для 8-битных значений
+    slaveId: pdu[SLAVE_ID_OFFSET]!,
     isRunning: pdu[RUN_STATUS_OFFSET]! === 0xff,
     data:
       byteCount > 2
         ? new Uint8Array(buffer, byteOffset + DATA_OFFSET, byteCount - 2)
-        : new Uint8Array(0), // Возвращаем пустой массив если нет данных
+        : new Uint8Array(0),
   };
 }

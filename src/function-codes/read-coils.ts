@@ -15,12 +15,10 @@ const RESPONSE_HEADER_SIZE = 2;
  * @returns Uint8Array
  */
 export function buildReadCoilsRequest(startAddress: number, quantity: number): Uint8Array {
-  // Быстрая проверка через побитовые операции
   if ((quantity | 0) !== quantity || quantity < MIN_QUANTITY || quantity > MAX_QUANTITY) {
     throw new RangeError(`Quantity must be integer ${MIN_QUANTITY}-${MAX_QUANTITY}`);
   }
 
-  // Используем ArrayBuffer + DataView
   const buffer = new ArrayBuffer(REQUEST_SIZE);
   const view = new DataView(buffer);
 
@@ -59,13 +57,11 @@ export function parseReadCoilsResponse(pdu: Uint8Array): ReadCoilsResponse {
     throw new Error(`Invalid length: expected ${expectedLength}, got ${pduLength}`);
   }
 
-  // Получаем фактическое количество битов из PDU
   const actualBitCount = (pdu[3]! << 8) | pdu[4]!; // Big-endian quantity
   if (actualBitCount > byteCount * 8) {
     throw new Error(`Invalid bit count: ${actualBitCount} exceeds byte capacity`);
   }
 
-  // Оптимизированное чтение битов
   const result: ReadCoilsResponse = new Array(actualBitCount);
   let resultIndex = 0;
   const dataStart = RESPONSE_HEADER_SIZE;
@@ -74,7 +70,6 @@ export function parseReadCoilsResponse(pdu: Uint8Array): ReadCoilsResponse {
     const byte = pdu[dataStart + byteIndex]!;
     const maxBit = Math.min(8, actualBitCount - resultIndex);
 
-    // Разворачиваем биты (LSB first)
     for (let bit = 0; bit < maxBit; bit++) {
       result[resultIndex++] = (byte & (1 << bit)) !== 0;
     }

@@ -21,10 +21,11 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
-var import_modbus_types = require("../types/modbus-types.js");
 var import_logger = __toESM(require("../logger.js"));
+var import_modbus_types = require("../types/modbus-types.js");
 var import_DeviceConnectionTracker = require("./trackers/DeviceConnectionTracker.js");
 var import_PortConnectionTracker = require("./trackers/PortConnectionTracker.js");
+var import_errors = require("../errors.js");
 class TransportController {
   transports = /* @__PURE__ */ new Map();
   slaveTransportMap = /* @__PURE__ */ new Map();
@@ -66,6 +67,13 @@ class TransportController {
     if (this.transports.has(id)) {
       throw new Error(`Transport with id "${id}" already exists`);
     }
+    const rsMode = options.RSMode ?? "RS485";
+    const slaveIds = options.slaveIds || [];
+    if (rsMode === "RS232" && slaveIds.length > 1) {
+      throw new import_errors.RSModeConstraintError(
+        `Transport "${id}" with RSMode 'RS232' cannot be assigned more than one device. Provided ${slaveIds.length} devices.`
+      );
+    }
     let transport;
     try {
       switch (type) {
@@ -85,7 +93,8 @@ class TransportController {
             "writeTimeout",
             "maxBufferSize",
             "reconnectInterval",
-            "maxReconnectAttempts"
+            "maxReconnectAttempts",
+            "RSMode"
           ];
           for (const key of allowedNodeKeys) {
             if (key in options) {
@@ -96,7 +105,8 @@ class TransportController {
           break;
         }
         case "web": {
-          const port = options.port;
+          const webOptionsIn = options;
+          const port = webOptionsIn.port;
           if (!port) {
             throw new Error('Missing "port" option for web transport');
           }
@@ -136,11 +146,12 @@ class TransportController {
             "writeTimeout",
             "reconnectInterval",
             "maxReconnectAttempts",
-            "maxEmptyReadsBeforeReconnect"
+            "maxEmptyReadsBeforeReconnect",
+            "RSMode"
           ];
           for (const key of allowedWebKeys) {
-            if (key in options) {
-              webOptions[key] = options[key];
+            if (key in webOptionsIn) {
+              webOptions[key] = webOptionsIn[key];
             }
           }
           this.logger.debug("Creating WebSerialTransport with provided port");
@@ -154,7 +165,15 @@ class TransportController {
       this.logger.error(`Failed to create transport of type "${type}": ${err.message}`);
       throw err;
     }
-    const slaveIds = options.slaveIds || [];
+    const seenSlaveIds = /* @__PURE__ */ new Set();
+    for (const slaveId of slaveIds) {
+      if (seenSlaveIds.has(slaveId)) {
+        throw new Error(
+          `Duplicate slave ID ${slaveId} provided for transport "${id}". Each slave ID must be unique per transport.`
+        );
+      }
+      seenSlaveIds.add(slaveId);
+    }
     const fallbacks = options.fallbacks || [];
     const info = {
       id,
@@ -162,6 +181,7 @@ class TransportController {
       transport,
       status: "disconnected",
       slaveIds,
+      rsMode: transport.getRSMode(),
       fallbacks,
       createdAt: /* @__PURE__ */ new Date(),
       reconnectAttempts: 0,
@@ -294,11 +314,20 @@ class TransportController {
     if (!info) {
       throw new Error(`Transport with id "${transportId}" not found`);
     }
-    if (!info.slaveIds.includes(slaveId)) {
-      info.slaveIds.push(slaveId);
-      this._updateSlaveTransportMap(transportId, [slaveId]);
-      this.logger.info(`Assigned slaveId ${slaveId} to transport "${transportId}"`);
+    if (info.rsMode === "RS232" && info.slaveIds.length >= 1) {
+      const existingSlaveId = info.slaveIds[0];
+      throw new import_errors.RSModeConstraintError(
+        `Cannot assign slaveId ${slaveId} to transport "${transportId}". It is in 'RS232' mode and already manages device ${existingSlaveId}.`
+      );
     }
+    if (info.slaveIds.includes(slaveId)) {
+      throw new Error(
+        `Cannot assign slave ID ${slaveId}". The transport is already managing this ID.`
+      );
+    }
+    info.slaveIds.push(slaveId);
+    this._updateSlaveTransportMap(transportId, [slaveId]);
+    this.logger.info(`Assigned slaveId ${slaveId} to transport "${transportId}"`);
   }
   /**
    * Перезагружает транспорт с новыми опциями.
@@ -314,81 +343,26 @@ class TransportController {
     try {
       switch (info.type) {
         case "node": {
-          const path = options.port || options.path;
+          const nodeOptionsIn = options;
+          const path = nodeOptionsIn.port || nodeOptionsIn.path;
           if (!path) {
             throw new Error('Missing "port" (or "path") option for node transport');
           }
           const NodeSerialTransport = (await import("./node-transports/node-serialport.js")).default;
-          const nodeOptions = {};
-          const allowedNodeKeys = [
-            "baudRate",
-            "dataBits",
-            "stopBits",
-            "parity",
-            "readTimeout",
-            "writeTimeout",
-            "maxBufferSize",
-            "reconnectInterval",
-            "maxReconnectAttempts"
-          ];
-          for (const key of allowedNodeKeys) {
-            if (key in options) {
-              nodeOptions[key] = options[key];
-            }
-          }
-          newTransport = new NodeSerialTransport(path, nodeOptions);
+          newTransport = new NodeSerialTransport(path, nodeOptionsIn);
           break;
         }
         case "web": {
-          const port = options.port;
+          const webOptionsIn = options;
+          const port = webOptionsIn.port;
           if (!port) {
             throw new Error('Missing "port" option for web transport');
           }
           const WebSerialTransport = (await import("./web-transports/web-serialport.js")).default;
           const portFactory = async () => {
-            this.logger.debug("WebSerialTransport portFactory: Returning provided port instance");
-            try {
-              if (port.readable || port.writable) {
-                this.logger.debug(
-                  "WebSerialTransport portFactory: Port seems to be in use, trying to close..."
-                );
-                try {
-                  await port.close();
-                  this.logger.debug("WebSerialTransport portFactory: Existing port closed");
-                } catch (closeErr) {
-                  this.logger.warn(
-                    "WebSerialTransport portFactory: Error closing existing port (might be already closed or broken):",
-                    closeErr.message
-                  );
-                }
-              }
-            } catch (err) {
-              this.logger.error(
-                "WebSerialTransport portFactory: Failed to prepare existing port for reuse:",
-                err
-              );
-            }
             return port;
           };
-          const webOptions = {};
-          const allowedWebKeys = [
-            "baudRate",
-            "dataBits",
-            "stopBits",
-            "parity",
-            "readTimeout",
-            "writeTimeout",
-            "reconnectInterval",
-            "maxReconnectAttempts",
-            "maxEmptyReadsBeforeReconnect"
-          ];
-          for (const key of allowedWebKeys) {
-            if (key in options) {
-              webOptions[key] = options[key];
-            }
-          }
-          this.logger.debug("Creating WebSerialTransport with provided port");
-          newTransport = new WebSerialTransport(portFactory, webOptions);
+          newTransport = new WebSerialTransport(portFactory, webOptionsIn);
           break;
         }
         default:
@@ -417,6 +391,7 @@ class TransportController {
       await portTracker.setHandler(portHandler);
     }
     info.transport = newTransport;
+    info.rsMode = newTransport.getRSMode();
     if (wasConnected) {
       await this.connectTransport(id);
     }
@@ -439,27 +414,32 @@ class TransportController {
    * Получить транспорт для конкретного slaveId.
    * Использует стратегию балансировки или fallback.
    */
-  getTransportForSlave(slaveId) {
+  getTransportForSlave(slaveId, requiredRSMode) {
     const transportIds = this.slaveTransportMap.get(slaveId);
-    if (!transportIds || transportIds.length === 0) {
-      for (const [id, info] of this.transports) {
-        if (info.status === "connected") {
-          this.logger.debug(`Selected fallback transport ${id} for slave ${slaveId}`);
+    if (transportIds && transportIds.length > 0) {
+      for (const id of transportIds) {
+        const info = this.transports.get(id);
+        if (info && info.status === "connected" && info.rsMode === requiredRSMode) {
           return info.transport;
         }
       }
-      this.logger.warn(`No connected transports found for slave ${slaveId}`);
+      this.logger.warn(`Device ${slaveId} is assigned to a transport with mismatched RSMode.`);
       return null;
     }
-    switch (this.loadBalancerStrategy) {
-      case "round-robin":
-        return this._getTransportRoundRobin(transportIds);
-      case "sticky":
-        return this._getTransportSticky(slaveId, transportIds);
-      case "first-available":
-      default:
-        return this._getTransportFirstAvailable(transportIds);
+    for (const [id, info] of this.transports) {
+      if (info.status === "connected" && info.rsMode === requiredRSMode) {
+        if (requiredRSMode === "RS232" && info.slaveIds.length === 0) {
+          return info.transport;
+        }
+        if (requiredRSMode === "RS485") {
+          return info.transport;
+        }
+      }
     }
+    this.logger.warn(
+      `No connected transport found for slave ${slaveId} with required RSMode ${requiredRSMode}`
+    );
+    return null;
   }
   /**
    * Получить транспорт по стратегии round-robin

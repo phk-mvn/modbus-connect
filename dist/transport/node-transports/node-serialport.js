@@ -134,8 +134,12 @@ class NodeSerialTransport {
       maxBufferSize: NODE_SERIAL_CONSTANTS.DEFAULT_MAX_BUFFER_SIZE,
       reconnectInterval: 3e3,
       maxReconnectAttempts: Infinity,
+      RSMode: options.RSMode || "RS485",
       ...options
     };
+  }
+  getRSMode() {
+    return this.options.RSMode;
   }
   setDeviceStateHandler(handler) {
     this._deviceStateHandler = handler;

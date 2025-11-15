@@ -44,11 +44,9 @@ export function buildWriteMultipleRegistersRequest(
   startAddress: number,
   values: number[]
 ): Uint8Array {
-  // Валидация параметров
   validateRegisterAddress(startAddress);
 
   const quantity = values.length;
-  // Проверка длины массива
   if (
     !Array.isArray(values) ||
     !Number.isInteger(quantity) ||
@@ -58,7 +56,6 @@ export function buildWriteMultipleRegistersRequest(
     throw new RangeError(`Values count must be ${MIN_REGISTERS}-${MAX_REGISTERS}, got ${quantity}`);
   }
 
-  // Проверка каждого значения в массиве
   for (let i = 0; i < quantity; i++) {
     validateRegisterValue(values[i]!);
   }
@@ -68,13 +65,11 @@ export function buildWriteMultipleRegistersRequest(
   const view = new DataView(buffer);
   const pdu = new Uint8Array(buffer);
 
-  // Заполняем заголовок PDU
   view.setUint8(0, FUNCTION_CODE);
   view.setUint16(1, startAddress, false);
   view.setUint16(3, quantity, false);
   view.setUint8(5, byteCount);
 
-  // Оптимизированная запись значений
   for (let i = 0; i < quantity; i++) {
     view.setUint16(REQUEST_HEADER_SIZE + i * UINT16_SIZE, values[i]!, false);
   }
@@ -107,7 +102,6 @@ export function parseWriteMultipleRegistersResponse(
     );
   }
 
-  // Используем оригинальный буфер без копирования
   const buffer = pdu.buffer || pdu;
   const byteOffset = pdu.byteOffset || 0;
   const view = new DataView(buffer, byteOffset, RESPONSE_SIZE);

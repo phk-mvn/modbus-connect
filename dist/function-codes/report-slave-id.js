@@ -58,10 +58,8 @@ function parseReportSlaveIdResponse(pdu) {
   const byteOffset = pdu.byteOffset || 0;
   return {
     slaveId: pdu[SLAVE_ID_OFFSET],
-    // Прямой доступ к Uint8Array быстрее, чем DataView для 8-битных значений
     isRunning: pdu[RUN_STATUS_OFFSET] === 255,
     data: byteCount > 2 ? new Uint8Array(buffer, byteOffset + DATA_OFFSET, byteCount - 2) : new Uint8Array(0)
-    // Возвращаем пустой массив если нет данных
   };
 }
 // Annotate the CommonJS export names for ESM import in node:

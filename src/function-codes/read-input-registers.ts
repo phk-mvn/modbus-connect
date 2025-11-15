@@ -16,7 +16,6 @@ const UINT16_SIZE = 2;
  * @returns Uint8Array
  */
 export function buildReadInputRegistersRequest(startAddress: number, quantity: number): Uint8Array {
-  // Быстрая проверка через побитовые операции
   if ((quantity | 0) !== quantity || quantity < MIN_QUANTITY || quantity > MAX_QUANTITY) {
     throw new RangeError(`Quantity must be integer ${MIN_QUANTITY}-${MAX_QUANTITY}`);
   }
@@ -71,7 +70,6 @@ export function parseReadInputRegistersResponse(pdu: Uint8Array): ReadInputRegis
   const byteOffset = (pdu.byteOffset || 0) + RESPONSE_HEADER_SIZE;
   const registerCount = byteCount / UINT16_SIZE;
 
-  // Используем Uint16Array, если данные выровнены, иначе DataView
   if (byteOffset % UINT16_SIZE === 0) {
     const uint16View = new Uint16Array(buffer, byteOffset, registerCount);
     return Array.from(uint16View);

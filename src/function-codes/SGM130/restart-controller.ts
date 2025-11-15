@@ -9,7 +9,6 @@ const FUNCTION_CODE = 0x5c;
  * @returns Uint8Array - PDU запроса (ровно 1 байт)
  */
 export function buildRestartControllerRequest(): Uint8Array {
-  // Используем статический буфер для повторного использования
   const request = new Uint8Array(1);
   request[0] = FUNCTION_CODE;
   return request;
@@ -23,10 +22,9 @@ export function buildRestartControllerRequest(): Uint8Array {
 export function parseRestartControllerResponse(
   pdu: Uint8Array | null = null
 ): RestartControllerResponse {
-  // Оптимизированная проверка на неожиданный ответ
   if (pdu?.length) {
     const warning = `Unexpected ${pdu.length}-byte response for restart command`;
-    return { success: true, warning }; // Все равно считаем успешным, но с предупреждением
+    return { success: true, warning };
   }
   return { success: true };
 }

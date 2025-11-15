@@ -21,7 +21,6 @@ export function buildWriteMultipleCoilsRequest(
 ): Uint8Array {
   const valueCount = values.length;
 
-  // Быстрая проверка через побитовые операции
   if (
     !Array.isArray(values) ||
     (valueCount | 0) !== valueCount ||
@@ -36,13 +35,11 @@ export function buildWriteMultipleCoilsRequest(
   const view = new DataView(buffer);
   const pdu = new Uint8Array(buffer);
 
-  // Записываем заголовок
   view.setUint8(0, FUNCTION_CODE);
   view.setUint16(1, startAddress, false);
   view.setUint16(3, valueCount, false);
   view.setUint8(5, byteCount);
 
-  // Оптимизированная упаковка битов с предварительным вычислением границ
   for (let byteIndex = 0; byteIndex < byteCount; byteIndex++) {
     let byteValue = 0;
     const startBit = byteIndex * 8;
@@ -82,7 +79,6 @@ export function parseWriteMultipleCoilsResponse(pdu: Uint8Array): WriteMultipleC
     );
   }
 
-  // Используем оригинальный буфер без копирования
   const buffer = pdu.buffer || pdu;
   const byteOffset = pdu.byteOffset || 0;
   const view = new DataView(buffer, byteOffset, RESPONSE_SIZE);

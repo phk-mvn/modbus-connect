@@ -19,15 +19,12 @@ export function buildReadFileLengthRequest(filename: string): Uint8Array {
   const nameBytes = textEncoder.encode(filename);
   const nameLength = nameBytes.length;
 
-  // Быстрая проверка длины
   if (nameLength > MAX_FILENAME_LENGTH) {
     throw new Error(`Filename exceeds ${MAX_FILENAME_LENGTH} bytes`);
   }
 
-  // Создаем буфер сразу нужного размера (без DataView)
   const pdu = new Uint8Array(2 + nameLength + 1);
 
-  // Заполняем данные напрямую (быстрее, чем через DataView)
   pdu[0] = FUNCTION_CODE;
   pdu[1] = nameLength;
   pdu.set(nameBytes, 2);
@@ -47,7 +44,6 @@ export function parseReadFileLengthResponse(pdu: Uint8Array): ReadFileLengthResp
     throw new TypeError(`Expected Uint8Array, got ${typeof pdu}`);
   }
 
-  // Проверка размера и кода функции одним сравнением
   if (pdu.length !== RESPONSE_SIZE || pdu[0] !== FUNCTION_CODE) {
     const receivedCode = pdu[0]?.toString(16).padStart(2, '0') || 'null';
     throw new Error(
@@ -55,7 +51,6 @@ export function parseReadFileLengthResponse(pdu: Uint8Array): ReadFileLengthResp
     );
   }
 
-  // Оптимальное чтение uint32 (выровненный доступ)
   const buffer = pdu.buffer || pdu;
   const byteOffset = pdu.byteOffset || 0;
   let length: ReadFileLengthResponse;

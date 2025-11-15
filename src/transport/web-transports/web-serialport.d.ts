@@ -7,6 +7,7 @@ import {
   DeviceStateHandler,
   PortStateHandler,
   ConnectionErrorType,
+  RSMode, // <-- Убедись, что RSMode импортируется
 } from '../../types/modbus-types.js';
 
 /**
@@ -37,6 +38,11 @@ declare class WebSerialTransport implements Transport {
   read(length: number, timeout?: number): Promise<Uint8Array>;
   flush(): Promise<void>;
   destroy(): void;
+
+  /**
+   * Возвращает режим работы транспорта (RS485 или RS232).
+   */
+  getRSMode(): RSMode; // <-- ИЗМЕНЕНИЕ: Добавлен недостающий метод
 
   // === Обработчики состояния ===
   /**

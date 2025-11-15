@@ -63,6 +63,7 @@ import {
   DeviceStateHandler,
   ConnectionErrorType,
   PortStateHandler,
+  RSMode,
 } from '../../types/modbus-types.js';
 
 // ========== CONSTANTS ==========
@@ -191,8 +192,13 @@ class NodeSerialTransport implements Transport {
       maxBufferSize: NODE_SERIAL_CONSTANTS.DEFAULT_MAX_BUFFER_SIZE,
       reconnectInterval: 3000,
       maxReconnectAttempts: Infinity,
+      RSMode: options.RSMode || 'RS485',
       ...options,
     };
+  }
+
+  public getRSMode(): RSMode {
+    return this.options.RSMode;
   }
 
   public setDeviceStateHandler(handler: DeviceStateHandler): void {
@@ -548,14 +554,12 @@ class NodeSerialTransport implements Transport {
     try {
       return new Promise((resolve, reject) => {
         const check = () => {
-          // Проверяем, не закрылся ли порт по-настоящему (например, физически)
           if (!this.isOpen || !this.port?.isOpen) {
             return reject(new NodeSerialReadError('Port is closed'));
           }
           if (this._isFlushing) {
             return reject(new ModbusFlushError());
           }
-          // Если в буфере есть нужные данные, возвращаем их
           if (this.readBuffer.length >= length) {
             const data = sliceUint8Array(this.readBuffer, 0, length);
             this.readBuffer = sliceUint8Array(this.readBuffer, length);
@@ -565,19 +569,12 @@ class NodeSerialTransport implements Transport {
             return resolve(data);
           }
 
-          // === ГЛАВНОЕ ИЗМЕНЕНИЕ ===
-          // Мы больше НЕ считаем пустые чтения ошибкой порта.
-          // Если время ожидания истекло, мы просто возвращаем ошибку таймаута.
-          // ModbusClient поймает ее и поймет, что КОНКРЕТНОЕ УСТРОЙСТВО не ответило.
           if (Date.now() - start > timeout) {
-            // Вместо сложной логики с `emptyAttempts` просто отдаем таймаут.
-            // Это самая правильная и универсальная ошибка для "нет ответа".
             return reject(
               new ModbusTimeoutError(`Read timeout: No data received within ${timeout}ms`)
             );
           }
 
-          // Если данных еще нет и таймаут не истек, проверяем снова через небольшой интервал.
           setTimeout(check, NODE_SERIAL_CONSTANTS.POLL_INTERVAL_MS);
         };
         check();

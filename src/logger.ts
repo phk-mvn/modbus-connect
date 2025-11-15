@@ -81,7 +81,6 @@ class Logger {
   private logRateLimit: number = 100;
   private lastLogTime: number = 0;
 
-  // Кэшированные значения для производительности
   private static readonly FUNCTION_CODE_NAMES = new Map<ModbusFunctionCode, string>([
     [ModbusFunctionCode.READ_COILS, 'READ_COILS'],
     [ModbusFunctionCode.READ_DISCRETE_INPUTS, 'READ_DISCRETE_INPUTS'],
@@ -134,7 +133,6 @@ class Logger {
     if (this.logFormat.includes('timestamp')) headerParts.push(`[${this.getTimestamp()}]`);
     if (this.logFormat.includes('level')) headerParts.push(`[${level.toUpperCase()}]`);
 
-    // Добавляем имя логгера как отдельное поле без префикса
     if (this.logFormat.includes('logger') && context['logger']) {
       const formatter: (value: unknown) => string =
         this.customFormatters['logger'] || (v => `[${v}]`);
@@ -300,7 +298,6 @@ class Logger {
   private splitArgsAndContext(args: unknown[]): { args: unknown[]; context: LogContext } {
     if (args.length > 1) {
       const lastArg = args[args.length - 1];
-      // Проверяем, является ли последний аргумент объектом или массивом
       if (typeof lastArg === 'object' && lastArg !== null) {
         const context = args.pop() as LogContext;
         return { args, context };

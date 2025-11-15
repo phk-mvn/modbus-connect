@@ -299,7 +299,6 @@ class TaskController {
 
     const release = await this.transportMutex.acquire();
     try {
-      // Очистка буфера transport перед выполнением
       const firstFunction = this.fn[0];
       if (firstFunction && typeof firstFunction === 'function') {
         const result = firstFunction();
@@ -329,7 +328,6 @@ class TaskController {
           if (this.paused) {
             this.logger.debug('Task paused during execution', { id: this.id } as LogContext);
             this.executionInProgress = false;
-            // Выходим из цикла, так как задача на паузе
             return;
           }
 
@@ -352,10 +350,10 @@ class TaskController {
             fnSuccess = true;
             this.stats.successes++;
             this.stats.lastError = null;
-            break; // Успешное выполнение, выходим из цикла ретраев
+            break;
           } catch (err: unknown) {
             const error = err instanceof Error ? err : new PollingManagerError(String(err));
-            this._logSpecificError(error); // Логирование специфичных ошибок Modbus
+            this._logSpecificError(error);
             retryCount++;
             this.stats.totalErrors++;
             this.stats.retries++;
@@ -377,7 +375,6 @@ class TaskController {
               const baseDelay = isFlushedError
                 ? 50
                 : this.backoffDelay * Math.pow(2, retryCount - 1);
-              // Добавляем джиттер (случайную задержку) для предотвращения "thundering herd"
               const jitter = Math.random() * baseDelay * 0.5;
               const delay = baseDelay + jitter;
 
@@ -435,7 +432,6 @@ class TaskController {
         this.scheduleRun();
       } else if (this.loopRunning) {
         this.logger.debug('Scheduling next run (loop)', { id: this.id } as LogContext);
-        // _runLoop сам управляет своим циклом, поэтому здесь ничего делать не нужно.
       }
     };
 
@@ -1046,7 +1042,6 @@ class PollingManager {
       throw error;
     }
 
-    // Собираем все старые опции, чтобы не потерять их при частичном обновлении
     const oldOptions: PollingTaskOptions = {
       id: oldTask.id,
       resourceId: oldTask.resourceId,
@@ -1063,7 +1058,7 @@ class PollingManager {
       shouldRun: oldTask.shouldRun,
       onSuccess: oldTask.onSuccess,
       onFailure: oldTask.onFailure,
-      name: oldTask.name ?? undefined, // ИСПРАВЛЕНИЕ: Преобразуем null в undefined
+      name: oldTask.name ?? undefined,
       maxRetries: oldTask.maxRetries,
       backoffDelay: oldTask.backoffDelay,
       taskTimeout: oldTask.taskTimeout,
@@ -1114,11 +1109,9 @@ class PollingManager {
     if (task) {
       this.logger.info('Restarting task', { id } as LogContext);
       task.stop();
-      // Даем время на полную остановку асинхронных операций
       setTimeout(() => {
         const freshTask = this.tasks.get(id);
         if (freshTask) {
-          // Убедимся, что задача не была удалена
           if (freshTask.resourceId) {
             freshTask.scheduleRun();
           } else {

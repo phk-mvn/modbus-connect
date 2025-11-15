@@ -42,7 +42,6 @@ var import_errors = require("./errors.js");
 var import_constants = require("./constants/constants.js");
 var import_packet_builder = require("./packet-builder.js");
 var import_logger = __toESM(require("./logger.js"));
-var import_diagnostics = require("./utils/diagnostics.js");
 var import_crc = require("./utils/crc.js");
 var import_modbus_types = require("./types/modbus-types.js");
 const crcAlgorithmMap = {
@@ -64,12 +63,11 @@ logger.setLevel("error");
 class ModbusClient {
   transportController;
   slaveId;
+  rsMode;
   defaultTimeout;
   retryCount;
   retryDelay;
   echoEnabled;
-  diagnosticsEnabled;
-  diagnostics;
   crcFunc;
   _mutex;
   static FUNCTION_CODE_MAP = /* @__PURE__ */ new Map([
@@ -110,12 +108,11 @@ class ModbusClient {
     }
     this.transportController = transportController;
     this.slaveId = slaveId;
+    this.rsMode = options.RSMode ?? "RS485";
     this.defaultTimeout = options.timeout ?? 2e3;
     this.retryCount = options.retryCount ?? 0;
     this.retryDelay = options.retryDelay ?? 100;
     this.echoEnabled = options.echoEnabled ?? false;
-    this.diagnosticsEnabled = !!options.diagnostics;
-    this.diagnostics = this.diagnosticsEnabled ? new import_diagnostics.Diagnostics({ loggerName: "ModbusClient" }) : new import_diagnostics.Diagnostics({ loggerName: "Noop" });
     const algorithm = options.crcAlgorithm ?? "crc16Modbus";
     const crcFunc = crcAlgorithmMap[algorithm];
     if (!crcFunc) {
@@ -129,7 +126,7 @@ class ModbusClient {
    * Returns the effective transport for the client
    */
   get _effectiveTransport() {
-    return this.transportController.getTransportForSlave(this.slaveId);
+    return this.transportController.getTransportForSlave(this.slaveId, this.rsMode);
   }
   /**
    * Enables the ModbusClient logger
@@ -414,10 +411,6 @@ class ModbusClient {
       const funcCode = pdu[0];
       const funcCodeEnum = ModbusClient.FUNCTION_CODE_MAP.get(funcCode) ?? funcCode;
       const slaveId = this.slaveId;
-      if (this.diagnosticsEnabled) {
-        this.diagnostics.recordRequest(slaveId, funcCode);
-        this.diagnostics.recordFunctionCall(funcCode, slaveId);
-      }
       let lastError;
       const startTime = Date.now();
       for (let attempt = 0; attempt <= this.retryCount; attempt++) {
@@ -435,9 +428,6 @@ class ModbusClient {
             funcCode
           });
           const packet = (0, import_packet_builder.buildPacket)(slaveId, pdu, this.crcFunc);
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
-          }
           await transport.write(packet);
           logger.debug("Packet written to transport", { bytes: packet.length, slaveId, funcCode });
           if (this.echoEnabled) {
@@ -458,9 +448,6 @@ class ModbusClient {
           }
           if (ignoreNoResponse) {
             const elapsed2 = Date.now() - startTime;
-            if (this.diagnosticsEnabled) {
-              this.diagnostics.recordSuccess(elapsed2, slaveId, funcCode);
-            }
             logger.info("Request sent, no response expected", {
               slaveId,
               funcCode,
@@ -469,9 +456,6 @@ class ModbusClient {
             return void 0;
           }
           const response = await this._readPacket(timeLeft, pdu);
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordDataReceived(response.length, slaveId, funcCode);
-          }
           const elapsed = Date.now() - startTime;
           const { slaveAddress, pdu: responsePdu } = (0, import_packet_builder.parsePacket)(response, this.crcFunc);
           if (slaveAddress !== slaveId) {
@@ -493,9 +477,6 @@ class ModbusClient {
               responseTime: elapsed
             });
             throw new import_errors.ModbusExceptionError(responseFuncCode & 127, modbusExceptionCode);
-          }
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
           }
           logger.info("Response received", {
             slaveId,
@@ -530,15 +511,6 @@ class ModbusClient {
               });
             }
           }
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordError(err instanceof Error ? err : new Error(String(err)), {
-              code: errorCode,
-              responseTimeMs: elapsed,
-              slaveId,
-              funcCode,
-              exceptionCode: err instanceof import_errors.ModbusExceptionError ? err.exceptionCode : null
-            });
-          }
           this._setAutoLoggerContext(funcCodeEnum);
           logger.warn(
             `Attempt #${attempt + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -564,15 +536,9 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed
             });
-            if (this.diagnosticsEnabled) {
-              this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
-            }
             return void 0;
           }
           if (attempt < this.retryCount) {
-            if (this.diagnosticsEnabled) {
-              this.diagnostics.recordRetry(1, slaveId, funcCode);
-            }
             let delay = this.retryDelay;
             if (isFlushedError) {
               delay = Math.min(50, delay);

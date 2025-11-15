@@ -95,7 +95,6 @@ export class PortConnectionTracker {
         timestamp: Date.now(),
       };
 
-      // Немедленно отправляем уведомление
       this._handler?.(true, this._state.slaveIds);
     } finally {
       release();
@@ -200,7 +199,6 @@ export class PortConnectionTracker {
   }
 }
 
-// Утилита для сравнения массивов
 function arraysEqual(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false;
   const sortedA = [...a].sort((x, y) => x - y);

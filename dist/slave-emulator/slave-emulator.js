@@ -57,7 +57,6 @@ class SlaveEmulator {
     }
     this.connected = false;
   }
-  // Методы для управления логгером
   enableLogger() {
     if (!this.loggerEnabled) {
       this.loggerEnabled = true;
@@ -84,7 +83,6 @@ class SlaveEmulator {
     this.connected = false;
     this.logger.info("Disconnected", { slaveAddress: this.slaveAddress });
   }
-  // Валидация методов
   _validateAddress(address) {
     if (typeof address !== "number" || address < 0 || address > 65535) {
       throw new import_errors.ModbusInvalidAddressError(address);
@@ -1197,7 +1195,6 @@ class SlaveEmulator {
           received: `0x${crcReceived.toString(16)}`,
           calculated: `0x${crcCalculated.toString(16)}`,
           frame: Buffer.from(buffer).toString("hex"),
-          // Buffer.from может принимать Uint8Array
           slaveAddress: this.slaveAddress
         });
         throw new import_errors.ModbusCRCError("CRC mismatch detected");

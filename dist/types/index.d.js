@@ -19,7 +19,6 @@ __reExport(index_d_exports, require("./client.d.js"), module.exports);
 __reExport(index_d_exports, require("./polling-manager.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/transport.d.js"), module.exports);
 __reExport(index_d_exports, require("./logger.d.js"), module.exports);
-__reExport(index_d_exports, require("./diagnostics.d.js"), module.exports);
 __reExport(index_d_exports, require("./errors.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/web-transports/web-serialport.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/node-transports/node-serialport.d.js"), module.exports);
@@ -33,7 +32,6 @@ __reExport(index_d_exports, require("../transport/transport-controller.d.js"), m
   ...require("./polling-manager.d.js"),
   ...require("../transport/transport.d.js"),
   ...require("./logger.d.js"),
-  ...require("./diagnostics.d.js"),
   ...require("./errors.d.js"),
   ...require("../transport/web-transports/web-serialport.d.js"),
   ...require("../transport/node-transports/node-serialport.d.js"),

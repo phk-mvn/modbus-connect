@@ -6,7 +6,6 @@ const FUNCTION_CODE = 0x6e;
 const EXPECTED_RESPONSE_SIZE = 10;
 const DATA_OFFSET = 3;
 
-// Оптимизированный объект смещений (для защиты от изменений)
 const TIME_FIELDS_OFFSET = Object.freeze({
   SECONDS: 0,
   MINUTES: 1,
@@ -22,7 +21,6 @@ const TIME_FIELDS_OFFSET = Object.freeze({
  * @returns Uint8Array - 1 байт (код функции)
  */
 export function buildGetControllerTimeRequest(): Uint8Array {
-  // Используем статический массив для исключения лишних аллокаций
   const request = new Uint8Array([FUNCTION_CODE]);
   return request;
 }
@@ -41,12 +39,10 @@ export function buildGetControllerTimeRequest(): Uint8Array {
  * @throws TypeError|Error - при неверном формате данных
  */
 export function parseGetControllerTimeResponse(pdu: Uint8Array): GetControllerTimeResponse {
-  // Быстрая проверка типа
   if (!(pdu instanceof Uint8Array)) {
     throw new TypeError(`Expected Uint8Array, got ${typeof pdu}`);
   }
 
-  // Проверка размера и кода функции в одном условии
   if (pdu.length !== EXPECTED_RESPONSE_SIZE || pdu[0] !== FUNCTION_CODE) {
     const hexCode = pdu[0]?.toString(16).padStart(2, '0') || 'null';
     throw new Error(
@@ -54,15 +50,12 @@ export function parseGetControllerTimeResponse(pdu: Uint8Array): GetControllerTi
     );
   }
 
-  // Доступ к буферу без копирования
   const buffer = pdu.buffer || pdu;
   const byteOffset = (pdu.byteOffset || 0) + DATA_OFFSET;
 
-  // Используем DataView только если нужно (проверка выравнивания)
   let seconds, minutes, hours, day, month, year;
 
   if (byteOffset % 1 === 0) {
-    // Проверка выравнивания для Uint8Array
     const dataView = new Uint8Array(buffer, byteOffset, 7);
     seconds = dataView[TIME_FIELDS_OFFSET.SECONDS]!;
     minutes = dataView[TIME_FIELDS_OFFSET.MINUTES]!;

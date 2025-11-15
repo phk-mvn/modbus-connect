@@ -6,16 +6,12 @@ import { RegisterType } from '../constants/constants.js';
 // ! Типы для функций чтения Modbus
 // !=============================================================================
 
-/** Ответ на запрос чтения coils (coils) */
 export type ReadCoilsResponse = boolean[];
 
-/** Ответ на запрос чтения дискретных входов (discrete inputs) */
 export type ReadDiscreteInputsResponse = boolean[];
 
-/** Ответ на запрос чтения holding регистров (holding registers) */
 export type ReadHoldingRegistersResponse = number[];
 
-/** Ответ на запрос чтения input регистров (input registers) */
 export type ReadInputRegistersResponse = number[];
 
 // !=============================================================================
@@ -116,6 +112,7 @@ export type SetControllerTimeResponse = boolean;
 // !=============================================================================
 // ! Интерфейсы для транспорта
 // !=============================================================================
+export type RSMode = 'RS485' | 'RS232';
 
 export type PortStateHandler = (
   connected: boolean,
@@ -146,6 +143,7 @@ export interface Transport {
   write(buffer: Uint8Array): Promise<void>;
   read(length: number, timeout?: number): Promise<Uint8Array>;
   flush?(): Promise<void>;
+  getRSMode(): RSMode;
 
   /**
    * Установить обработчик состояния подключения устройства.
@@ -286,7 +284,7 @@ export interface TransportControllerInterface {
    * @param slaveId - ID устройства
    * @returns Транспорт или null, если транспорт не найден
    */
-  getTransportForSlave(slaveId: number): Transport | null;
+  getTransportForSlave(slaveId: number, requiredRSMode: RSMode): Transport | null;
 
   /**
    * Назначить slaveId транспорту. Если транспорт уже обслуживает этот slaveId — игнорирует.
@@ -385,11 +383,11 @@ export type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
 
 /** Опции для конфигурации Modbus клиента */
 export interface ModbusClientOptions {
+  RSMode?: RSMode;
   timeout?: number;
   retryCount?: number;
   retryDelay?: number;
   echoEnabled?: boolean;
-  diagnostics?: boolean;
   crcAlgorithm?:
     | 'crc16Modbus'
     | 'crc16CcittFalse'
@@ -441,99 +439,6 @@ export interface LoggerInstance {
 }
 
 // !=============================================================================
-// ! Типы для диагностики
-// !=============================================================================
-
-/** Опции для диагностики */
-export interface DiagnosticsOptions {
-  notificationThreshold?: number;
-  errorRateThreshold?: number;
-  slaveId?: number | number[];
-  loggerName?: string;
-}
-
-/** Статистика диагностики */
-export interface DiagnosticsStats {
-  uptimeSeconds: number;
-  totalSessions: number;
-  totalRequests: number;
-  successfulResponses: number;
-  errorResponses: number;
-  timeouts: number;
-  crcErrors: number;
-  modbusExceptions: number;
-  exceptionCodeCounts: Record<string, number>;
-  totalRetries: number;
-  totalRetrySuccesses: number;
-  lastResponseTime: number | null;
-  minResponseTime: number | null;
-  maxResponseTime: number | null;
-  averageResponseTime: number | null;
-  averageResponseTimeAll: number | null;
-  requestsPerSecond: number | null;
-  errorRate: number | null;
-  lastErrorMessage: string | null;
-  lastErrors: string[];
-  lastSuccessDetails: {
-    responseTime: number;
-    timestamp: string;
-    funcCode: number | null;
-    slaveId: number;
-  } | null;
-  functionCallCounts: Record<string, number>;
-  commonErrors: { message: string; count: number }[];
-  dataSent: number;
-  dataReceived: number;
-  lastRequestTimestamp: string | null;
-  lastSuccessTimestamp: string | null;
-  lastErrorTimestamp: string | null;
-  slaveIds: number[];
-}
-
-/** Результат анализа диагностики */
-export interface AnalysisResult {
-  warnings: string[];
-  isHealthy: boolean;
-  stats: DiagnosticsStats;
-}
-
-/** Интерфейс для диагностики */
-export interface DiagnosticsInterface {
-  recordRequest(slaveId?: number, funcCode?: number): void;
-  recordFunctionCall(funcCode: number, slaveId?: number): void;
-  recordDataSent(byteLength: number, slaveId?: number, funcCode?: number): void;
-  recordDataReceived(byteLength: number, slaveId?: number, funcCode?: number): void;
-  recordSuccess(responseTimeMs: number, slaveId?: number, funcCode?: number): void;
-  recordError(
-    error: Error,
-    options?: {
-      code?: string | null;
-      responseTimeMs?: number;
-      exceptionCode?: number | null;
-      slaveId?: number;
-      funcCode?: number;
-    }
-  ): void;
-  recordRetry(attempts: number, slaveId?: number, funcCode?: number): void;
-  recordRetrySuccess(slaveId?: number, funcCode?: number): void;
-  getStats(): DiagnosticsStats;
-  reset(): void;
-  resetStats(metrics?: string[]): void;
-  destroy(): void;
-  analyze(): AnalysisResult;
-  printStats(): void;
-  serialize(): string;
-  toTable(): { metric: string; value: unknown }[];
-  mergeWith(other: DiagnosticsInterface): void;
-
-  readonly averageResponseTime: number | null;
-  readonly averageResponseTimeAll: number | null;
-  readonly errorRate: number | null;
-  readonly requestsPerSecond: number | null;
-  readonly uptimeSeconds: number;
-}
-
-// !=============================================================================
 // ! Интерфейсы для транспорта через последовательный порт
 // !=============================================================================
 /** Опции для транспорта через Node.js SerialPort */
@@ -547,6 +452,7 @@ export interface NodeSerialTransportOptions {
   maxBufferSize?: number;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  RSMode?: RSMode;
   [key: string]: unknown;
 }
 
@@ -579,6 +485,7 @@ export interface WebSerialTransportOptions {
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
   maxEmptyReadsBeforeReconnect?: number;
+  RSMode?: RSMode;
   [key: string]: unknown;
 }
 

@@ -75,6 +75,7 @@ __export(errors_exports, {
   PollingTaskAlreadyExistsError: () => PollingTaskAlreadyExistsError,
   PollingTaskNotFoundError: () => PollingTaskNotFoundError,
   PollingTaskValidationError: () => PollingTaskValidationError,
+  RSModeConstraintError: () => RSModeConstraintError,
   TransportError: () => TransportError,
   WebSerialConnectionError: () => WebSerialConnectionError,
   WebSerialReadError: () => WebSerialReadError,
@@ -464,6 +465,12 @@ class PollingTaskValidationError extends PollingManagerError {
     this.name = "PollingTaskValidationError";
   }
 }
+class RSModeConstraintError extends ModbusError {
+  constructor(message) {
+    super(message);
+    this.name = "RSModeConstraintError";
+  }
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ModbusAcknowledgeError,
@@ -523,6 +530,7 @@ class PollingTaskValidationError extends PollingManagerError {
   PollingTaskAlreadyExistsError,
   PollingTaskNotFoundError,
   PollingTaskValidationError,
+  RSModeConstraintError,
   TransportError,
   WebSerialConnectionError,
   WebSerialReadError,

@@ -124,7 +124,6 @@ import {
 } from './constants/constants.js';
 import { buildPacket, parsePacket } from './packet-builder.js';
 import Logger from './logger.js';
-import { Diagnostics } from './utils/diagnostics.js';
 import {
   crc16Modbus,
   crc16CcittFalse,
@@ -162,6 +161,7 @@ import {
   SetControllerTimeResponse,
   TransportControllerInterface,
   ConnectionErrorType,
+  RSMode,
 } from './types/modbus-types.js';
 
 // Type for CRC function
@@ -193,12 +193,11 @@ type SwapMode = 'sw' | 'sb' | 'sbw' | 'le' | 'le_sw' | 'le_sb' | 'le_sbw';
 class ModbusClient {
   private transportController: TransportControllerInterface;
   private slaveId: number;
+  private rsMode: RSMode;
   private defaultTimeout: number;
   private retryCount: number;
   private retryDelay: number;
   private echoEnabled: boolean;
-  private diagnosticsEnabled: boolean;
-  private diagnostics: Diagnostics;
   private crcFunc: CrcFunction;
   private _mutex: Mutex;
 
@@ -247,14 +246,11 @@ class ModbusClient {
 
     this.transportController = transportController;
     this.slaveId = slaveId;
+    this.rsMode = options.RSMode ?? 'RS485';
     this.defaultTimeout = options.timeout ?? 2000;
     this.retryCount = options.retryCount ?? 0;
     this.retryDelay = options.retryDelay ?? 100;
     this.echoEnabled = options.echoEnabled ?? false;
-    this.diagnosticsEnabled = !!options.diagnostics;
-    this.diagnostics = this.diagnosticsEnabled
-      ? new Diagnostics({ loggerName: 'ModbusClient' })
-      : new Diagnostics({ loggerName: 'Noop' });
 
     const algorithm = options.crcAlgorithm ?? 'crc16Modbus';
     const crcFunc = crcAlgorithmMap[algorithm];
@@ -270,7 +266,7 @@ class ModbusClient {
    * Returns the effective transport for the client
    */
   private get _effectiveTransport(): Transport | null {
-    return this.transportController.getTransportForSlave(this.slaveId);
+    return this.transportController.getTransportForSlave(this.slaveId, this.rsMode);
   }
 
   /**
@@ -323,20 +319,14 @@ class ModbusClient {
     try {
       const transport = this._effectiveTransport;
 
-      // Проверка 1: Назначен ли вообще транспорт для этого slaveId?
       if (!transport) {
-        // ИСПРАВЛЕНО: Вызываем конструктор без аргументов
         throw new ModbusNotConnectedError();
       }
 
-      // Проверка 2: Был ли транспорт подключен через контроллер?
-      // (Теперь это будет работать, так как мы добавили `isOpen` в интерфейс)
       if (!transport.isOpen) {
-        // ИСПРАВЛЕНО: Вызываем конструктор без аргументов
         throw new ModbusNotConnectedError();
       }
 
-      // Все проверки пройдены. Клиент готов к работе.
       this._setAutoLoggerContext();
       logger.info('Client is ready. Transport is connected and available.', {
         slaveId: this.slaveId,
@@ -364,8 +354,6 @@ class ModbusClient {
           transport: transport ? transport.constructor.name : 'N/A',
         }
       );
-      // Мы намеренно не вызываем transport.disconnect() здесь.
-      // Это задача TransportController.disconnectAll() или disconnectTransport().
     } finally {
       release();
     }
@@ -595,11 +583,6 @@ class ModbusClient {
       const funcCodeEnum = ModbusClient.FUNCTION_CODE_MAP.get(funcCode!) ?? funcCode;
       const slaveId = this.slaveId;
 
-      if (this.diagnosticsEnabled) {
-        this.diagnostics.recordRequest(slaveId, funcCode);
-        this.diagnostics.recordFunctionCall(funcCode!, slaveId);
-      }
-
       let lastError: unknown;
       const startTime = Date.now();
 
@@ -621,10 +604,6 @@ class ModbusClient {
           });
 
           const packet = buildPacket(slaveId, pdu, this.crcFunc);
-
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordDataSent(packet.length, slaveId, funcCode);
-          }
 
           await transport.write(packet);
           logger.debug('Packet written to transport', { bytes: packet.length, slaveId, funcCode });
@@ -648,9 +627,6 @@ class ModbusClient {
 
           if (ignoreNoResponse) {
             const elapsed = Date.now() - startTime;
-            if (this.diagnosticsEnabled) {
-              this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
-            }
             logger.info('Request sent, no response expected', {
               slaveId,
               funcCode,
@@ -660,10 +636,6 @@ class ModbusClient {
           }
 
           const response = await this._readPacket(timeLeft, pdu);
-
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordDataReceived(response.length, slaveId, funcCode);
-          }
 
           const elapsed = Date.now() - startTime;
           const { slaveAddress, pdu: responsePdu } = parsePacket(response, this.crcFunc);
@@ -696,10 +668,6 @@ class ModbusClient {
             throw new ModbusExceptionError(responseFuncCode! & 0x7f, modbusExceptionCode!);
           }
 
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
-          }
-
           logger.info('Response received', {
             slaveId,
             funcCode,
@@ -720,7 +688,6 @@ class ModbusClient {
               }
               const errorMessage = err instanceof Error ? err.message : String(err);
 
-              // ТЕПЕРЬ ЭТОТ ВЫЗОВ С 3 АРГУМЕНТАМИ ВЕРНЫЙ
               transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
             }
           }
@@ -745,16 +712,6 @@ class ModbusClient {
                 flushError: flushErr,
               });
             }
-          }
-
-          if (this.diagnosticsEnabled) {
-            this.diagnostics.recordError(err instanceof Error ? err : new Error(String(err)), {
-              code: errorCode,
-              responseTimeMs: elapsed,
-              slaveId,
-              funcCode,
-              exceptionCode: err instanceof ModbusExceptionError ? err.exceptionCode : null,
-            });
           }
 
           this._setAutoLoggerContext(funcCodeEnum);
@@ -790,16 +747,10 @@ class ModbusClient {
               funcCode,
               responseTime: elapsed,
             });
-            if (this.diagnosticsEnabled) {
-              this.diagnostics.recordSuccess(elapsed, slaveId, funcCode);
-            }
             return undefined;
           }
 
           if (attempt < this.retryCount) {
-            if (this.diagnosticsEnabled) {
-              this.diagnostics.recordRetry(1, slaveId, funcCode);
-            }
             let delay = this.retryDelay;
             if (isFlushedError) {
               delay = Math.min(50, delay);

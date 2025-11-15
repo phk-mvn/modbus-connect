@@ -40,11 +40,9 @@ export function buildWriteSingleRegisterRequest(address: number, value: number):
   validateRegisterAddress(address);
   validateRegisterValue(value);
 
-  // Создаем буфер и представление
   const buffer = new ArrayBuffer(PDU_SIZE);
   const view = new DataView(buffer);
 
-  // Заполняем PDU
   view.setUint8(0, FUNCTION_CODE);
   view.setUint16(1, address, false);
   view.setUint16(3, value, false);
@@ -75,7 +73,6 @@ export function parseWriteSingleRegisterResponse(pdu: Uint8Array): WriteSingleRe
     );
   }
 
-  // Используем оригинальный буфер без копирования
   const buffer = pdu.buffer || pdu;
   const byteOffset = pdu.byteOffset || 0;
   const view = new DataView(buffer, byteOffset, PDU_SIZE);

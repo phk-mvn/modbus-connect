@@ -17,7 +17,6 @@ export function buildOpenFileRequest(filename: string): Uint8Array {
     throw new TypeError('Filename must be a string');
   }
 
-  // Кодируем имя файла в ASCII
   const encoder = new TextEncoder();
   const filenameBytes = encoder.encode(filename);
 
@@ -33,13 +32,10 @@ export function buildOpenFileRequest(filename: string): Uint8Array {
   const view = new DataView(buffer);
   const pdu = new Uint8Array(buffer);
 
-  // Заполняем заголовок
   view.setUint8(0, FUNCTION_CODE);
   view.setUint8(1, byteCount);
 
-  // Копируем имя файла
   pdu.set(filenameBytes, 2);
-  // Добавляем нулевой байт в конец
   pdu[2 + filenameBytes.length] = 0x00;
 
   return pdu;
@@ -67,7 +63,6 @@ export function parseOpenFileResponse(pdu: Uint8Array): OpenFileResponse {
     );
   }
 
-  // Читаем длину файла как 32-битное целое (Big Endian)
   const fileLength = (pdu[1]! << 24) | (pdu[2]! << 16) | (pdu[3]! << 8) | pdu[4]!;
 
   return {

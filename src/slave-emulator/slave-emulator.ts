@@ -75,7 +75,6 @@ class SlaveEmulator {
   public connected: boolean;
 
   constructor(slaveAddress: number = 1, options: SlaveEmulatorOptions = {}) {
-    // Валидация адреса
     if (typeof slaveAddress !== 'number' || slaveAddress < 0 || slaveAddress > 247) {
       throw new ModbusInvalidAddressError(slaveAddress);
     }
@@ -88,7 +87,6 @@ class SlaveEmulator {
     this.exceptions = new Map();
     this._infinityTasks = new Map();
 
-    // Инициализация логгера с учетом флага
     this.loggerEnabled = !!options.loggerEnabled;
     const loggerInstance = new Logger();
     this.logger = loggerInstance.createLogger('SlaveEmulator');
@@ -101,7 +99,6 @@ class SlaveEmulator {
     this.connected = false;
   }
 
-  // Методы для управления логгером
   enableLogger(): void {
     if (!this.loggerEnabled) {
       this.loggerEnabled = true;
@@ -132,7 +129,6 @@ class SlaveEmulator {
     this.logger.info('Disconnected', { slaveAddress: this.slaveAddress } as LoggerContext);
   }
 
-  // Валидация методов
   private _validateAddress(address: number): void {
     if (typeof address !== 'number' || address < 0 || address > 0xffff) {
       throw new ModbusInvalidAddressError(address);
@@ -160,7 +156,6 @@ class SlaveEmulator {
   infinityChange(params: InfinityChangeParams): void {
     const { typeRegister, register, range, interval } = params;
 
-    // Валидация параметров
     if (
       !typeRegister ||
       typeof register !== 'number' ||
@@ -176,7 +171,6 @@ class SlaveEmulator {
 
     const key = `${typeRegister}:${register}`;
 
-    // Остановка существующей задачи
     this.stopInfinityChange({ typeRegister, register });
 
     const [min, max] = range;
@@ -195,7 +189,6 @@ class SlaveEmulator {
       throw new ModbusDataConversionError(typeRegister, 'valid register type');
     }
 
-    // Валидация диапазона
     if (min > max) {
       throw new ModbusDataConversionError(range, 'valid range (min <= max)');
     }
@@ -985,9 +978,8 @@ class SlaveEmulator {
 
   readCoils(startAddress: number, quantity: number): boolean[] {
     this._validateAddress(startAddress);
-    this._validateQuantity(quantity, 2000); // Максимум 2000 coils за запрос
+    this._validateQuantity(quantity, 2000);
 
-    // Проверка на переполнение адресов
     if (startAddress + quantity > 0x10000) {
       throw new ModbusIllegalDataAddressError(startAddress, quantity);
     }
@@ -1024,13 +1016,12 @@ class SlaveEmulator {
 
   writeMultipleCoils(startAddress: number, values: boolean[]): void {
     this._validateAddress(startAddress);
-    this._validateQuantity(values.length, 1968); // Максимум 1968 coils за запрос
+    this._validateQuantity(values.length, 1968);
 
     if (!Array.isArray(values)) {
       throw new ModbusDataConversionError(values, 'array');
     }
 
-    // Проверка на переполнение адресов
     if (startAddress + values.length > 0x10000) {
       throw new ModbusIllegalDataAddressError(startAddress, values.length);
     }
@@ -1070,9 +1061,8 @@ class SlaveEmulator {
 
   readDiscreteInputs(startAddress: number, quantity: number): boolean[] {
     this._validateAddress(startAddress);
-    this._validateQuantity(quantity, 2000); // Максимум 2000 inputs за запрос
+    this._validateQuantity(quantity, 2000);
 
-    // Проверка на переполнение адресов
     if (startAddress + quantity > 0x10000) {
       throw new ModbusIllegalDataAddressError(startAddress, quantity);
     }
@@ -1114,9 +1104,8 @@ class SlaveEmulator {
 
   readHoldingRegisters(startAddress: number, quantity: number): number[] {
     this._validateAddress(startAddress);
-    this._validateQuantity(quantity, 125); // Максимум 125 регистров за запрос
+    this._validateQuantity(quantity, 125);
 
-    // Проверка на переполнение адресов
     if (startAddress + quantity > 0x10000) {
       throw new ModbusIllegalDataAddressError(startAddress, quantity);
     }
@@ -1153,13 +1142,12 @@ class SlaveEmulator {
 
   writeMultipleRegisters(startAddress: number, values: number[]): void {
     this._validateAddress(startAddress);
-    this._validateQuantity(values.length, 123); // Максимум 123 регистра за запрос
+    this._validateQuantity(values.length, 123);
 
     if (!Array.isArray(values)) {
       throw new ModbusDataConversionError(values, 'array');
     }
 
-    // Проверка на переполнение адресов
     if (startAddress + values.length > 0x10000) {
       throw new ModbusIllegalDataAddressError(startAddress, values.length);
     }
@@ -1200,9 +1188,8 @@ class SlaveEmulator {
 
   readInputRegisters(startAddress: number, quantity: number): number[] {
     this._validateAddress(startAddress);
-    this._validateQuantity(quantity, 125); // Максимум 125 регистров за запрос
+    this._validateQuantity(quantity, 125);
 
-    // Проверка на переполнение адресов
     if (startAddress + quantity > 0x10000) {
       throw new ModbusIllegalDataAddressError(startAddress, quantity);
     }
@@ -1230,7 +1217,6 @@ class SlaveEmulator {
     this._validateAddress(start);
     this._validateQuantity(quantity, 125);
 
-    // Проверка на переполнение адресов
     if (start + quantity > 0x10000) {
       throw new ModbusIllegalDataAddressError(start, quantity);
     }
@@ -1248,7 +1234,6 @@ class SlaveEmulator {
     this._validateAddress(start);
     this._validateQuantity(quantity, 125);
 
-    // Проверка на переполнение адресов
     if (start + quantity > 0x10000) {
       throw new ModbusIllegalDataAddressError(start, quantity);
     }
@@ -1332,15 +1317,12 @@ class SlaveEmulator {
       slaveAddress: this.slaveAddress,
     } as LoggerContext);
 
-    // Остановка всех бесконечных задач
     this.clearInfinityTasks();
 
-    // Отключение
     if (this.connected) {
       await this.disconnect();
     }
 
-    // Очистка данных
     this.clearAllRegisters();
     this.clearExceptions();
 
@@ -1368,8 +1350,7 @@ class SlaveEmulator {
         throw new ModbusResponseError('Invalid Modbus RTU frame: too short');
       }
 
-      // Проверка CRC
-      const crcReceived = (buffer[buffer.length - 2]! | (buffer[buffer.length - 1]! << 8)) & 0xffff; // Явно маскируем до 16 бит
+      const crcReceived = (buffer[buffer.length - 2]! | (buffer[buffer.length - 1]! << 8)) & 0xffff;
       const dataForCrc = buffer.subarray(0, buffer.length - 2);
       const crcCalculatedBuffer = crc16Modbus(dataForCrc);
       if (crcCalculatedBuffer.length < 2) {
@@ -1381,7 +1362,7 @@ class SlaveEmulator {
         this.logger.warn('CRC mismatch', {
           received: `0x${crcReceived.toString(16)}`,
           calculated: `0x${crcCalculated.toString(16)}`,
-          frame: Buffer.from(buffer).toString('hex'), // Buffer.from может принимать Uint8Array
+          frame: Buffer.from(buffer).toString('hex'),
           slaveAddress: this.slaveAddress,
         } as LoggerContext);
         throw new ModbusCRCError('CRC mismatch detected');

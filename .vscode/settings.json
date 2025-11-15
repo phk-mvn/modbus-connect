@@ -5,7 +5,7 @@
   "workbench.list.smoothScrolling": true,
   "terminal.integrated.smoothScrolling": true,
   "editor.cursorBlinking": "expand",
-  "workbench.colorTheme": "Sonokai Espresso",
+  "workbench.colorTheme": "Sonokai",
   "workbench.iconTheme": "material-icon-theme",
   "editor.fontFamily": "JetBrains Mono",
   "editor.codeLensFontFamily": "JetBrains Mono",

@@ -448,3 +448,10 @@ export class PollingTaskNotFoundError extends PollingManagerError {
 export class PollingTaskValidationError extends PollingManagerError {
   constructor(message: string);
 }
+
+/**
+ * Error class for RSMode constraint violations (e.g., too many devices on RS232).
+ */
+export class RSModeConstraintError extends ModbusError {
+  constructor(message: string);
+}

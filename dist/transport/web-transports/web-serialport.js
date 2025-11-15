@@ -142,10 +142,14 @@ class WebSerialTransport {
       reconnectInterval: 3e3,
       maxReconnectAttempts: Infinity,
       maxEmptyReadsBeforeReconnect: 10,
+      RSMode: options.RSMode || "RS485",
       ...options
     };
     this.readBuffer = new Uint8Array(0);
     this._operationMutex = new import_async_mutex.Mutex();
+  }
+  getRSMode() {
+    return this.options.RSMode;
   }
   setDeviceStateHandler(handler) {
     this._deviceStateHandler = handler;

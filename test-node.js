@@ -7,7 +7,6 @@ const PollingManager = require('./dist/polling-manager.js');
 
 const logger = new Logger();
 
-// Установка глобальных настроек логгера
 logger.setLevel('info');
 logger.setLogFormat(['timestamp', 'level', 'logger']);
 logger.setCustomFormatter('logger', (value) => {
@@ -44,114 +43,100 @@ async function main() {
         }
     });
 
+    // --- ШАГ 1: Создаем транспорт в режиме RS485 ---
     await controller.addTransport('com3', 'node', {
         port: 'COM3',
         baudRate: 9600,
         parity: 'none',
         dataBits: 8,
         stopBits: 1,
-        slaveIds: [13]
+        slaveIds: [13],
+        RSMode: 'RS485' // Явно указываем режим
     });
 
-    testLogger.info('Transport added, connecting...');
+    testLogger.info("Transport 'com3' (RS485) added, connecting...");
     await controller.connectAll();
     testLogger.info('Transport connected successfully');
 
+    // --- ШАГ 2: Создаем первого клиента ---
     const client1 = new ModbusClient(controller, 13, {
         timeout: 1000,
         crcAlgorithm: 'crc16Modbus',
-        retryCount: Infinity,
+        retryCount: 3,
         retryDelay: 300,
+        RSMode: 'RS485'
     });
 
     await client1.connect();
     client1.enableLogger('info');
     testLogger.info('Client 1 (slaveId 13) connected');
 
+    // --- ШАГ 3: Запускаем опрос первого клиента ---
     poll.addTask({
-        id: 'modbus-poll-task',
-        resourceId: "com3-bus",
+        id: 'initial-poll',
+        resourceId: "com3",
         interval: 1000,
-        fn: [
-            () => client1.readHoldingRegisters(0, 2, { type: 'uint16' }),
-        ],
+        fn: [() => client1.readHoldingRegisters(0, 2, { type: 'uint16' })],
         onData: (results) => {
-            // ИСПРАВЛЕНО: Выводим результат, а не массив с результатом.
             console.log("Data received from slave 13:", results[0]);
         },
-        onError: (error, index, attempt) => {
-            testLogger.error(`Error polling slave 13, attempt ${attempt}`, { 
-                error: error.message 
-            });
+        onError: (error) => {
+            testLogger.error('Error polling slave 13', { error: error.message });
         },
-        onStart: () => testLogger.info("Polling for slave 13 started"),
-        onStop: () => testLogger.info("Polling for slave 13 stopped"),
-        maxRetries: 3, // ИСПРАВЛЕНО: Заменено Infinity на конечное число.
-        backoffDelay: 300,
-        taskTimeout: 2000
     });
-
-    poll.startTask('modbus-poll-task');
+    poll.startTask('initial-poll');
     testLogger.info('Polling task started for slave 13');
 
-    // setTimeout(async () => {
-    //     try {
-    //         testLogger.info('Stopping current polling task to reconfigure...');
-    //         // ИСПРАВЛЕНО: Используем более безопасный паттерн для замены задачи.
-    //         // Сначала останавливаем, потом удаляем.
-    //         // (Предполагается, что у PollingManager есть асинхронный метод stopTask)
-    //         if (poll.getTaskState('modbus-poll-task')?.running) {
-    //             await poll.stopTask('modbus-poll-task');
-    //         }
-    //         poll.removeTask('modbus-poll-task');
+    // --- ШАГ 4: Через 5 секунд ДОБАВЛЯЕМ второе устройство ---
+    setTimeout(async () => {
+        try {
+            testLogger.info('\n--- [TEST] Attempting to add slaveId 122 to RS485 transport... ---');
             
-    //         testLogger.info('Adding slaveId 122 dynamically...');
-    //         controller.assignSlaveIdToTransport('com3', 122);
+            // Эта строка должна УСПЕШНО выполниться
+            controller.assignSlaveIdToTransport('com3', 122);
+            testLogger.info('>>> [TEST PASSED] Successfully assigned slaveId 122 to RS485 transport.');
 
-    //         const client2 = new ModbusClient(controller, 122, {
-    //             timeout: 1000,
-    //             crcAlgorithm: 'crc16Modbus',
-    //             retryCount: 3, // ИСПРАВЛЕНО: Заменено Infinity на конечное число.
-    //             retryDelay: 300,
-    //         });
+            // Останавливаем и удаляем старую задачу опроса
+            poll.stopTask('initial-poll');
+            poll.removeTask('initial-poll');
 
-    //         await client2.connect();
-    //         client2.enableLogger('info');
-    //         testLogger.info('Client 2 (slaveId 122) connected and ready');
+            // Создаем второго клиента
+            const client2 = new ModbusClient(controller, 122, {
+                timeout: 1000,
+                crcAlgorithm: 'crc16Modbus',
+                retryCount: 3,
+                retryDelay: 300,
+                RSMode: 'RS485'
+            });
+            await client2.connect();
+            client2.enableLogger('info');
+            testLogger.info('Client 2 (slaveId 122) connected');
 
-    //         poll.addTask({
-    //             id: 'modbus-poll-task',
-    //             resourceId: "com3-bus",
-    //             interval: 1000,
-    //             fn: [
-    //                 () => client1.readHoldingRegisters(0, 2, { type: 'uint16' }),
-    //                 () => client2.readHoldingRegisters(0, 2, { type: 'uint16' }),
-    //             ],
-    //             onData: (results) => {
-    //                 console.log("Data received from both slaves:", {
-    //                     slave13: results[0],
-    //                     slave122: results[1]
-    //                 });
-    //             },
-    //             onError: (error, index, attempt) => {
-    //                 const clientDesc = index === 0 ? 'slave 13' : 'slave 122';
-    //                 testLogger.error(`Error polling ${clientDesc}, attempt ${attempt}`, { 
-    //                     error: error.message 
-    //                 });
-    //             },
-    //             onStart: () => testLogger.info('Polling for both slaves started'),
-    //             onStop: () => testLogger.info('Polling for both slaves stopped'),
-    //             maxRetries: 3, // ИСПРАВЛЕНО: Заменено Infinity на конечное число.
-    //             backoffDelay: 300,
-    //             taskTimeout: 2000
-    //         });
+            // Создаем новую задачу для опроса ДВУХ устройств
+            poll.addTask({
+                id: 'multi-poll',
+                resourceId: "com3",
+                interval: 1000,
+                fn: [
+                    () => client1.readHoldingRegisters(0, 2, { type: 'uint16' }),
+                    () => client2.readHoldingRegisters(0, 2, { type: 'uint16' })
+                ],
+                onData: (results) => {
+                    console.log("Data from multi-poll:", { slave13: results[0], slave122: results[1] });
+                },
+                onError: (error, index) => {
+                    const clientDesc = index === 0 ? 'slave 13' : 'slave 122';
+                    testLogger.error(`Error polling ${clientDesc}`, { error: error.message });
+                },
+            });
+            poll.startTask('multi-poll');
+            testLogger.info('Polling task restarted for both slaves (13 and 122)');
 
-    //         poll.startTask('modbus-poll-task');
-    //         testLogger.info('Polling task RESTARTED for both slaves (13 and 122)');
-    //     } catch (err) {
-    //         testLogger.error('Error adding second client', { error: err.message });
-    //     }
-    // }, 5000);
+        } catch (err) {
+            // Если мы попали сюда в режиме RS485 - это провал
+            testLogger.error(`[TEST FAILED] ${err.message}`);
+        }
+    }, 5000);
 }
 
 main().catch(err => {

@@ -645,3 +645,10 @@ export class PollingTaskValidationError extends PollingManagerError {
     this.name = 'PollingTaskValidationError';
   }
 }
+
+export class RSModeConstraintError extends ModbusError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RSModeConstraintError';
+  }
+}

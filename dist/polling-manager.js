@@ -917,7 +917,6 @@ class PollingManager {
       onSuccess: oldTask.onSuccess,
       onFailure: oldTask.onFailure,
       name: oldTask.name ?? void 0,
-      // ИСПРАВЛЕНИЕ: Преобразуем null в undefined
       maxRetries: oldTask.maxRetries,
       backoffDelay: oldTask.backoffDelay,
       taskTimeout: oldTask.taskTimeout
