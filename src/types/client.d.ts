@@ -3,7 +3,6 @@
 import { RegisterType } from '../constants/constants.js';
 import { LogContext as LoggerContext } from './logger.js';
 import {
-  Transport,
   ModbusClientOptions,
   ConvertRegisterOptions,
   ReadCoilsResponse,

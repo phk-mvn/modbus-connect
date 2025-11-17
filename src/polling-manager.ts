@@ -770,7 +770,7 @@ class TaskQueue {
       this.logger.debug('Task executed successfully', { taskId } as LogContext);
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new PollingManagerError(String(error));
-      this._logSpecificError(err); // Инкапсулированное логирование
+      this._logSpecificError(err);
       this.logger.error('Error executing task in queue', {
         resourceId: this.resourceId,
         error: err.message,

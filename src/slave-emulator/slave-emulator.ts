@@ -141,14 +141,17 @@ class SlaveEmulator {
     }
   }
 
-  private _validateValue(value: any, isRegister: boolean = false): void {
+  private _validateValue(value: unknown, isRegister: boolean = false): void {
     if (isRegister) {
-      if (typeof value !== 'number' || value < 0 || value > 0xffff) {
+      if (typeof value !== 'number') {
+        throw new ModbusIllegalDataValueError(String(value), 'number between 0 and 65535');
+      }
+      if (value < 0 || value > 0xffff) {
         throw new ModbusIllegalDataValueError(value, 'between 0 and 65535');
       }
     } else {
       if (typeof value !== 'boolean') {
-        throw new ModbusIllegalDataValueError(value, 'boolean');
+        throw new ModbusIllegalDataValueError(String(value), 'boolean');
       }
     }
   }

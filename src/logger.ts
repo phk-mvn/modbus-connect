@@ -190,7 +190,6 @@ class Logger {
       return String(arg);
     });
 
-    // Добавим context к аргументам, если он не пустой и не включает служебные поля
     const contextToPrint: LogContext = { ...context };
     delete contextToPrint['logger'];
     if (Object.keys(contextToPrint).length > 0) {

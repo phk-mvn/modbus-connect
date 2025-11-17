@@ -44,7 +44,7 @@ function buildPacket(
   }
 
   const aduWithoutCrc: Uint8Array = concatUint8Arrays([new Uint8Array([slaveAddress]), pdu]);
-  const crc: Uint8Array = crcFn(aduWithoutCrc); // возвращает Uint8Array из 2 байт
+  const crc: Uint8Array = crcFn(aduWithoutCrc);
   return concatUint8Arrays([aduWithoutCrc, crc]);
 }
 
@@ -72,7 +72,7 @@ function parsePacket(
     );
   }
 
-  const slaveAddress: number = packet[0]!; // !: safe, length >= 4
+  const slaveAddress: number = packet[0]!;
   const pdu: Uint8Array = sliceUint8Array(packet, 1, -2);
   return { slaveAddress, pdu };
 }

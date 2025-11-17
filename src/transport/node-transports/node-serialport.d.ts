@@ -6,7 +6,7 @@ import {
   DeviceStateHandler,
   PortStateHandler,
   ConnectionErrorType,
-  RSMode, // <-- Убедись, что RSMode импортируется
+  RSMode,
 } from '../../types/modbus-types.js';
 
 declare class NodeSerialTransport implements Transport {
@@ -32,7 +32,7 @@ declare class NodeSerialTransport implements Transport {
   /**
    * Возвращает режим работы транспорта (RS485 или RS232).
    */
-  getRSMode(): RSMode; // <-- ИЗМЕНЕНИЕ: Добавлен недостающий метод
+  getRSMode(): RSMode;
 
   // === Обработчики состояния ===
   /**

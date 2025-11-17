@@ -723,6 +723,7 @@ class ModbusClient {
               requestHex: this._toHex(pdu),
               slaveId,
               funcCode,
+              errorCode: errorCode,
               exceptionCode: err instanceof ModbusExceptionError ? err.exceptionCode : null,
             }
           );

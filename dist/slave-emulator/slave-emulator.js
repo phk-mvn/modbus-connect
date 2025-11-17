@@ -95,12 +95,15 @@ class SlaveEmulator {
   }
   _validateValue(value, isRegister = false) {
     if (isRegister) {
-      if (typeof value !== "number" || value < 0 || value > 65535) {
+      if (typeof value !== "number") {
+        throw new import_errors.ModbusIllegalDataValueError(String(value), "number between 0 and 65535");
+      }
+      if (value < 0 || value > 65535) {
         throw new import_errors.ModbusIllegalDataValueError(value, "between 0 and 65535");
       }
     } else {
       if (typeof value !== "boolean") {
-        throw new import_errors.ModbusIllegalDataValueError(value, "boolean");
+        throw new import_errors.ModbusIllegalDataValueError(String(value), "boolean");
       }
     }
   }

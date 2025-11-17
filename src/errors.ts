@@ -276,7 +276,7 @@ export class ModbusInsufficientDataError extends ModbusResponseError {
  * Error class for data type conversion errors
  */
 export class ModbusDataConversionError extends ModbusError {
-  constructor(data: any, expectedType: string) {
+  constructor(data: unknown, expectedType: string) {
     super(`Cannot convert data "${data}" to ${expectedType}`);
     this.name = 'ModbusDataConversionError';
   }
