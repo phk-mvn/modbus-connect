@@ -520,6 +520,7 @@ class ModbusClient {
               requestHex: this._toHex(pdu),
               slaveId,
               funcCode,
+              errorCode,
               exceptionCode: err instanceof import_errors.ModbusExceptionError ? err.exceptionCode : null
             }
           );

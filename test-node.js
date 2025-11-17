@@ -51,7 +51,7 @@ async function main() {
         dataBits: 8,
         stopBits: 1,
         slaveIds: [13],
-        RSMode: 'RS485' // Явно указываем режим
+        RSMode: 'RS232' // Явно указываем режим
     });
 
     testLogger.info("Transport 'com3' (RS485) added, connecting...");
@@ -64,7 +64,7 @@ async function main() {
         crcAlgorithm: 'crc16Modbus',
         retryCount: 3,
         retryDelay: 300,
-        RSMode: 'RS485'
+        RSMode: 'RS232'
     });
 
     await client1.connect();
@@ -94,7 +94,7 @@ async function main() {
             
             // Эта строка должна УСПЕШНО выполниться
             controller.assignSlaveIdToTransport('com3', 122);
-            testLogger.info('>>> [TEST PASSED] Successfully assigned slaveId 122 to RS485 transport.');
+            testLogger.info('>>> [PASSED] Successfully assigned slaveId 122 to RS485 transport.');
 
             // Останавливаем и удаляем старую задачу опроса
             poll.stopTask('initial-poll');
@@ -134,7 +134,7 @@ async function main() {
 
         } catch (err) {
             // Если мы попали сюда в режиме RS485 - это провал
-            testLogger.error(`[TEST FAILED] ${err.message}`);
+            testLogger.error(`[FAILED] ${err.message}`);
         }
     }, 5000);
 }

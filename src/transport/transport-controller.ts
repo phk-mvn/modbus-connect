@@ -448,7 +448,6 @@ class TransportController {
           const WebSerialTransport = (await import('./web-transports/web-serialport.js')).default;
 
           const portFactory = async (): Promise<any> => {
-            // (без изменений)
             return port;
           };
 
@@ -519,29 +518,36 @@ class TransportController {
   getTransportForSlave(slaveId: number, requiredRSMode: RSMode): Transport | null {
     const transportIds = this.slaveTransportMap.get(slaveId);
 
-    // Сценарий 1: Устройство уже жестко привязано к транспорту
     if (transportIds && transportIds.length > 0) {
-      for (const id of transportIds) {
-        const info = this.transports.get(id);
-        // Проверяем, что транспорт подходит по режиму и он подключен
-        if (info && info.status === 'connected' && info.rsMode === requiredRSMode) {
-          return info.transport;
+      let transport: Transport | null = null;
+
+      switch (this.loadBalancerStrategy) {
+        case 'round-robin':
+          transport = this._getTransportRoundRobin(transportIds);
+          break;
+        case 'sticky':
+          transport = this._getTransportSticky(slaveId, transportIds);
+          break;
+        case 'first-available':
+        default:
+          transport = this._getTransportFirstAvailable(transportIds);
+          break;
+      }
+
+      if (transport) {
+        const info = Array.from(this.transports.values()).find(i => i.transport === transport);
+        if (info && info.rsMode === requiredRSMode) {
+          return transport;
         }
       }
-      // Если привязанный транспорт не подошел (например, режим не тот), это ошибка конфигурации
-      this.logger.warn(`Device ${slaveId} is assigned to a transport with mismatched RSMode.`);
-      return null;
     }
 
-    // Сценарий 2: Ищем любой подходящий свободный транспорт
-    for (const [id, info] of this.transports) {
+    for (const info of this.transports.values()) {
       if (info.status === 'connected' && info.rsMode === requiredRSMode) {
-        // Для RS232 дополнительно проверяем, что он свободен
-        if (requiredRSMode === 'RS232' && info.slaveIds.length === 0) {
-          return info.transport;
-        }
-        // Для RS485 просто возвращаем подходящий
-        if (requiredRSMode === 'RS485') {
+        if (
+          requiredRSMode === 'RS485' ||
+          (requiredRSMode === 'RS232' && info.slaveIds.length === 0)
+        ) {
           return info.transport;
         }
       }

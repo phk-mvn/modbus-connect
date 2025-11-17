@@ -195,7 +195,7 @@ The ModbusClient class is a client for working with Modbus devices (RTU/TCP, etc
 
 Key Features:
 
-- **Transport**: Requires a `TransportController` instance that manages routing to underlying transports.
+- **Transport:** Works **exclusively** through a `TransportController` instance, which manages routing to the underlying physical transports. Direct interaction with a transport is no longer supported.
 - **Retry and Timeouts**: Automatic retry (up to retryCount), retryDelay delay, default timeout of 2000ms.
 - **Logging**: Integration with Logger (default 'error' level). Context support (slaveId, funcCode).
 - **Data Conversion**: Automatic conversion of registers to types (`uint16`, `float`, strin`g, etc.), with byte/word swap support.
@@ -224,13 +224,14 @@ Create an instance:
 
 ```js
 const controller = new TransportController();
-await controller.addTransport('com3', 'node', {
+await controller.addTransport('com-port-3', 'node', {
   port: 'COM3',
   baudRate: 9600,
   parity: 'none',
   dataBits: 8,
   stopBits: 1,
   slaveIds: [1],
+  RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
 });
 
 await controller.connectAll();
@@ -702,13 +703,14 @@ const TransportController = require('modbus-connect/transport');
 async function main() {
   const controller = new TransportController();
 
-  await controller.addTransport('com3', 'node', {
+  await controller.addTransport('com-port-3', 'node', {
     port: 'COM3',
     baudRate: 9600,
     parity: 'none',
     dataBits: 8,
     stopBits: 1,
     slaveIds: [1],
+    RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
   });
 
   await controller.connectAll();
@@ -815,12 +817,13 @@ Asynchronously adds a new transport to the controller. Does not connect it autom
 - `id (string)`: A unique identifier for this transport within the controller.
 - `type (string)`: Type ('node', 'web').
 - `options (object)`: Config:
-  _ `For 'node':` `{ port: 'COM3', baudRate: 9600, ..., slaveIds: [1, 2] }` (SerialPort options + `slaveIds` array).
-  _ `For 'web':` `{ port: SerialPort instance, ..., slaveIds: [3, 4] }` (Web Serial Port instance + `slaveIds` array).
-  _ `slaveIds (number[], optional):` An array of `slaveId`s that this transport will handle. These are registered internally for routing.
-  _ `fallbacks (string[], optional):` An array of transport IDs to use as fallbacks for the assigned `slaveIds` if the primary transport fails.
-  **Returns:** Promise<void>
-  **Errors:** Throws Error on invalid options, duplicate ID.
+  - `For 'node':` `{ port: 'COM3', baudRate: 9600, ..., slaveIds: [1, 2] }` (SerialPort options + `slaveIds` array).
+  - `For 'web':` `{ port: SerialPort instance, ..., slaveIds: [3, 4] }` (Web Serial Port instance + `slaveIds` array).
+  - `slaveIds (number[], optional):` An array of `slaveId`s that this transport will handle. These are registered internally for routing.
+  - `RSMode (string, optional):` 'RS485' or 'RS232'. Default is 'RS485'.
+  - `fallbacks (string[], optional):` An array of transport IDs to use as fallbacks for the assigned `slaveIds` if the primary transport fails.
+    **Returns:** Promise<void>
+    **Errors:** Throws Error on invalid options, duplicate ID.
 
 **Example 1: Add Node.js serial transport.**
 
@@ -834,6 +837,7 @@ async function addNodeTransport() {
       stopBits: 1,
       parity: 'none',
       slaveIds: [13, 14], // Assign slave IDs 13 and 14 to this transport
+      RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
     });
     console.log('Transport added to controller:', 'com3');
   } catch (err) {
@@ -859,6 +863,7 @@ async function addWebTransport(port) {
     await controller.addTransport('webPort1', 'web', {
       port, // The SerialPort instance obtained via Web Serial API
       slaveIds: [15, 16], // Assign slave IDs 15 and 16 to this transport
+      RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
     });
     console.log('Transport added to controller:', 'webPort1');
   } catch (err) {
@@ -992,7 +997,7 @@ To track the connection state of devices or the port itself, you need to access 
 **Example: Setting Device State Handler**
 
 ```js
-async function addAndTrackTransport() {
+async function addAndTrackDevice() {
   await controller.addTransport('com3', 'node', {
     port: 'COM3',
     baudRate: 9600,
@@ -1014,11 +1019,11 @@ async function addAndTrackTransport() {
   }
 
   // Create clients using the controller
-  const client1 = new ModbusClient(controller, 1, { timeout: 2000 });
+  const client1 = new ModbusClient(controller, 1, { timeout: 2000, RSMode: 'RS485' });
   await client1.connect(); // This will trigger the handler for slaveId 1
 }
 
-addAndTrackTransport();
+addAndTrackDevice();
 ```
 
 **Example: Setting Port State Handler**
@@ -1047,7 +1052,7 @@ async function addAndTrackPort() {
   await controller.connectAll();
 
   // Create clients using the controller
-  const client3 = new ModbusClient(controller, 3, { timeout: 2000 });
+  const client3 = new ModbusClient(controller, 3, { timeout: 2000, RSMode: 'RS485' });
   await client3.connect();
 }
 
@@ -1071,24 +1076,7 @@ const status = controller.getStatus('com3');
 console.log('Transport status:', status);
 ```
 
-### 9. `getStats(id?)`
-
-Gets the diagnostics/stats of a specific transport or all transports.
-
-**Parameters:**
-
-- id (string, optional): The ID of the transport to query. If omitted, returns stats for all transports.
-
-**Returns:** TransportStats[] - Array of transport statistics objects.
-
-**Example:**
-
-```js
-const stats = controller.getStats('com3');
-console.log('Transport statistics:', stats);
-```
-
-### 10. `getActiveTransportCount()`
+### 9. `getActiveTransportCount()`
 
 Returns the number of currently connected transports.
 
@@ -1096,7 +1084,7 @@ Returns the number of currently connected transports.
 
 **Returns:** number
 
-### 11. `setLoadBalancer(strategy)`
+### 10. `setLoadBalancer(strategy)`
 
 Sets the load balancing strategy for routing requests.
 
@@ -1108,6 +1096,43 @@ Sets the load balancing strategy for routing requests.
 
 ```js
 controller.setLoadBalancer('round-robin');
+```
+
+### 11. `reloadTransport(id, options)`
+
+Asynchronously reloads an existing transport with a new configuration. This is useful for changing settings like `baudRate` or even the physical `port` on the fly.
+The controller will first safely disconnect the existing transport, then create a new transport instance with the provided options. If the original transport was connected, the controller will attempt to connect the new one automatically.
+
+**Parameters:**
+
+- `id (string)`: The unique identifier of the transport to be reloaded.
+- `options (object)`: A new configuration object, identical in structure to the one used in `addTransport`.
+
+**Returns:** `Promise<void>`
+
+**Example:**
+
+```js
+// Initially, the transport is configured with a 9600 baudRate
+await controller.addTransport('com3', 'node', {
+  port: 'COM3',
+  baudRate: 9600,
+  slaveIds: [1],
+  RSMode: 'RS485',
+});
+await controller.connectAll();
+
+// ...some time later...
+
+// Reload the same transport with a new baudRate of 19200
+console.log('Reloading transport with new settings...');
+await controller.reloadTransport('com3', {
+  port: 'COM3',
+  baudRate: 19200,
+  slaveIds: [1], // Note: You must provide all required options again
+  RSMode: 'RS485',
+});
+console.log('Transport reloaded successfully.');
 ```
 
 ### 12. `destroy()`
@@ -1146,6 +1171,7 @@ async function modbusExample() {
       port: 'COM3',
       baudRate: 9600,
       slaveIds: [1, 2],
+      RSMode: 'RS485',
     });
 
     // Add another Node.js transport for slave ID 3
@@ -1153,6 +1179,7 @@ async function modbusExample() {
       port: 'COM4',
       baudRate: 115200,
       slaveIds: [3],
+      RSMode: 'RS485',
     });
 
     // Set up state tracking for each transport *after* adding but before connecting
@@ -1176,21 +1203,21 @@ async function modbusExample() {
     await controller.connectAll();
 
     // Create clients, passing the controller instance and their specific slaveId
-    const client1 = new ModbusClient(controller, 1, { timeout: 2000 }); // Uses 'com3'
-    const client2 = new ModbusClient(controller, 2, { timeout: 2000 }); // Uses 'com3'
-    const client3 = new ModbusClient(controller, 3, { timeout: 2000 }); // Uses 'com4'
+    const client1 = new ModbusClient(controller, 1, { timeout: 2000, RSMode: 'RS485' }); // Uses 'com3'
+    const client2 = new ModbusClient(controller, 2, { timeout: 2000, RSMode: 'RS485' }); // Uses 'com3'
+    const client3 = new ModbusClient(controller, 3, { timeout: 2000, RSMode: 'RS485' }); // Uses 'com4'
 
     await client1.connect();
     await client2.connect();
     await client3.connect();
 
-    const registers1 = await client1.readHoldingRegisters(0, 10);
+    const registers1 = await client1.readHoldingRegisters(0, 10, { type: 'uint16' });
     console.log('Registers from slave 1:', registers1);
 
-    const registers2 = await client2.readHoldingRegisters(0, 10);
+    const registers2 = await client2.readHoldingRegisters(0, 10, { type: 'uint16' });
     console.log('Registers from slave 2:', registers2);
 
-    const registers3 = await client3.readHoldingRegisters(0, 10);
+    const registers3 = await client3.readHoldingRegisters(0, 10, { type: 'uint16' });
     console.log('Registers from slave 3:', registers3);
 
     await client1.disconnect();
@@ -3281,16 +3308,19 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 
 # <span id="changelog">CHANGELOG</span>
 
-### 2.5.22-dev (2025-11-15)
+### 2.5.53 (2025-11-17)
 
--**Introduced `RSMode` for RTU Transports:**
-  - Added a new `RSMode` option (`'RS485'` or `'RS232'`) to `NodeSerialTransport` and `WebSerialTransport`, defaulting to `'RS485'`.
-  - The `TransportController` now enforces a strict single-device limit on transports configured in `'RS232'` mode, throwing a new `RSModeConstraintError` on violation during `addTransport` or `assignSlaveIdToTransport`.
-- **Enhanced Transport Selection Logic:**
-  - The `ModbusClient` now accepts an `RSMode` option to request a compatible transport.
-  - The `TransportController`'s `getTransportForSlave` method was updated to select transports based on both `slaveId` and the required `RSMode`, enabling correct routing in environments with mixed RS485 and RS232 buses.
-- **Updated TypeScript Declarations:**
-  - All relevant TypeScript declaration (`.d.ts`) files have been updated to reflect the new API changes, ensuring full type safety for the new features.
+**RSMode has been introduced for RTU transportation:**
+
+- Added a new option `RSMode` (`RS485` or `RS232`) for **NodeSerialTransport** and **WebSerialTransport**, the default value is **RS485**.
+- **TransportController** now applies a strict restriction on the use of one device for transport configured in **RS232** mode, issuing a new **RSModeConstraintError** when violation during `addTransport` or `assignSlaveIdToTransport`.
+- **Improved transport selection logic:**
+- `ModbusClient` now supports the `RSMode` option to request a compatible transport.
+  - The `getTransportForSlave` method in the **TransportController** has been updated to select vehicles based on both the `SlaveID` and the required `RSMode`, which ensures proper routing in environments with mixed RS485 and RS232 buses.
+- **Updated TypeScript declarations:**
+- All relevant TypeScript declaration files (`.d.ts`) have been updated to reflect the new API changes, ensuring full input security for new features.
+- Updated documentation on **modules**: `ModbusClient`, `Transport controller`
+- Added the `reloadTransport` method to **TransportController**
 
 ### 2.5.20 (2025-11-12)
 

@@ -325,14 +325,16 @@ class WebSerialTransport {
         try {
           await this.reader.cancel();
           this.reader.releaseLock();
-        } catch {
+        } catch (err) {
+          logger.debug(`Could not cancel previous reader, continuing: ${err.message}`);
         }
         this.reader = null;
       }
       if (this.writer) {
         try {
           this.writer.releaseLock();
-        } catch {
+        } catch (err) {
+          logger.debug(`Could not release previous writer, continuing: ${err.message}`);
         }
         this.writer = null;
       }
@@ -398,6 +400,7 @@ class WebSerialTransport {
               break;
             }
             if (value && value.length > 0) {
+              this._emptyReadCount = 0;
               if (this.readBuffer.length + value.length > WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE) {
                 logger.error("Buffer overflow detected");
                 throw new import_errors.ModbusBufferOverflowError(
@@ -409,6 +412,16 @@ class WebSerialTransport {
               newBuffer.set(this.readBuffer, 0);
               newBuffer.set(value, this.readBuffer.length);
               this.readBuffer = newBuffer;
+            } else {
+              this._emptyReadCount++;
+              logger.debug(`Empty read received, count: ${this._emptyReadCount}`);
+              if (this._emptyReadCount >= this.options.maxEmptyReadsBeforeReconnect) {
+                logger.warn(
+                  `Max empty reads (${this.options.maxEmptyReadsBeforeReconnect}) reached. Triggering reconnect.`
+                );
+                this._handleConnectionLoss("Too many empty reads");
+                break;
+              }
             }
           } catch (readErr) {
             if (this._readLoopAbortController.signal.aborted) {
@@ -466,7 +479,10 @@ class WebSerialTransport {
             if (this.writer) {
               try {
                 this.writer.releaseLock();
-              } catch {
+              } catch (err2) {
+                logger.debug(
+                  `Could not release writer is physical, continuing: ${err2.message}`
+                );
               }
               this.writer = null;
             }
@@ -601,7 +617,10 @@ class WebSerialTransport {
     if (this.writer) {
       try {
         this.writer.releaseLock();
-      } catch {
+      } catch (err) {
+        logger.debug(
+          `Could not release writer is connection loss, continuing: ${err.message}`
+        );
       }
       this.writer = null;
     }
@@ -609,7 +628,10 @@ class WebSerialTransport {
       try {
         this.reader.cancel();
         this.reader.releaseLock();
-      } catch {
+      } catch (err) {
+        logger.debug(
+          `Could not release reader is connection loss, continuing: ${err.message}`
+        );
       }
       this.reader = null;
     }
@@ -678,14 +700,20 @@ class WebSerialTransport {
         try {
           await this.reader.cancel();
           this.reader.releaseLock();
-        } catch {
+        } catch (err) {
+          logger.debug(
+            `Could not release reader is attempt reconnect, continuing: ${err.message}`
+          );
         }
         this.reader = null;
       }
       if (this.writer) {
         try {
           this.writer.releaseLock();
-        } catch {
+        } catch (err) {
+          logger.debug(
+            `Could not release writer is attempt reconnect, continuing: ${err.message}`
+          );
         }
         this.writer = null;
       }

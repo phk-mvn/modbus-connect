@@ -23,8 +23,8 @@ export function buildReadDiscreteInputsRequest(startAddress: number, quantity: n
   const view = new DataView(buffer);
 
   view.setUint8(0, FUNCTION_CODE);
-  view.setUint16(1, startAddress, false); // Big-endian
-  view.setUint16(3, quantity, false); // Big-endian
+  view.setUint16(1, startAddress, false);
+  view.setUint16(3, quantity, false);
 
   return new Uint8Array(buffer);
 }
@@ -57,7 +57,7 @@ export function parseReadDiscreteInputsResponse(pdu: Uint8Array): ReadDiscreteIn
     throw new Error(`Invalid length: expected ${expectedLength}, got ${pduLength}`);
   }
 
-  const quantity = (pdu[3]! << 8) | pdu[4]!; // Big-endian чтение
+  const quantity = (pdu[3]! << 8) | pdu[4]!;
   if (quantity > byteCount * 8) {
     throw new Error(`Invalid quantity: ${quantity} exceeds byte capacity`);
   }

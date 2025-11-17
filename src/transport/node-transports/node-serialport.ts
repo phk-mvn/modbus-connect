@@ -1,6 +1,6 @@
 // src/transport/node-transports/node-serialport.ts
 
-import { SerialPort, SerialPortOpenOptions } from 'serialport';
+import { SerialPort } from 'serialport';
 import { Mutex } from 'async-mutex';
 import { concatUint8Arrays, sliceUint8Array, allocUint8Array } from '../../utils/utils.js';
 import Logger from '../../logger.js';
@@ -381,7 +381,7 @@ class NodeSerialTransport implements Transport {
 
   private async _createAndOpenPort(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const serialOptions: SerialPortOpenOptions<any> = {
+      const serialOptions = {
         path: this.path,
         baudRate: this.options.baudRate,
         dataBits: this.options.dataBits,
