@@ -51,6 +51,9 @@ npm install modbus-connect
 The library provides several entry points for different functionalities:
 
 ```js
+// Types library
+import { _type_ } from 'modbus-connect/types';
+
 // Main Modbus client
 import ModbusClient from 'modbus-connect/client';
 
@@ -3334,10 +3337,11 @@ The recommended way to add proprietary or non-standard functionality is by creat
 
 # <span id="changelog">CHANGELOG</span>
 
-### 2.6.6 (2025-11-18)
+### 2.6.8 (2025-11-18)
 
 - **Removed** special functions for the SGM130
 - **Added** a [plugin system](#plugin-system) (for custom functions)
+- **Added** a importing library types (check [Basic Usage](#basic-usage))
 
 ### 2.5.53 (2025-11-17)
 

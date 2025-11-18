@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "2.6.6",
+  "version": "2.6.8",
   "description": "Modbus RTU over Web Serial and Node.js SerialPort",
   "main": "./client.js",
   "type": "commonjs",
@@ -30,6 +30,11 @@
       "types": "./src/types/slave-emulator.d.ts",
       "require": "./dist/slave-emulator.js",
       "import": "./dist/slave-emulator.js"
+    },
+    "./types": {
+      "types": "./src/types/index.d.ts",
+      "require": "./dist/types/modbus-types.js",
+      "import": "./dist/types/modbus-types.js"
     }
   },
   "scripts": {
