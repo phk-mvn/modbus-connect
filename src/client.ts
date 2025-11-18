@@ -60,28 +60,6 @@ import {
   buildReadDeviceIdentificationRequest,
   parseReadDeviceIdentificationResponse,
 } from './function-codes/read-device-identification.js';
-// Special functions for SGM130
-import {
-  buildReadFileLengthRequest,
-  parseReadFileLengthResponse,
-} from './function-codes/SGM130/read-file-length.js';
-import { buildOpenFileRequest, parseOpenFileResponse } from './function-codes/SGM130/openFile.js';
-import {
-  buildCloseFileRequest,
-  parseCloseFileResponse,
-} from './function-codes/SGM130/closeFile.js';
-import {
-  buildRestartControllerRequest,
-  parseRestartControllerResponse,
-} from './function-codes/SGM130/restart-controller.js';
-import {
-  buildGetControllerTimeRequest,
-  parseGetControllerTimeResponse,
-} from './function-codes/SGM130/get-controller-time.js';
-import {
-  buildSetControllerTimeRequest,
-  parseSetControllerTimeResponse,
-} from './function-codes/SGM130/set-controller-time.js';
 import {
   ModbusTimeoutError,
   ModbusExceptionError,
@@ -142,7 +120,6 @@ import {
   Transport,
   ModbusClientOptions,
   ConvertRegisterOptions,
-  ControllerTime,
   LogContext as LoggerContext,
   ConvertedRegisters,
   ReadCoilsResponse,
@@ -153,15 +130,11 @@ import {
   WriteMultipleRegistersResponse,
   ReportSlaveIdResponse,
   ReadDeviceIdentificationResponse,
-  ReadFileLengthResponse,
-  OpenFileResponse,
-  CloseFileResponse,
-  RestartControllerResponse,
-  GetControllerTimeResponse,
-  SetControllerTimeResponse,
   TransportControllerInterface,
   ConnectionErrorType,
   RSMode,
+  IModbusPlugin,
+  CustomFunctionHandler,
 } from './types/modbus-types.js';
 
 // Type for CRC function
@@ -193,6 +166,7 @@ type SwapMode = 'sw' | 'sb' | 'sbw' | 'le' | 'le_sw' | 'le_sb' | 'le_sbw';
 class ModbusClient {
   private transportController: TransportControllerInterface;
   private slaveId: number;
+  private options: ModbusClientOptions;
   private rsMode: RSMode;
   private defaultTimeout: number;
   private retryCount: number;
@@ -200,6 +174,11 @@ class ModbusClient {
   private echoEnabled: boolean;
   private crcFunc: CrcFunction;
   private _mutex: Mutex;
+
+  private _plugins: IModbusPlugin[] = [];
+  private _customFunctions: Map<string, CustomFunctionHandler> = new Map();
+  private _customRegisterTypes: Map<string, (registers: number[]) => any[]> = new Map();
+  private _customCrcAlgorithms: Map<string, CrcFunction> = new Map();
 
   private static readonly FUNCTION_CODE_MAP = new Map<number, ModbusFunctionCode>([
     [0x01, ModbusFunctionCode.READ_COILS],
@@ -246,6 +225,7 @@ class ModbusClient {
 
     this.transportController = transportController;
     this.slaveId = slaveId;
+    this.options = options;
     this.rsMode = options.RSMode ?? 'RS485';
     this.defaultTimeout = options.timeout ?? 2000;
     this.retryCount = options.retryCount ?? 0;
@@ -257,9 +237,18 @@ class ModbusClient {
     if (!crcFunc) {
       throw new ModbusConfigError(`Unknown CRC algorithm: ${algorithm}`);
     }
+
     this.crcFunc = crcFunc;
     this._mutex = new Mutex();
     this._setAutoLoggerContext();
+
+    if (options.plugins && Array.isArray(options.plugins)) {
+      for (const PluginClass of options.plugins) {
+        this.use(new PluginClass());
+      }
+    }
+
+    this._resolveCrcFunction(options.crcAlgorithm ?? 'crc16Modbus');
   }
 
   /**
@@ -306,6 +295,116 @@ class ModbusClient {
       context.funcCode = funcCode;
     }
     logger.addGlobalContext(context);
+  }
+
+  /**
+   * Registers a plugin with the ModbusClient.
+   * @param plugin - The plugin to register.
+   */
+  public use(plugin: IModbusPlugin): void {
+    if (!plugin || typeof plugin.name !== 'string') {
+      throw new Error(
+        'Invalid plugin provided. A plugin must be an object with a "name" property.'
+      );
+    }
+
+    if (this._plugins.some(p => p.name === plugin.name)) {
+      logger.warn(`Plugin with name "${plugin.name}" is already registered. Skipping.`);
+      return;
+    }
+
+    this._plugins.push(plugin);
+
+    if (plugin.customFunctionCodes) {
+      for (const funcName in plugin.customFunctionCodes) {
+        if (this._customFunctions.has(funcName)) {
+          logger.warn(
+            `Custom function "${funcName}" from plugin "${plugin.name}" overrides an existing function.`
+          );
+        }
+        const handler = plugin.customFunctionCodes[funcName];
+        if (handler) {
+          this._customFunctions.set(funcName, handler);
+        }
+      }
+    }
+
+    if (plugin.customRegisterTypes) {
+      for (const typeName in plugin.customRegisterTypes) {
+        const isBuiltIn = Object.values(RegisterType).includes(typeName as RegisterType);
+        if (this._customRegisterTypes.has(typeName) || isBuiltIn) {
+          logger.warn(
+            `Custom register type "${typeName}" from plugin "${plugin.name}" overrides an existing type.`
+          );
+        }
+        const handler = plugin.customRegisterTypes[typeName];
+        if (handler) {
+          this._customRegisterTypes.set(typeName, handler);
+        }
+      }
+    }
+
+    if (plugin.customCrcAlgorithms) {
+      for (const algoName in plugin.customCrcAlgorithms) {
+        if (this._customCrcAlgorithms.has(algoName) || crcAlgorithmMap[algoName]) {
+          logger.warn(
+            `Custom CRC algorithm "${algoName}" from plugin "${plugin.name}" overrides an existing algorithm.`
+          );
+        }
+        const handler = plugin.customCrcAlgorithms[algoName];
+        if (handler) {
+          this._customCrcAlgorithms.set(algoName, handler);
+        }
+      }
+      const currentCrcName = this.options.crcAlgorithm ?? 'crc16Modbus';
+      if (plugin.customCrcAlgorithms[currentCrcName]) {
+        this._resolveCrcFunction(currentCrcName);
+      }
+    }
+
+    logger.info(`Plugin "${plugin.name}" registered successfully.`);
+  }
+
+  /**
+   * Executes a custom function registered by a plugin.
+   * @param functionName - The name of the custom function to execute.
+   * @param args - Arguments to pass to the custom function.
+   * @returns The result of the custom function.
+   */
+  public async executeCustomFunction(functionName: string, ...args: any[]): Promise<any> {
+    const handler = this._customFunctions.get(functionName);
+    if (!handler) {
+      throw new Error(
+        `Custom function "${functionName}" is not registered. Have you registered the plugin using client.use()?`
+      );
+    }
+
+    const requestPdu = handler.buildRequest(...args);
+
+    const responsePdu = await this._sendRequest(requestPdu);
+    if (!responsePdu) {
+      return handler.parseResponse(new Uint8Array(0));
+    }
+
+    return handler.parseResponse(responsePdu);
+  }
+
+  /**
+   * Resolves the CRC function based on the provided algorithm.
+   * @param algorithm - The CRC algorithm to resolve.
+   */
+  private _resolveCrcFunction(algorithm: string): void {
+    const customFunc = this._customCrcAlgorithms.get(algorithm);
+    const builtInFunc = crcAlgorithmMap[algorithm];
+
+    if (customFunc) {
+      this.crcFunc = customFunc;
+      logger.debug(`Using custom CRC algorithm "${algorithm}" from a plugin.`);
+    } else if (builtInFunc) {
+      this.crcFunc = builtInFunc;
+    } else {
+      throw new ModbusConfigError(`Unknown CRC algorithm: ${algorithm}`);
+    }
   }
 
   /**
@@ -797,9 +896,14 @@ class ModbusClient {
   private _convertRegisters<T extends RegisterType>(
     registers: number[],
     type: T = RegisterType.UINT16 as T
-  ): ConvertedRegisters<T> {
+  ): any {
     if (!registers || !Array.isArray(registers)) {
       throw new ModbusDataConversionError(registers, 'non-empty array');
+    }
+
+    const customTypeHandler = this._customRegisterTypes.get(type as string);
+    if (customTypeHandler) {
+      return customTypeHandler(registers);
     }
 
     const buffer = new ArrayBuffer(registers.length * 2);
@@ -993,15 +1097,24 @@ class ModbusClient {
           return ((high >> 4) * 10 + (high & 0x0f)) * 100 + (low >> 4) * 10 + (low & 0x0f);
         }) as ConvertedRegisters<T>;
       default:
-        throw new ModbusDataConversionError(type, 'supported type');
+        throw new ModbusDataConversionError(type, 'a supported built-in or custom register type');
     }
   }
 
+  /**
+   * Reads holding registers from the Modbus device.
+   * @param startAddress - The starting address of the registers to read.
+   * @param quantity - The number of registers to read.
+   * @param options - Optional options for the conversion.
+   * @returns The converted registers.
+   * @throws ModbusInvalidAddressError If the start address is invalid.
+   * @throws ModbusInvalidQuantityError If the quantity is invalid.
+   */
   public async readHoldingRegisters<T extends RegisterType>(
     startAddress: number,
     quantity: number,
     options: ConvertRegisterOptions = {}
-  ): Promise<ConvertedRegisters<T>> {
+  ): Promise<any> {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
       throw new ModbusInvalidAddressError(startAddress);
     }
@@ -1018,11 +1131,20 @@ class ModbusClient {
     return this._convertRegisters(registers, type) as ConvertedRegisters<T>;
   }
 
+  /**
+   * Reads input registers from the Modbus device.
+   * @param startAddress - The starting address of the registers to read.
+   * @param quantity - The number of registers to read.
+   * @param options - Optional options for the conversion.
+   * @returns The converted registers.
+   * @throws ModbusInvalidAddressError If the start address is invalid.
+   * @throws ModbusInvalidQuantityError If the quantity is invalid.
+   */
   public async readInputRegisters<T extends RegisterType>(
     startAddress: number,
     quantity: number,
     options: ConvertRegisterOptions = {}
-  ): Promise<ConvertedRegisters<T>> {
+  ): Promise<any> {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
       throw new ModbusInvalidAddressError(startAddress);
     }
@@ -1039,6 +1161,15 @@ class ModbusClient {
     return this._convertRegisters(registers, type) as ConvertedRegisters<T>;
   }
 
+  /**
+   * Writes a single register to the Modbus device.
+   * @param address - The address of the register to write.
+   * @param value - The value to write to the register.
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   * @throws ModbusInvalidAddressError If the address is invalid.
+   * @throws ModbusIllegalDataValueError If the value is invalid.
+   */
   public async writeSingleRegister(
     address: number,
     value: number,
@@ -1058,6 +1189,16 @@ class ModbusClient {
     return parseWriteSingleRegisterResponse(responsePdu);
   }
 
+  /**
+   * Writes multiple registers to the Modbus device.
+   * @param startAddress - The starting address of the registers to write.
+   * @param values - The values to write to the registers.
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   * @throws ModbusInvalidAddressError If the start address is invalid.
+   * @throws ModbusInvalidQuantityError If the quantity is invalid.
+   * @throws ModbusIllegalDataValueError If any of the values are invalid.
+   */
   public async writeMultipleRegisters(
     startAddress: number,
     values: number[],
@@ -1081,6 +1222,15 @@ class ModbusClient {
     return parseWriteMultipleRegistersResponse(responsePdu);
   }
 
+  /**
+   * Reads coils from the Modbus device.
+   * @param startAddress - The starting address of the coils to read.
+   * @param quantity - The number of coils to read.
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   * @throws ModbusInvalidAddressError If the start address is invalid.
+   * @throws ModbusInvalidQuantityError If the quantity is invalid.
+   */
   public async readCoils(
     startAddress: number,
     quantity: number,
@@ -1100,6 +1250,15 @@ class ModbusClient {
     return parseReadCoilsResponse(responsePdu);
   }
 
+  /**
+   * Reads discrete inputs from the Modbus device.
+   * @param startAddress - The starting address of the discrete inputs to read.
+   * @param quantity - The number of discrete inputs to read.
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   * @throws ModbusInvalidAddressError If the start address is invalid.
+   * @throws ModbusInvalidQuantityError If the quantity is invalid.
+   */
   public async readDiscreteInputs(
     startAddress: number,
     quantity: number,
@@ -1119,6 +1278,15 @@ class ModbusClient {
     return parseReadDiscreteInputsResponse(responsePdu);
   }
 
+  /**
+   * Writes a single coil to the Modbus device.
+   * @param address - The address of the coil to write.
+   * @param value - The value to write to the coil (boolean or 0/1).
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   * @throws ModbusInvalidAddressError If the address is invalid.
+   * @throws ModbusIllegalDataValueError If the value is invalid.
+   */
   public async writeSingleCoil(
     address: number,
     value: boolean | number,
@@ -1138,6 +1306,16 @@ class ModbusClient {
     return parseWriteSingleCoilResponse(responsePdu);
   }
 
+  /**
+   * Writes multiple coils to the Modbus device.
+   * @param startAddress - The starting address of the coils to write.
+   * @param values - The values to write to the coils (array of booleans or 0/1).
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   * @throws ModbusInvalidAddressError If the start address is invalid.
+   * @throws ModbusInvalidQuantityError If the quantity is invalid.
+   * @throws ModbusIllegalDataValueError If any of the values are invalid.
+   */
   public async writeMultipleCoils(
     startAddress: number,
     values: boolean[],
@@ -1157,6 +1335,11 @@ class ModbusClient {
     return parseWriteMultipleCoilsResponse(responsePdu);
   }
 
+  /**
+   * Reports the slave ID of the Modbus device.
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   */
   public async reportSlaveId(timeout?: number): Promise<ReportSlaveIdResponse> {
     const pdu = buildReportSlaveIdRequest();
     const responsePdu = await this._sendRequest(pdu, timeout);
@@ -1166,6 +1349,11 @@ class ModbusClient {
     return parseReportSlaveIdResponse(responsePdu);
   }
 
+  /**
+   * Reads device identification from the Modbus device.
+   * @param timeout - Optional timeout for the request.
+   * @returns The response from the device.
+   */
   public async readDeviceIdentification(
     timeout?: number
   ): Promise<ReadDeviceIdentificationResponse> {
@@ -1180,88 +1368,6 @@ class ModbusClient {
     } finally {
       this.slaveId = originalSlaveId;
     }
-  }
-
-  public async readFileLength(timeout?: number): Promise<ReadFileLengthResponse> {
-    const pdu = buildReadFileLengthRequest('');
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    if (!responsePdu) {
-      throw new Error('No response received');
-    }
-    return parseReadFileLengthResponse(responsePdu);
-  }
-
-  public async openFile(filename: string, timeout?: number): Promise<OpenFileResponse> {
-    if (typeof filename !== 'string' || filename.length === 0) {
-      throw new ModbusDataConversionError(filename, 'non-empty string');
-    }
-    const pdu = buildOpenFileRequest(filename);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    if (!responsePdu) {
-      throw new Error('No response received');
-    }
-    return parseOpenFileResponse(responsePdu);
-  }
-
-  public async closeFile(timeout?: number): Promise<CloseFileResponse> {
-    const pdu = buildCloseFileRequest();
-    const responsePdu = await this._sendRequest(pdu, timeout, true);
-    if (responsePdu === undefined) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      const transport = this._effectiveTransport;
-      if (transport && transport.flush) {
-        await transport.flush();
-      }
-      return true as CloseFileResponse;
-    }
-    const result = parseCloseFileResponse(responsePdu);
-    await new Promise(resolve => setTimeout(resolve, 100));
-    const transport = this._effectiveTransport;
-    if (transport && transport.flush) {
-      await transport.flush();
-    }
-    return result;
-  }
-
-  public async restartController(timeout?: number): Promise<RestartControllerResponse> {
-    const pdu = buildRestartControllerRequest();
-    const responsePdu = await this._sendRequest(pdu, timeout, true);
-    if (responsePdu === undefined) {
-      return { success: true } as RestartControllerResponse;
-    }
-    return parseRestartControllerResponse(responsePdu);
-  }
-
-  public async getControllerTime(timeout?: number): Promise<GetControllerTimeResponse> {
-    const pdu = buildGetControllerTimeRequest();
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    if (!responsePdu) {
-      throw new Error('No response received');
-    }
-    return parseGetControllerTimeResponse(responsePdu);
-  }
-
-  public async setControllerTime(
-    datetime: Date,
-    timeout?: number
-  ): Promise<SetControllerTimeResponse> {
-    if (!(datetime instanceof Date) || isNaN(datetime.getTime())) {
-      throw new ModbusDataConversionError(datetime, 'valid Date object');
-    }
-    const time: ControllerTime = {
-      seconds: datetime.getSeconds(),
-      minutes: datetime.getMinutes(),
-      hours: datetime.getHours(),
-      day: datetime.getDate(),
-      month: datetime.getMonth() + 1,
-      year: datetime.getFullYear(),
-    };
-    const pdu = buildSetControllerTimeRequest(time);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    if (!responsePdu) {
-      throw new Error('No response received');
-    }
-    return parseSetControllerTimeResponse(responsePdu);
   }
 }
 

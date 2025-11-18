@@ -3,6 +3,35 @@
 import { RegisterType } from '../constants/constants.js';
 
 // !=============================================================================
+// ! Типы для плагинов
+// !=============================================================================
+/**
+ * Описывает обработчик для одной кастомной функции Modbus.
+ */
+export interface CustomFunctionHandler {
+  /** Функция для сборки PDU (тела) запроса. */
+  buildRequest: (...args: any[]) => Uint8Array;
+  /** Функция для разбора PDU ответа от устройства. */
+  parseResponse: (responsePdu: Uint8Array) => any;
+}
+
+/**
+ * Интерфейс, которому должен соответствовать любой плагин.
+ */
+export interface IModbusPlugin {
+  /** Уникальное имя плагина, полезно для отладки. */
+  name: string;
+  /** Регистрация обработчиков для нестандартных кодов функций. */
+  customFunctionCodes?: { [functionName: string]: CustomFunctionHandler };
+  /** Регистрация обработчиков для кастомных типов данных. */
+  customRegisterTypes?: { [typeName: string]: (registers: number[]) => any[] };
+  /** Регистрация кастомных алгоритмов расчета контрольной суммы. */
+  customCrcAlgorithms?: { [algorithmName: string]: (data: Uint8Array) => Uint8Array };
+}
+
+export type PluginConstructor = new (...args: any[]) => IModbusPlugin;
+
+// !=============================================================================
 // ! Типы для функций чтения Modbus
 // !=============================================================================
 
@@ -64,50 +93,6 @@ export interface ReadDeviceIdentificationResponse {
   numberOfObjects: number;
   objects: Record<number, string>;
 }
-
-// !=============================================================================
-// ! Типы для функций SGM130
-// !=============================================================================
-
-/** Ответ на запрос длины файла */
-export type ReadFileLengthResponse = number;
-
-/** Ответ на запрос открытия файла */
-export interface OpenFileResponse {
-  fileLength: number;
-}
-
-/** Ответ на запрос закрытия файла */
-export type CloseFileResponse = boolean;
-
-/** Ответ на запрос перезапуска контроллера */
-export interface RestartControllerResponse {
-  success: boolean;
-  warning?: string;
-}
-
-/** Ответ на запрос получения времени контроллера */
-export interface GetControllerTimeResponse {
-  seconds: number;
-  minutes: number;
-  hours: number;
-  day: number;
-  month: number;
-  year: number;
-}
-
-/** Структура для представления времени контроллера */
-export interface ControllerTime {
-  seconds: number;
-  minutes: number;
-  hours: number;
-  day: number;
-  month: number;
-  year: number;
-}
-
-/** Ответ на запрос установки времени контроллера */
-export type SetControllerTimeResponse = boolean;
 
 // !=============================================================================
 // ! Интерфейсы для транспорта
@@ -388,6 +373,7 @@ export interface ModbusClientOptions {
   retryCount?: number;
   retryDelay?: number;
   echoEnabled?: boolean;
+  plugins?: PluginConstructor[];
   crcAlgorithm?:
     | 'crc16Modbus'
     | 'crc16CcittFalse'

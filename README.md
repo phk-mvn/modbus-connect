@@ -15,6 +15,7 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - [Logger](#logger)
 - [Utils](#utils)
 - [Utils CRC](#utils-crc)
+- [Plugin System](#plugin-system)
 - [Tips for use](#tips-for-use)
 - [Expansion](#expansion)
 - [CHANGELOG](#changelog)
@@ -31,6 +32,7 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - Diagnostic tools for monitoring communication performance.
 - Utility functions for CRC calculation, buffer manipulation, and data conversion.
 - Slave emulator for testing purposes (without COM port).
+- **Plugin System:** Extend client functionality with custom functions, data types, and CRC algorithms without modifying the library core.
 
 <br>
 
@@ -202,8 +204,8 @@ Key Features:
 - **Errors**: Special classes (`ModbusTimeoutError`, `ModbusCRCError`, `ModbusExceptionError`, etc.).
 - **CRC**: Support for various algorithms (`crc16Modbus` by default).
 - **Echo**: Optional echo check for serial (for debugging).
-
-**Dependencies:**
+- **Extensible via Plugins:** Supports external plugins to add proprietary function codes, custom data types, and new CRC algorithms without modifying the library's source code.
+  **Dependencies:**
 
 - async-mutex for synchronization.
 - Functions from ./function-codes/\* for building/parsing PDUs.
@@ -223,6 +225,9 @@ const TransportController = require('modbus-connect/transport');
 Create an instance:
 
 ```js
+// Import your plugin class
+const { MyAwesomePlugin } = require('./plugins/my-awesome-plugin.js');
+
 const controller = new TransportController();
 await controller.addTransport('com-port-3', 'node', {
   port: 'COM3',
@@ -243,6 +248,7 @@ const options = {
   diagnostics: true,
   echoEnabled: true,
   crcAlgorithm: 'crc16Modbus',
+  plugins: [MyAwesomePlugin], // Pass plugin classes directly in constructor
 };
 
 const client = new ModbusClient(controller, 1, options);
@@ -310,8 +316,6 @@ client.setLoggerContext({ env: 'test' });
 
 The context is added to all logs.
 
-Internally, \_setAutoLoggerContext(funcCode) updates { slaveId, transport } + funcCode.
-
 ## Basic Modbus methods (standard functions)
 
 ### Standard Modbus Functions
@@ -328,19 +332,6 @@ Internally, \_setAutoLoggerContext(funcCode) updates { slaveId, transport } + fu
 | 0x0F | Write multiple Coils       |
 | 0x2B | Read Device Identification |
 | 0x11 | Report Slave ID            |
-
-### Custom Function (for SGM 130)
-
-| HEX  | Name                 |
-| :--: | -------------------- |
-| 0x14 | Read Device Comment  |
-| 0x15 | Write Device Comment |
-| 0x52 | Read File Length     |
-| 0x55 | Open File            |
-| 0x57 | Close File           |
-| 0x5C | Restart Controller   |
-| 0x6E | Get Controller Time  |
-| 0x6F | Set Controller Time  |
 
 ### Summary type data
 
@@ -577,96 +568,6 @@ Reading identification (function 0x2B). SlaveId is temporarily reset to 0.
 ```js
 const id = await client.readDeviceIdentification();
 console.log(id); // { vendor: 'ABC', product: 'XYZ', ... }
-```
-
-## Special functions for SGM130
-
-### 1. readDeviceComment(channel, timeout)
-
-Reading comment (function 0x14). channel: 0-15.
-
-**Example:**
-
-```js
-const comment = await client.readDeviceComment(0);
-console.log(comment); // { channel: 0, comment: 'Device info' }
-```
-
-### 2. writeDeviceComment(comment, timeout)
-
-Write a comment (function 0x15).
-
-**Exmaple:**
-
-```js
-const response = await client.writeDeviceComment('New comment');
-console.log(response); // { channel: 0, length: 11 }
-```
-
-### 3. readFileLength(timeout)
-
-Read file length (0x52).
-
-**Example:**
-
-```js
-const length = await client.readFileLength();
-console.log(length); // { fileLength: 1024 }
-```
-
-### 4. openFile(filename, timeout)
-
-Opening a file (0x55).
-
-**Example:**
-
-```js
-const handle = await client.openFile('config.txt');
-console.log(handle); // { fileHandle: 1 }
-```
-
-### 5. closeFile(timeout)
-
-Closing a file (0x57). Ignores the lack of a response, flushes the transport.
-
-**Example:**
-
-```js
-const success = await client.closeFile();
-console.log(success); // true
-```
-
-### 6. restartController(timeout)
-
-Restarting (0x5C). Ignores the response.
-
-**Example:**
-
-```js
-await client.restartController(); // No return, or { status: true }
-```
-
-### 7. getControllerTime(timeout)
-
-Reads the time (0x6E). Returns a Date or object.
-
-**Example:**
-
-```js
-const time = await client.getControllerTime();
-console.log(time); // { datetime: new Date('2025-10-07T12:00:00') }
-```
-
-### 8. setControllerTime(datetime, timeout)
-
-Sets the time (0x6F). datetime: Date.
-
-**Example:**
-
-```js
-const now = new Date();
-const response = await client.setControllerTime(now);
-console.log(response); // { status: 0 }
 ```
 
 ## Internal methods (For expansion)
@@ -3293,6 +3194,131 @@ The module exports functions. No initialization required—just import. No depen
 
 <br>
 
+# <span id="plugin-system">Plugin System</span>
+
+The plugin system allows you to extend the functionality of `ModbusClient` without altering the library's core code. You can add support for proprietary commands, specific data types, and custom CRC algorithms by creating plugins directly in your project.
+
+### How It Works
+
+You create a class that implements the `IModbusPlugin` interface and pass its constructor to the `ModbusClient` options. The client will automatically instantiate and register it.
+
+### Step 1: Creating a Plugin
+
+First, create a plugin file in your project (e.g., `plugins/my-plugin.js`). Your plugin class must implement the `IModbusPlugin` interface.
+
+```js
+// my-project/plugins/my-plugin.js
+
+/**
+ * A plugin to handle proprietary functions for Energia-9 devices.
+ * @implements {import('modbus-connect').IModbusPlugin}
+ */
+class MyPlugin {
+  // 1. A unique name for your plugin
+  name = 'my-archive-plugin';
+
+  // 2. Define custom functions
+  customFunctionCodes = {
+    /**
+     * A friendly name to call this function by.
+     */
+    readDailyArchive: {
+      /**
+       * Builds the request PDU.
+       * @param {Date} date - The date for which to request the archive.
+       * @returns {Uint8Array} The request PDU.
+       */
+      buildRequest: date => {
+        const pdu = new Uint8Array(4);
+        pdu = 0x6a; // Proprietary function code
+        pdu = date.getFullYear() - 2000;
+        pdu = date.getMonth() + 1;
+        pdu = date.getDate();
+        return pdu;
+      },
+      /**
+       * Parses the response PDU from the device.
+       * @param {Uint8Array} responsePdu - The response PDU.
+       * @returns {object[]} An array of parsed archive records.
+       */
+      parseResponse: responsePdu => {
+        if (responsePdu !== 0x6a) {
+          throw new Error('Plugin Error: Invalid function code in response');
+        }
+        const recordCount = responsePdu;
+        // ... add your detailed binary data parsing logic here ...
+        console.log(`Parsing ${recordCount} records...`);
+        return [{ hour: 0, minute: 0, consumption: 12.34 }]; // Placeholder
+      },
+    },
+  };
+
+  // 3. (Optional) Define custom register types
+  customRegisterTypes = {
+    'special-string': registers => {
+      // Custom logic to convert an array of numbers (registers) into a special string format
+      let str = '';
+      for (const reg of registers) {
+        const high = (reg >> 8) & 0xff;
+        const low = reg & 0xff;
+        if (low !== 0) str += String.fromCharCode(low);
+        if (high !== 0) str += String.fromCharCode(high);
+      }
+      return [str];
+    },
+  };
+}
+
+module.exports = { MyPlugin };
+```
+
+### Step 2: Using the Plugin
+
+In your main application file, import your plugin and pass it to the `ModbusClient` constructor.
+
+```js
+const ModbusClient = require('modbus-connect/client');
+const TransportController = require('modbus-connect/transport');
+const { MyPlugin } = require('./plugins/my-plugin.js'); // Import your plugin
+
+async function main() {
+  const controller = new TransportController();
+  await controller.addTransport('com3', 'node', { port: 'COM3', baudRate: 9600 });
+  await controller.connectAll();
+
+  // Pass the plugin class in the options
+  const client = new ModbusClient(controller, 1, {
+    plugins: [MyPlugin],
+  });
+
+  try {
+    // Now you can call your custom function by its friendly name
+    const records = await client.executeCustomFunction('readDailyArchive', new Date());
+    console.log('Archive records:', records);
+
+    // And use your custom data type
+    const specialString = await client.readHoldingRegisters(100, 5, { type: 'special-string' });
+    console.log('Special string:', specialString);
+  } catch (err) {
+    console.error('Failed to execute custom function:', err);
+  } finally {
+    await controller.disconnectAll();
+  }
+}
+
+main();
+```
+
+### Plugin Capabilities
+
+A plugin can provide three types of extensions:
+
+- `customFunctionCodes`: Adds new methods callable via `client.executeCustomFunction()`.
+- `customRegisterTypes`: Adds new string identifiers for the `type` option in `readHoldingRegisters` and `readInputRegisters`.
+- `customCrcAlgorithms`: Adds new CRC calculation functions, which can be selected via the `crcAlgorithm` option in the client constructor.
+
+<br>
+
 # <span id="tips-for-use">Tips for use</span>
 
 - For Node.js, the `serialport` package is required (`npm install serialport`).
@@ -3302,11 +3328,16 @@ The module exports functions. No initialization required—just import. No depen
 
 # <span id="expansion">Expansion</span>
 
-You can add your own Modbus functions by implementing a pair of `build...Request` and `parse...Response` functions in the `function-codes/` folder, then importing them into the ModbusClient in `modbus/client.js`
+The recommended way to add proprietary or non-standard functionality is by creating a plugin. See the [Plugin System](#plugin-system) section for a detailed guide.
 
 <br>
 
 # <span id="changelog">CHANGELOG</span>
+
+### 2.6.6 (2025-11-18)
+
+- **Removed** special functions for the SGM130
+- **Added** a [plugin system](#plugin-system) (for custom functions)
 
 ### 2.5.53 (2025-11-17)
 
@@ -3349,15 +3380,4 @@ You can add your own Modbus functions by implementing a pair of `build...Reques
 - The device connection status tracker has been moved to a separate module connected to the transport.
 - A port connection status tracker has been added.
 - A layer has been added to the TransportController transport creation module.
-  > see more details in [Transport Controller](#transport-controller)
-
-### 2.3.53 (2025-10-23)
-
-- Improved device connection state listener handling for `WebSerialTransports` and `NodeSerialTransports`
-- Improved the reconnect algorithm in conjunction with the device connection state listener
-
-### 2.3.18 (2025-10-22)
-
-- Added many handlers for various Modbus errors
-- Added listeners to `WebSerialTransports` and `NodeSerialTransports`
   > see more details in [Transport Controller](#transport-controller)

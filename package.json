@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "2.5.53",
+  "version": "2.6.6",
   "description": "Modbus RTU over Web Serial and Node.js SerialPort",
   "main": "./client.js",
   "type": "commonjs",
@@ -107,7 +107,7 @@
     "@types/node": "^24.10.1",
     "@types/serialport": "^10.2.0",
     "@typescript-eslint/eslint-plugin": "^8.46.4",
-    "@typescript-eslint/parser": "^8.46.4",
+    "@typescript-eslint/parser": "^8.47.0",
     "esbuild": "^0.27.0",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.1.8",
@@ -115,6 +115,6 @@
     "globals": "^16.5.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.46.4"
+    "typescript-eslint": "^8.47.0"
   }
 }

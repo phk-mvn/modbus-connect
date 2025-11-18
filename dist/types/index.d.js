@@ -15,6 +15,7 @@ var __reExport = (target, mod, secondTarget) => (__copyProps(target, mod, "defau
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var index_d_exports = {};
 module.exports = __toCommonJS(index_d_exports);
+__reExport(index_d_exports, require("./modbus-types.js"), module.exports);
 __reExport(index_d_exports, require("./client.d.js"), module.exports);
 __reExport(index_d_exports, require("./polling-manager.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/transport.d.js"), module.exports);
@@ -28,6 +29,7 @@ __reExport(index_d_exports, require("../transport/trackers/PortConnectionTracker
 __reExport(index_d_exports, require("../transport/transport-controller.d.js"), module.exports);
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  ...require("./modbus-types.js"),
   ...require("./client.d.js"),
   ...require("./polling-manager.d.js"),
   ...require("../transport/transport.d.js"),

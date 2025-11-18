@@ -1,5 +1,6 @@
 // src/types/index.d.ts
 
+export * from './modbus-types.js';
 export * from './client.d.js';
 export * from './polling-manager.d.js';
 export * from '../transport/transport.d.js';

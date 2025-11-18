@@ -1,10 +1,10 @@
 // src/types/client.d.ts
 
+import { IModbusPlugin } from './modbus-types.js';
 import { RegisterType } from '../constants/constants.js';
 import { LogContext as LoggerContext } from './logger.js';
 import {
   ModbusClientOptions,
-  ConvertRegisterOptions,
   ReadCoilsResponse,
   ReadDiscreteInputsResponse,
   WriteSingleCoilResponse,
@@ -19,7 +19,6 @@ import {
   RestartControllerResponse,
   GetControllerTimeResponse,
   SetControllerTimeResponse,
-  ConvertedRegisters,
   TransportControllerInterface,
 } from './modbus-types.js';
 
@@ -28,7 +27,7 @@ declare class ModbusClient {
    * Creates a new Modbus client instance.
    * @param transportController - The TransportControllerInterface managing transports.
    * @param slaveId - The slave ID (1–255, default: 1).
-   * @param options - Configuration options for the client.
+   * @param options - Configuration options for the client, including plugins.
    */
   constructor(
     transportController: TransportControllerInterface,
@@ -54,15 +53,26 @@ declare class ModbusClient {
   setLoggerContext(context: LoggerContext): void;
 
   /**
+   * Registers a plugin to extend the client's functionality.
+   * @param plugin - An instance of a plugin that implements the IModbusPlugin interface.
+   */
+  use(plugin: IModbusPlugin): void;
+
+  /**
+   * Executes a custom Modbus function registered via a plugin.
+   * @param functionName - The name of the function as defined in the plugin.
+   * @param args - Arguments that will be passed to the plugin's `buildRequest` handler.
+   * @returns A promise that resolves to the value returned by the plugin's `parseResponse` handler.
+   */
+  executeCustomFunction(functionName: string, ...args: any[]): Promise<any>;
+
+  /**
    * Performs a logical connection check to ensure the client is ready for communication.
-   * This method verifies that a transport is available and has been connected by the TransportController.
-   * It does NOT initiate the physical connection itself.
    */
   connect(): Promise<void>;
 
   /**
    * Performs a logical disconnection for the client.
-   * This method is a no-op regarding the physical transport layer.
    */
   disconnect(): Promise<void>;
 
@@ -70,27 +80,27 @@ declare class ModbusClient {
    * Reads holding registers from the Modbus device.
    * @param startAddress - The starting address of the registers to read (0–65535).
    * @param quantity - The number of registers to read (1–125).
-   * @param options - Options for the read operation, including register conversion type.
+   * @param options - Options for the read operation, including a built-in or custom register conversion type.
    * @returns A promise that resolves to the converted registers.
    */
-  readHoldingRegisters<T extends RegisterType>(
+  readHoldingRegisters<T extends RegisterType | string>(
     startAddress: number,
     quantity: number,
-    options?: ConvertRegisterOptions<T>
-  ): Promise<ConvertedRegisters<T>>;
+    options?: { type?: T }
+  ): Promise<any>;
 
   /**
    * Reads input registers from the Modbus device.
    * @param startAddress - The starting address of the registers to read (0–65535).
    * @param quantity - The number of registers to read (1–125).
-   * @param options - Options for the read operation, including register conversion type.
+   * @param options - Options for the read operation, including a built-in or custom register conversion type.
    * @returns A promise that resolves to the converted registers.
    */
-  readInputRegisters<T extends RegisterType>(
+  readInputRegisters<T extends RegisterType | string>(
     startAddress: number,
     quantity: number,
-    options?: ConvertRegisterOptions<T>
-  ): Promise<ConvertedRegisters<T>>;
+    options?: { type?: T }
+  ): Promise<any>;
 
   /**
    * Writes a single register to the Modbus device.
@@ -179,50 +189,6 @@ declare class ModbusClient {
    * @returns A promise that resolves to the device's identification data.
    */
   readDeviceIdentification(timeout?: number): Promise<ReadDeviceIdentificationResponse>;
-
-  /**
-   * Reads the file length from the Modbus device (SGM130 specific).
-   * @param timeout - Optional timeout in milliseconds.
-   * @returns A promise that resolves to the file length.
-   */
-  readFileLength(timeout?: number): Promise<ReadFileLengthResponse>;
-
-  /**
-   * Opens a file on the Modbus device (SGM130 specific).
-   * @param filename - The name of the file to open.
-   * @param timeout - Optional timeout in milliseconds.
-   * @returns A promise that resolves to the open file response.
-   */
-  openFile(filename: string, timeout?: number): Promise<OpenFileResponse>;
-
-  /**
-   * Closes a file on the Modbus device (SGM130 specific).
-   * @param timeout - Optional timeout in milliseconds.
-   * @returns A promise that resolves to the close file response.
-   */
-  closeFile(timeout?: number): Promise<CloseFileResponse>;
-
-  /**
-   * Restarts the controller on the Modbus device (SGM130 specific).
-   * @param timeout - Optional timeout in milliseconds.
-   * @returns A promise that resolves to the restart operation response.
-   */
-  restartController(timeout?: number): Promise<RestartControllerResponse>;
-
-  /**
-   * Gets the controller time from the Modbus device (SGM130 specific).
-   * @param timeout - Optional timeout in milliseconds.
-   * @returns A promise that resolves to the controller's time.
-   */
-  getControllerTime(timeout?: number): Promise<GetControllerTimeResponse>;
-
-  /**
-   * Sets the controller time on the Modbus device (SGM130 specific).
-   * @param datetime - The Date object to set on the controller.
-   * @param timeout - Optional timeout in milliseconds.
-   * @returns A promise that resolves to the set time operation response.
-   */
-  setControllerTime(datetime: Date, timeout?: number): Promise<SetControllerTimeResponse>;
 }
 
 export = ModbusClient;
