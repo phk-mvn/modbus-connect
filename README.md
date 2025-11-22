@@ -130,12 +130,14 @@ await controller.addTransport('node-port-2', 'node', {
 ### Creating a Client
 
 ```js
-const client = new ModbusClient(controller, 1, { timeout: 2000, retryCount: 2 });
+const client = new ModbusClient(controller, 1, {
+  /* ...options */
+});
 ```
 
 - `controller` — The `TransportController` instance.
 - `slaveId` — Device address (1..247). The controller will route requests to the correct transport.
-- `options` — `{ timeout, retryCount, retryDelay }`
+- `options` — `{ timeout, retryCount, retryDelay, plugins }`
 
 ### Connecting and Communicating
 
@@ -3337,6 +3339,10 @@ The recommended way to add proprietary or non-standard functionality is by creat
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.6.9 (2025-11-22)
+
+- **Fixed** a bug in the `polling-manager` module that caused an extra function call in each cycle of the `addTask` method, in the `fn([])` part
+
 ### 2.6.8 (2025-11-18)
 
 - **Removed** special functions for the SGM130
@@ -3377,11 +3383,3 @@ The recommended way to add proprietary or non-standard functionality is by creat
 - **Browser Port Release Fix**: Resolved an issue where browser tabs would not release a serial port after a physical device disconnection. The transport's internal resource cleanup is now correctly sequenced to ensure `port.close()` is called reliably.
 - `PortConnectionTracker` **Fix**: Corrected an issue where port disconnection notifications could be sent with an outdated `connected: true` status. The tracker now updates its internal state immediately upon disconnection, ensuring status queries are always accurate.
 - **API Cleanup**: Removed the non-functional `getStats` method from `TransportController` and its corresponding interface to simplify the public API.
-
-### 2.4.76 (2025-10-29)
-
-- The import module `createTransport` has been replaced by `TransportController`
-- The device connection status tracker has been moved to a separate module connected to the transport.
-- A port connection status tracker has been added.
-- A layer has been added to the TransportController transport creation module.
-  > see more details in [Transport Controller](#transport-controller)

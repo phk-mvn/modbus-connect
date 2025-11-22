@@ -24,12 +24,6 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var import_async_mutex = require("async-mutex");
 var import_logger = __toESM(require("./logger.js"));
 var import_errors = require("./errors.js");
-function hasTransportProperty(obj) {
-  return typeof obj === "object" && obj !== null && "transport" in obj;
-}
-function hasFlushMethod(obj) {
-  return typeof obj === "object" && obj !== null && "flush" in obj && typeof obj.flush === "function";
-}
 class TaskController {
   id;
   resourceId;
@@ -235,21 +229,6 @@ class TaskController {
     this.logger.debug("Executing task", { id: this.id });
     const release = await this.transportMutex.acquire();
     try {
-      const firstFunction = this.fn[0];
-      if (firstFunction && typeof firstFunction === "function") {
-        const result = firstFunction();
-        if (result && hasTransportProperty(result) && result.transport) {
-          if (hasFlushMethod(result.transport)) {
-            try {
-              await result.transport.flush();
-              this.logger.debug("Transport flushed successfully", { id: this.id });
-            } catch (flushErr) {
-              const error = flushErr instanceof Error ? flushErr : new import_errors.PollingManagerError(String(flushErr));
-              this.logger.warn("Flush failed", { id: this.id, error: error.message });
-            }
-          }
-        }
-      }
       let overallSuccess = false;
       const results = [];
       for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {

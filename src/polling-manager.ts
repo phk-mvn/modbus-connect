@@ -66,18 +66,18 @@ import {
   ModbusSilentIntervalError,
 } from './errors.js';
 
-function hasTransportProperty(obj: unknown): obj is { transport: unknown } {
-  return typeof obj === 'object' && obj !== null && 'transport' in obj;
-}
+// function hasTransportProperty(obj: unknown): obj is { transport: unknown } {
+//   return typeof obj === 'object' && obj !== null && 'transport' in obj;
+// }
 
-function hasFlushMethod(obj: unknown): obj is { flush: () => Promise<void> } {
-  return (
-    typeof obj === 'object' &&
-    obj !== null &&
-    'flush' in obj &&
-    typeof (obj as { flush: unknown }).flush === 'function'
-  );
-}
+// function hasFlushMethod(obj: unknown): obj is { flush: () => Promise<void> } {
+//   return (
+//     typeof obj === 'object' &&
+//     obj !== null &&
+//     'flush' in obj &&
+//     typeof (obj as { flush: unknown }).flush === 'function'
+//   );
+// }
 
 /**
  * TaskController управляет логикой одной задачи.
@@ -299,22 +299,22 @@ class TaskController {
 
     const release = await this.transportMutex.acquire();
     try {
-      const firstFunction = this.fn[0];
-      if (firstFunction && typeof firstFunction === 'function') {
-        const result = firstFunction();
-        if (result && hasTransportProperty(result) && result.transport) {
-          if (hasFlushMethod(result.transport)) {
-            try {
-              await result.transport.flush();
-              this.logger.debug('Transport flushed successfully', { id: this.id } as LogContext);
-            } catch (flushErr: unknown) {
-              const error =
-                flushErr instanceof Error ? flushErr : new PollingManagerError(String(flushErr));
-              this.logger.warn('Flush failed', { id: this.id, error: error.message } as LogContext);
-            }
-          }
-        }
-      }
+      // const firstFunction = this.fn[0];
+      // if (firstFunction && typeof firstFunction === 'function') {
+      //   const result = firstFunction();
+      //   if (result && hasTransportProperty(result) && result.transport) {
+      //     if (hasFlushMethod(result.transport)) {
+      //       try {
+      //         await result.transport.flush();
+      //         this.logger.debug('Transport flushed successfully', { id: this.id } as LogContext);
+      //       } catch (flushErr: unknown) {
+      //         const error =
+      //           flushErr instanceof Error ? flushErr : new PollingManagerError(String(flushErr));
+      //         this.logger.warn('Flush failed', { id: this.id, error: error.message } as LogContext);
+      //       }
+      //     }
+      //   }
+      // }
 
       let overallSuccess = false;
       const results: unknown[] = [];
