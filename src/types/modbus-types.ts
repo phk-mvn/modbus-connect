@@ -196,10 +196,6 @@ export interface TransportControllerInterface {
   // === Управление транспортами ===
   /**
    * Добавить транспорт.
-   * @param id - ID транспорта
-   * @param type - Тип транспорта ('node' или 'web')
-   * @param options - Опции транспорта
-   * @param reconnectOptions - Параметры переподключения
    */
   addTransport(
     id: string,
@@ -208,32 +204,27 @@ export interface TransportControllerInterface {
     reconnectOptions?: {
       maxReconnectAttempts?: number;
       reconnectInterval?: number;
-    }
+    },
+    pollingConfig?: PollingManagerConfig // <-- Новый аргумент
   ): Promise<void>;
 
   /**
    * Удалить транспорт по указанному ID.
-   * @param id - ID транспорта
    */
   removeTransport(id: string): Promise<void>;
 
   /**
    * Получить транспорт по указанному ID.
-   * @param id - ID транспорта
-   * @returns Транспорт или null, если транспорт не найден
    */
   getTransport(id: string): Transport | null;
 
   /**
    * Получить список всех транспортов.
-   * @returns Массив объектов TransportInfo
    */
   listTransports(): TransportInfo[];
 
   /**
    * Перезагрузить транспорт с новыми опциями.
-   * @param id - ID транспорта
-   * @param options - Новые опции
    */
   reloadTransport(
     id: string,
@@ -241,98 +232,57 @@ export interface TransportControllerInterface {
   ): Promise<void>;
 
   // === Подключение/отключение ===
-  /**
-   * Подключить все транспорты.
-   */
   connectAll(): Promise<void>;
-
-  /**
-   * Отключить все транспорты.
-   */
   disconnectAll(): Promise<void>;
-
-  /**
-   * Подключить транспорт по указанному ID.
-   * @param id - ID транспорта
-   */
   connectTransport(id: string): Promise<void>;
-
-  /**
-   * Отключить транспорт по указанному ID.
-   * @param id - ID транспорта
-   */
   disconnectTransport(id: string): Promise<void>;
 
   // === Маршрутизация ===
-  /**
-   * Получить транспорт для конкретного slaveId.
-   * @param slaveId - ID устройства
-   * @returns Транспорт или null, если транспорт не найден
-   */
   getTransportForSlave(slaveId: number, requiredRSMode: RSMode): Transport | null;
-
-  /**
-   * Назначить slaveId транспорту. Если транспорт уже обслуживает этот slaveId — игнорирует.
-   * @param transportId - ID транспорта
-   * @param slaveId - ID устройства
-   */
   assignSlaveIdToTransport(transportId: string, slaveId: number): void;
 
   // === Статусы и диагностика ===
-  /**
-   * Получить статус транспорта.
-   * @param id - ID транспорта (по умолчанию все транспорты)
-   * @returns Статус транспорта или объект со статусами всех транспортов
-   */
   getStatus(id?: string): TransportStatus | Record<string, TransportStatus>;
-
-  /**
-   * Получить количество активных транспортов.
-   * @returns Количество активных транспортов
-   */
   getActiveTransportCount(): number;
 
   // === Балансировка ===
-  /**
-   * Установить стратегию балансировки.
-   * @param strategy - Стратегия балансировки ('round-robin', 'sticky', 'first-available')
-   */
   setLoadBalancer(strategy: LoadBalancerStrategy): void;
 
   // === Управление обработчиками ===
-  /**
-   * Установить обработчик состояния устройства для внешнего мира.
-   * @param handler - Обработчик состояния
-   */
   setDeviceStateHandler(handler: DeviceStateHandler): void;
-
-  /**
-   * Установить обработчик состояния порта для внешнего мира.
-   * @param handler - Обработчик состояния
-   */
   setPortStateHandler(handler: PortStateHandler): void;
-
-  /**
-   * Установить обработчик состояния устройства для транспорта.
-   * @param transportId - ID транспорта
-   * @param handler - Обработчик состояния
-   */
   setDeviceStateHandlerForTransport(
     transportId: string,
     handler: DeviceStateHandler
   ): Promise<void>;
-
-  /**
-   * Установить обработчик состояния порта для транспорта.
-   * @param transportId - ID транспорта
-   * @param handler - Обработчик состояния
-   */
   setPortStateHandlerForTransport(transportId: string, handler: PortStateHandler): Promise<void>;
 
-  // === Уничтожение ===
+  // === Управление PollingManager (Прокси-методы) ===
+  addPollingTask(transportId: string, options: PollingTaskOptions): void;
+  removePollingTask(transportId: string, taskId: string): void;
+  updatePollingTask(
+    transportId: string,
+    taskId: string,
+    newOptions: Partial<PollingTaskOptions>
+  ): void;
+  controlTask(
+    transportId: string,
+    taskId: string,
+    action: 'start' | 'stop' | 'pause' | 'resume'
+  ): void;
+  controlPolling(
+    transportId: string,
+    action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
+  ): void;
+  getPollingStats(transportId: string): Record<string, PollingTaskStats>;
+  getPollingQueueInfo(transportId: string): PollingQueueInfo;
+
   /**
-   * Уничтожить транспорт.
+   * Выполнить функцию в контексте мьютекса транспорта (для ручных команд)
    */
+  executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T>;
+
+  // === Уничтожение ===
   destroy(): Promise<void>;
 }
 
@@ -341,6 +291,7 @@ export interface TransportInfo {
   id: string;
   type: 'node' | 'web';
   transport: Transport;
+  // pollingManager не экспортируем в публичные типы, так как он внутри реализации
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
   slaveIds: number[];
   fallbacks: string[];
@@ -358,6 +309,10 @@ export interface TransportStatus {
   connectedSlaveIds: number[];
   uptime: number;
   reconnectAttempts: number;
+  pollingStats?: {
+    queueLength: number;
+    tasksRunning: number;
+  };
 }
 
 export type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
@@ -491,7 +446,7 @@ export interface PollingManagerConfig {
 /** Опции для задачи опроса */
 export interface PollingTaskOptions {
   id: string;
-  resourceId?: string;
+  // resourceId?: string; // УДАЛЕНО
   priority?: number;
   interval: number;
   fn: (() => Promise<unknown>) | Array<() => Promise<unknown>>;
@@ -534,7 +489,7 @@ export interface PollingTaskStats {
 
 /** Информация о очереди опроса */
 export interface PollingQueueInfo {
-  resourceId: string;
+  // resourceId: string; // УДАЛЕНО
   queueLength: number;
   tasks: Array<{
     id: string;

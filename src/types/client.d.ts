@@ -13,12 +13,6 @@ import {
   WriteMultipleRegistersResponse,
   ReportSlaveIdResponse,
   ReadDeviceIdentificationResponse,
-  ReadFileLengthResponse,
-  OpenFileResponse,
-  CloseFileResponse,
-  RestartControllerResponse,
-  GetControllerTimeResponse,
-  SetControllerTimeResponse,
   TransportControllerInterface,
 } from './modbus-types.js';
 

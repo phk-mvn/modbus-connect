@@ -57,6 +57,13 @@ export declare class DeviceConnectionTracker {
   notifyDisconnected(slaveId: number, errorType?: ConnectionErrorType, errorMessage?: string): void;
 
   /**
+   * Полностью удаляет состояние устройства из памяти трекера.
+   * Используется при ручном отключении устройства.
+   * Метод синхронный.
+   */
+  removeState(slaveId: number): void;
+
+  /**
    * Возвращает копию состояния конкретного устройства.
    */
   getState(slaveId: number): Promise<DeviceConnectionStateObject | undefined>;

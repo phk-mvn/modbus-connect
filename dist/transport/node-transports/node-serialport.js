@@ -175,6 +175,12 @@ class NodeSerialTransport {
       this._deviceStateHandler(slaveId, false, { type: errorType, message: errorMessage });
     }
   }
+  removeConnectedDevice(slaveId) {
+    if (this._connectedSlaveIds.has(slaveId)) {
+      this._connectedSlaveIds.delete(slaveId);
+      logger.debug(`Manually removed device ${slaveId} from connected set`);
+    }
+  }
   async _notifyPortConnected() {
     this._wasEverConnected = true;
     if (this._portStateHandler) {

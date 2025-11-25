@@ -521,6 +521,9 @@ class ModbusClient {
         if (!transport) {
           throw new Error(`No transport available for slaveId ${this.slaveId}`);
         }
+        const allTransports = this.transportController.listTransports();
+        const transportInfo = allTransports.find((t) => t.transport === transport);
+        const transportId = transportInfo?.id;
         try {
           const attemptStart = Date.now();
           const timeLeft = timeout - (attemptStart - startTime);
@@ -531,23 +534,39 @@ class ModbusClient {
             funcCode
           });
           const packet = (0, import_packet_builder.buildPacket)(slaveId, pdu, this.crcFunc);
-          await transport.write(packet);
-          logger.debug("Packet written to transport", { bytes: packet.length, slaveId, funcCode });
-          if (this.echoEnabled) {
-            logger.debug("Echo enabled, reading echo back...", { slaveId, funcCode });
-            const echoResponse = await transport.read(packet.length, timeLeft);
-            if (!echoResponse || echoResponse.length !== packet.length) {
-              throw new import_errors.ModbusInsufficientDataError(
-                echoResponse ? echoResponse.length : 0,
-                packet.length
-              );
-            }
-            for (let i = 0; i < packet.length; i++) {
-              if (packet[i] !== echoResponse[i]) {
-                throw new Error("Echo mismatch detected");
+          const attemptLogic = async () => {
+            await transport.write(packet);
+            logger.debug("Packet written to transport", {
+              bytes: packet.length,
+              slaveId,
+              funcCode
+            });
+            if (this.echoEnabled) {
+              logger.debug("Echo enabled, reading echo back...", { slaveId, funcCode });
+              const echoResponse = await transport.read(packet.length, timeLeft);
+              if (!echoResponse || echoResponse.length !== packet.length) {
+                throw new import_errors.ModbusInsufficientDataError(
+                  echoResponse ? echoResponse.length : 0,
+                  packet.length
+                );
               }
+              for (let i = 0; i < packet.length; i++) {
+                if (packet[i] !== echoResponse[i]) {
+                  throw new Error("Echo mismatch detected");
+                }
+              }
+              logger.debug("Echo verified successfully", { slaveId, funcCode });
             }
-            logger.debug("Echo verified successfully", { slaveId, funcCode });
+            if (ignoreNoResponse) {
+              return void 0;
+            }
+            return await this._readPacket(timeLeft, pdu);
+          };
+          let response;
+          if (transportId && this.transportController.executeImmediate) {
+            response = await this.transportController.executeImmediate(transportId, attemptLogic);
+          } else {
+            response = await attemptLogic();
           }
           if (ignoreNoResponse) {
             const elapsed2 = Date.now() - startTime;
@@ -558,7 +577,9 @@ class ModbusClient {
             });
             return void 0;
           }
-          const response = await this._readPacket(timeLeft, pdu);
+          if (!response) {
+            throw new Error("No response received");
+          }
           const elapsed = Date.now() - startTime;
           const { slaveAddress, pdu: responsePdu } = (0, import_packet_builder.parsePacket)(response, this.crcFunc);
           if (slaveAddress !== slaveId) {

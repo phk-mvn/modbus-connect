@@ -57,9 +57,6 @@ import { _type_ } from 'modbus-connect/types';
 // Main Modbus client
 import ModbusClient from 'modbus-connect/client';
 
-// Polling manager for scheduled tasks
-import PollingManager from 'modbus-connect/polling-manager';
-
 // Transport controller for managing connections
 import TransportController from 'modbus-connect/transport';
 
@@ -76,19 +73,21 @@ The `TransportController` is the centralized way to manage one or more transport
 **Node.js Serial Port:**
 
 ```js
-await controller.addTransport('node-port-1', 'node', {
-  port: '/dev/ttyUSB', // or 'COM' on Windows
-  baudRate: 19200,
-  dataBits: 8,
-  stopBits: 1,
-  parity: 'none',
-  readTimeout: 2000,
-  writeTimeout: 1000,
-  maxBufferSize: 8192,
-  reconnectInterval: 5000,
-  maxReconnectAttempts: 10,
-  slaveIds: [1, 2], // Assign these slave IDs to this transport
-});
+await controller.addTransport(
+  'node-port-1',
+  'node',
+  {
+    port: '/dev/ttyUSB', // or 'COM' on Windows
+    baudRate: 19200,
+    slaveIds: [1, 2], // Assign these slave IDs to this transport
+  },
+  {
+    maxReconnectAttempts: 10, // Reconnect options
+  },
+  {
+    defaultInterval: 1000, // Polling options (Optional)
+  }
+);
 
 await controller.connectAll();
 ```
@@ -714,9 +713,9 @@ Logging and diagnostics are configured internally or via the main logger.
 
 ## Main functions
 
-### 1. `addTransport(id, type, options)`
+### 1. `addTransport(id, type, options, reconnectOptions?, pollingConfig?)`
 
-Asynchronously adds a new transport to the controller. Does not connect it automatically.
+Asynchronously adds a new transport to the controller and initializes its internal PollingManager.
 
 **Parameters:**
 
@@ -730,6 +729,8 @@ Asynchronously adds a new transport to the controller. Does not connect it autom
   - `fallbacks (string[], optional):` An array of transport IDs to use as fallbacks for the assigned `slaveIds` if the primary transport fails.
     **Returns:** Promise<void>
     **Errors:** Throws Error on invalid options, duplicate ID.
+- `reconnectOptions (object, optional)`: `{ maxReconnectAttempts: number, reconnectInterval: number }`.
+- `pollingConfig (object, optional)`: Configuration for the internal PollingManager (e.g., `{ defaultInterval: 1000, maxRetries: 3 }`).
 
 **Example 1: Add Node.js serial transport.**
 
@@ -875,7 +876,34 @@ console.log('Assigned slaveId 122 to transport com3');
 // ModbusClient with slaveId 122 will now use the 'com3' transport.
 ```
 
-### 6. `getTransportForSlave(slaveId)`
+### 6. `removeSlaveIdFromTransport(transportId, slaveId)`
+
+Dynamically removes a `slaveId` from a transport's configuration. This clears the internal registry, routing maps, **and resets the internal connection tracker state** for that specific device. This method is essential if you plan to re-assign the same `slaveId` to the transport later (e.g., after a physical reconnection sequence) to avoid "already managing this ID" errors or connection state debounce issues.
+
+**Parameters:**
+
+- `transportId (string)`: The ID of the target transport
+- `slaveId (number)`: The Modbus slave ID to remove
+
+**Returns:** void
+
+**Errors:** Logs a warning if `transportId` is not found or if the `slaveId` was not assigned to that transport, but does not throw an exception
+
+**Example:**
+
+```js
+// Assume we need to reboot or physically reconnect the device with slaveId 13
+// First, remove it from the controller logic
+controller.removeSlaveIdFromTransport('com3', 13);
+console.log('Removed slaveId 13 from transport com3');
+
+// ... physical reconnection happens ...
+
+// Now you can safely re-assign it
+controller.assignSlaveIdToTransport('com3', 13);
+```
+
+### 7. `getTransportForSlave(slaveId)`
 
 Gets the currently assigned transport for a specific `slaveId`. Used internally by `ModbusClient` if needed, but can be useful for direct interaction.
 
@@ -896,7 +924,7 @@ if (assignedTransport) {
 }
 ```
 
-### 7. `Device/Port State Tracking`
+### 8. `Device/Port State Tracking`
 
 To track the connection state of devices or the port itself, you need to access the individual transport instance managed by the `TransportController` and set the handler on it.
 
@@ -965,7 +993,7 @@ async function addAndTrackPort() {
 addAndTrackPort();
 ```
 
-### 8. `getStatus(id?)`
+### 9. `getStatus(id?)`
 
 Gets the status of a specific transport or all transports.
 
@@ -982,7 +1010,7 @@ const status = controller.getStatus('com3');
 console.log('Transport status:', status);
 ```
 
-### 9. `getActiveTransportCount()`
+### 10. `getActiveTransportCount()`
 
 Returns the number of currently connected transports.
 
@@ -990,7 +1018,7 @@ Returns the number of currently connected transports.
 
 **Returns:** number
 
-### 10. `setLoadBalancer(strategy)`
+### 11. `setLoadBalancer(strategy)`
 
 Sets the load balancing strategy for routing requests.
 
@@ -1004,7 +1032,7 @@ Sets the load balancing strategy for routing requests.
 controller.setLoadBalancer('round-robin');
 ```
 
-### 11. `reloadTransport(id, options)`
+### 12. `reloadTransport(id, options)`
 
 Asynchronously reloads an existing transport with a new configuration. This is useful for changing settings like `baudRate` or even the physical `port` on the fly.
 The controller will first safely disconnect the existing transport, then create a new transport instance with the provided options. If the original transport was connected, the controller will attempt to connect the new one automatically.
@@ -1041,7 +1069,42 @@ await controller.reloadTransport('com3', {
 console.log('Transport reloaded successfully.');
 ```
 
-### 12. `destroy()`
+### 13. Polling Task Management (Proxy Methods)
+
+The `TransportController` now acts as a facade for managing polling tasks specific to each transport.
+
+**Methods:**
+
+- `addPollingTask(transportId, options)`: Adds a polling task to the specified transport.
+- `removePollingTask(transportId, taskId)`: Removes a task.
+- `updatePollingTask(transportId, taskId, options)`: Updates an existing task.
+- `controlTask(transportId, taskId, action)`: Controls a specific task. Action: `'start' | 'stop' | 'pause' | 'resume'`.
+- `controlPolling(transportId, action)`: Controls all tasks on the transport. Action: `'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'`.
+- `getPollingStats(transportId)`: Returns statistics for all tasks on the transport.
+- `executeImmediate(transportId, fn)`: Executes a function using the transport's polling mutex. This ensures the function runs atomatically, without conflicting with background polling tasks.
+
+**Example:**
+
+```js
+// Add a periodic reading task to 'com3'
+controller.addPollingTask('com3', {
+  id: 'read-sensors',
+  interval: 1000,
+  fn: () => client.readHoldingRegisters(0, 10),
+  onData: data => console.log('Data:', data),
+  onError: err => console.error('Error:', err.message),
+});
+
+// Execute a manual write operation safely while polling is active
+await controller.executeImmediate('com3', async () => {
+  await client.writeSingleRegister(10, 123);
+});
+
+// Pause all polling on this transport (e.g. during maintenance)
+controller.controlPolling('com3', 'pauseAll');
+```
+
+### 14. `destroy()`
 
 Destroys the controller and disconnects all transports.
 
@@ -1416,22 +1479,13 @@ Polling task ID not found.
 
 # <span id="polling-manager">Polling Manager</span>
 
-The PollingManager class is an advanced manager for managing periodic tasks (polling tasks) in Node.js. It is designed for scenarios where functions need to be executed on a schedule (at intervals), with support for resource queues (to avoid concurrent access to the same resource, such as a Modbus device), error retries, timeouts, pause/resume, statistics, and integration with the Logger (from the previous module).
+The `PollingManager` class is now **integrated directly into the** `TransportController`. You typically do not create instances of it manually. Instead, a separate manager is automatically created for each transport you add. This ensures that issues on one port (like timeouts) do not affect polling on other ports.
 
 **Key Features:**
 
-- **Resource Queues:** Tasks bound to the same resourceId (e.g., device ID) are executed sequentially through TaskQueue (internal class) to avoid conflicts.
-- **Retries:** Automatic retry with exponential backoff, up to maxRetries.
-- **Timeouts:** Each function in a task can have a timeout.
-- **Callbacks:** Support for various events (onStart, onError, onData, etc.).
-- **Logging:** Integration with Logger, with the ability to enable/disable it per component (PollingManager, TaskQueue, TaskController).
-- **Statistics:** Counters for runs, errors, successes, etc.
-- **Multitasking:** Support for multiple functions in a single task (fn array).
-
-**Inner classes:**
-
-- **TaskQueue:** Manages a task queue for a single resourceId. Ensures sequencing using a Mutex.
-- **TaskController:** Single-task controller. Manages the execution loop, retry, and callbacks.
+- **Transport Isolation:** Each transport has its own independent polling queue.
+- **Concurrency Safety:** Resolves conflicts between automatic polling and manual Client requests using a shared mutex.
+- **No Resource ID:** Tasks are simply added to a specific transport.
 
 **Dependencies:**
 
@@ -1442,134 +1496,82 @@ The PollingManager class is an advanced manager for managing periodic tasks (pol
 
 ## Initialization
 
-Include the module:
+You **do not** need to instantiate this class manually. It is created automatically when you add a transport.
+Pass the configuration in the 5th argument of `addTransport`:
 
 ```js
-const PollingManager = require('modbus-connect/polling-manager');
+const TransportController = require('modbus-connect/transport');
+
+const controller = new TransportController();
+
+// PollingManager is initialized internally here:
+await controller.addTransport(
+  'my-transport',
+  'node',
+  { port: 'COM1', slaveIds: [1] }, // Transport config
+  {}, // Reconnect config
+  {
+    // PollingManager config
+    defaultMaxRetries: 5,
+    defaultBackoffDelay: 2000,
+    defaultTaskTimeout: 10000,
+    logLevel: 'info',
+  }
+);
 ```
-
-Create an instance with configuration (optional):
-
-```js
-const config = {
-  defaultMaxRetries: 5, // Max attempts (default 3)
-  defaultBackoffDelay: 2000, // Backoff delay (default 1000ms)
-  defaultTaskTimeout: 10000, // Task timeout (default 5000ms)
-  logLevel: 'info', // Global level (not used diractly)
-};
-
-const poll = new PollingManager(config);
-```
-
-**Initialization output (if logging is enabled):**
-
-```bash
-[14:30:15][TRACE][TaskController] TaskController trace log
-[14:30:15][DEBUG][TaskController] TaskController created { id: undefined, resourceId: undefined, priority: 0, interval: undefined, maxRetries: 3, backoffDelay: 1000, taskTimeout: 5000 }
-[14:30:15][WARN][TaskController] TaskController warning log
-[14:30:15][ERROR][TaskController] TaskController error log
-[14:30:15][TRACE][PollingManager] PollingManager trace log
-[14:30:15][DEBUG][PollingManager] PollingManager debug log
-[14:30:15][INFO][PollingManager] PollingManager initialized { config: { defaultMaxRetries: 5, defaultBackoffDelay: 2000, defaultTaskTimeout: 10000, logLevel: 'info' } }
-[14:30:15][WARN][PollingManager] PollingManager warning log
-[14:30:15][ERROR][PollingManager] PollingManager error log
-```
-
-- **Logs** from constructors are generated internally, but are not output until enabled.
-- `flush()` is called automatically in the constructor.
 
 ## Task management methods
 
-| METHOD                    | DESCRIPTION                                      |
-| ------------------------- | ------------------------------------------------ |
-| addTask(config)           | Add and start a new polling task                 |
-| startTask(id)             | Start a task                                     |
-| stopTask(id)              | Stop a task                                      |
-| pauseTask(id)             | Pause execution                                  |
-| resumeTask(id)            | Resume execution                                 |
-| restartTask(id)           | Restart a task                                   |
-| removeTask(id)            | Remove a task                                    |
-| updateTask(id, opts)      | Update a task (removes and recreates)            |
-| setTaskInterval(id, ms)   | Dynamically update the task's polling interval   |
-| clearAll()                | Stops and removes all registered tasks           |
-| restartAllTasks()         | Restart all tasks                                |
-| pauseAllTasks()           | Pause all tasks                                  |
-| resumeAllTasks()          | Resume all tasks                                 |
-| startAllTasks()           | Start all tasks                                  |
-| stopAllTasks()            | Stop all tasks                                   |
-| getAllTaskStats()         | Get stats for all tasks                          |
-| getQueueInfo(resourceId)  | Get detailed queue information                   |
-| getSystemStats()          | Get comprehensive system statistics              |
-
-## Status and Checks
-
-| METHOD             | DESCRIPTION                                                            |
-| ------------------ | ---------------------------------------------------------------------- |
-| isTaskRunning(id)  | Returns true if the task is running                                    |
-| isTaskPaused(id)   | Returns true if the task is paused                                     |
-| getTaskState(id)   | Returns detailed state info: { stopped, paused, running, inProgress }  |
-| getTaskStats(id)   | Returns detailed statistics for the task                               |
-| hasTask(id)        | Checks if task exists                                                  |
-| getTaskIds()       | Returns list of all task IDs                                           |
+| METHOD                                        | DESCRIPTION                                                                        |
+| --------------------------------------------- | ---------------------------------------------------------------------------------- |
+| addPollingTask(transportId, opts)             | Add a new polling task to a specific transport                                     |
+| removePollingTask(transportId, taskId)        | Remove a task from a transport                                                     |
+| updatePollingTask(transportId, taskId, opts)  | Update an existing task (removes and recreates)                                    |
+| controlTask(transportId, taskId, action)      | Control a specific task (`start`, `stop`, `pause`, `resume`)                       |
+| controlPolling(transportId, action)           | Control all tasks on a transport (`startAll`, `stopAll`, `pauseAll`, `resumeAll`)  |
+| getPollingStats(transportId)                  | Get stats for all tasks on a transport                                             |
+| getPollingQueueInfo(transportId)              | Get detailed queue information for a transport                                     |
 
 ## Adding and managing Tasks
 
-### 1. addTask(options)
+### 1. addPollingTask(transportId, options)
 
-Adds a new task. Validates options. If resourceId is specified, adds it to the queue. If immediate: true, runs it immediately.
+Adds a new task to the specified transport queue.
 
 **Parameters:**
 
+- `transportId (string):` The ID of the transport.
+- `options (object):` Task configuration.
+
 ```js
-poll.addTask({
+controller.addPollingTask('my-transport', {
   // Required parameters
-  id: string,                    // Unique task ID (required)
-  interval: number,              // Polling interval in milliseconds (required)
-  fn: Function | Function[],     // One or multiple async functions to execute (required)
+  id: string,                    // Unique task ID
+  interval: number,              // Polling interval in ms
+  fn: Function | Function[],     // Function(s) to execute
 
   // Optional parameters
-  resourceId?: string,           // Resource identifier for queue management
   priority?: number,             // Task priority (default: 0)
   name?: string,                 // Human-readable task name
-  immediate?: boolean,           // Run immediately on add (default: false)
-  maxRetries?: number,           // Retry attempts per function (default: 3)
-  backoffDelay?: number,         // Retry delay base in ms (default: 1000)
-  taskTimeout?: number,          // Timeout per function call in ms (default: 5000)
+  immediate?: boolean,           // Run immediately (default: true)
+  maxRetries?: number,           // Retry attempts
+  backoffDelay?: number,         // Retry delay
+  taskTimeout?: number,          // Timeout per function
 
-  // Lifecycle callbacks
-  onData?: Function,             // Called with results on success: (results)
-  onError?: Function,            // Called on error: (error, fnIndex, attempt)
-  onStart?: Function,            // Called when the task starts
-  onStop?: Function,             // Called when the task stops
-  onFinish?: Function,           // Called when all functions complete: (success, results)
-  onBeforeEach?: Function,       // Called before each execution cycle
-  onRetry?: Function,            // Called on retry: (error, fnIndex, attempt)
-  onSuccess?: Function,          // Called on successful execution
-  onFailure?: Function,          // Called on failed execution
-  shouldRun?: Function           // Conditional execution: () => boolean
+  // Callbacks (onData, onError, onStart, onStop, onFinish, etc.)
 });
 ```
 
 **Example 1: A simple task without a resource (independent).**
 
 ```js
-function sampleFn() {
-  return new Promise(resolve => {
-    setTimeout(() => resolve('Data received'), 100);
-  });
-}
-
-const options = {
-  id: 'sample-task',
-  interval: 2000,
-  fn: sampleFn,
-  onData: results => console.log('Data received:', results),
-  immediate: true,
-  maxRetries: 2,
-  taskTimeout: 3000,
-};
-
-poll.addTask(options);
+// Add a task to the transport 'com3'
+controller.addPollingTask('com3', {
+  id: 'read-voltage',
+  interval: 1000,
+  fn: () => client.readHoldingRegisters(0, 2),
+  onData: res => console.log('Voltage:', res),
+});
 ```
 
 **Output (logs if enabled; simulation):**
@@ -1590,64 +1592,14 @@ Data obtained: [ 'Data received' ]
 ... (repeat every 2 seconds)
 ```
 
-**Example 2: Task With a resource and an `fn` array, with an error (simulating a retry).**
-
-```js
-function fn1() {
-  return new Promise((resolve, reject) => setTimeout(() => reject(new Error('ERROR 1')), 100));
-}
-
-function fn2() {
-  return new Promise(resolve => setTimeout(() => resolve('OK 2'), 100));
-}
-
-const options2 = {
-  id: 'modbus-task',
-  resourceId: 'device-1',
-  interval: 5000,
-  fn: [fn1, fn2],
-  onError: (err, idx, retry) => console.log(`ERROR in fn${idx}, attempt ${retry}: ${err.message}`),
-  onData: results => console.log('Results:', results),
-  immediate: true,
-};
-
-poll.addTask(options2);
-```
-
-**Output (if `fn1` failed, `fn2` succeeded after retry):**
-
-```bash
-[14:30:15][TRACE][PollingManager] Creating TaskController { id: 'modbus-task', resourceId: 'device-1' }
-[14:30:15][DEBUG][PollingManager] Creating new TaskQueue { resourceId: 'device-1' }
-[14:30:15][TRACE][TaskQueue] TaskQueue trace log
-[14:30:15][DEBUG][TaskQueue] TaskQueue created
-[14:30:15][WARN][TaskQueue] TaskQueue warning log
-[14:30:15][ERROR][TaskQueue] TaskQueue error log
-[14:30:15][INFO][PollingManager] Task added successfully { id: 'modbus-task', resourceId: 'device-1', immediate: true }
-[14:30:15][DEBUG][TaskQueue] Task enqueued { taskId: 'modbus-task' }
-[14:30:15][DEBUG][TaskQueue] Acquiring mutex for task processing
-[14:30:15][DEBUG][TaskQueue] Processing task { taskId: 'modbus-task' }
-[14:30:15][INFO][TaskController] Task started
-[14:30:15][DEBUG][TaskController] Executing task once
-[14:30:15][DEBUG][TaskQueue] Task executed successfully { taskId: 'modbus-task' }
-Error in fn0, attempt 1: ERROR 1
-[14:30:15][DEBUG][TaskController] Retrying fn[0] with delay { delay: 1000, retryCount: 1 }
-[14:30:16][DEBUG][TaskController] Retrying fn[0] with delay { delay: 2000, retryCount: 2 } (else 2 retry)
-[14:30:16][WARN][TaskController] Max retries exhausted for fn[0] { fnIndex: 0, retryCount: 3, error: 'ERROR 1' }
-[14:30:16][INFO][TaskController] Task execution completed { success: true, resultsCount: 2 } (fn2 success)
-Results: [ null, 'OK 2' ]
-[14:30:21][DEBUG][TaskQueue] Task marked as ready { taskId: 'modbus-task' }
-... (next loop in 5 seconds)
-```
-
 **Validation errors:**
 
 - If id is missing: Error: Task must have an `id`
 - If a task with ID exists: Error: Polling task with id `sample-task` already exists.
 
-### 2. updateTask(id, newOptions)
+### 2. updatePollingTask(transportId, taskId, newOptions)
 
-Updates a task: removes the old one and adds a new one with the same ID.
+Updates an existing task by recreating it with new options.
 
 **Parameters:**
 
@@ -1657,7 +1609,7 @@ Updates a task: removes the old one and adds a new one with the same ID.
 **Example:**
 
 ```js
-poll.updateTask('sample-task', { interval: 3000, fn: newFn });
+controller.updatePollingTask('com3', 'read-voltage', { interval: 5000 });
 ```
 
 **Output:**
@@ -1670,9 +1622,9 @@ poll.updateTask('sample-task', { interval: 3000, fn: newFn });
 
 > If the task does not exist: Error: Polling task with id `sample-task` does not exist.
 
-### 3. removeTask(id)
+### 3. removePollingTask(transportId, taskId)
 
-Deletes the task, stops it, and removes it from the queue.
+Stops and removes the task from the transport.
 
 **Parameters:**
 
@@ -1681,7 +1633,7 @@ Deletes the task, stops it, and removes it from the queue.
 **Example:**
 
 ```js
-poll.removeTask('sample-task');
+controller.removePollingTask('com3', 'read-voltage');
 ```
 
 **Output:**
@@ -1695,272 +1647,73 @@ poll.removeTask('sample-task');
 
 ## Managing Task State
 
-### 1. restartTask(id), startTask(id), stopTask(id), pauseTask(id), resumeTask(id)
+### 1. controlTask(transportId, taskId, action)
 
-- `restartTask(id):` Stop and restarts.
-- `startTask(id):` Starts (if stopped).
-- `stopTask(id):` Stops.
-- `pauseTask(id):` Pauses (does not stop the loop).
-- `resumeTask(id):` Resumes after a pause.
+Manages the state of a single task.
 
-**Example (sequential):**
+**Parameters:**
 
-```js
-poll.addTask({ id: 'test-task', interval: 1000, fn: () => Promise.resolve('test') });
-poll.startTask('test-task'); // Launch
-setTimeout(() => poll.pauseTask('test-task'), 2000); // Pause after 2 seconds
-setTimeout(() => poll.resumeTask('test-task'), 4000); // Resume
-setTimeout(() => poll.stopTask('test-task'), 6000); // Stop
-setTimeout(() => poll.restartTask('test-task'), 8000); // Restart
-```
-
-**Output (snippets):**
-
-```bash
-[14:30:15][INFO][TaskController] Task started
-[14:30:17][INFO][TaskController] Task paused
-[14:30:19][INFO][TaskController] Task resumed
-[14:30:19][DEBUG][TaskController] Scheduling next run (queued)
-[14:30:21][INFO][TaskController] Task stopped
-[14:30:23][INFO][TaskController] Task stopped
-[14:30:23][INFO][TaskController] Task started
-```
-
-### 2. setTaskInterval(id, interval)
-
-Updates the interval.
+- `transportId (string)`
+- `taskId (string)`
+- `action (string):` 'start' | 'stop' | 'pause' | 'resume'
 
 **Example:**
 
 ```js
-poll.setTaskInterval('test-task', 5000);
-```
+// Pause a specific task
+controller.controlTask('com3', 'read-voltage', 'pause');
 
-**Output:**
-
-```bash
-[14:30:15][INFO][TaskController] Interval updated { interval: 5000 }
-```
-
-### 3. isTaskRunning(id), isTaskPaused(id)
-
-Return boolean.
-
-**Example:**
-
-```js
-console.log(poll.isTaskRunning('test-task')); // true (if running)
-console.log(poll.isTaskPaused('test-task')); // false
-```
-
-> No console output, only return values.
-
-### 4. getTaskState(id)
-
-Returns `{ stopped: boolean, paused: boolean, running: boolean, inProgress: boolean }`.
-
-**Example:**
-
-```js
-console.log(poll.getTaskState('test-task'));
-// { stopped: false, paused: false, running: true, inProgress: false }
-```
-
-### 5. getTaskStats(id)
-
-Returns statistics: `{ totalRuns, totalErrors, lastError, lastResult, lastRunTime, retries, successes, failures }`.
-
-```js
-const stats = pollingManager.getTaskStats('read-sensors');
-// Returns:
-{
-  totalRuns: 45,           // Total execution attempts
-  totalErrors: 3,          // Total errors encountered
-  lastError: Error,        // Last error object (if any)
-  lastResult: [...],       // Last successful result
-  lastRunTime: 1234567890, // Timestamp of last execution
-  retries: 7,              // Total retry attempts
-  successes: 42,           // Successful executions
-  failures: 3              // Failed executions
-}
-```
-
-**Example (after multiple runs):**
-
-```js
-console.log(poll.getTaskStats('test-task'));
-// { totalRuns: 3, totalErrors: 1, lastError: Error, lastResult: ['OK'], lastRunTime: 1730000000, retries: 2, successes: 2, failures: 1 }
-```
-
-### 6. hasTask(id)
-
-Boolean: whether the task exists.
-
-**Example:**
-
-```js
-console.log(poll.hasTask('test-task')); // true
-```
-
-### 7. getTaskIds()
-
-Array of all task ID's.
-
-**Example:**
-
-```js
-console.log(poll.getTaskIds()); // [ 'sample-task', 'modbus-task' ]
+// Resume it later
+controller.controlTask('com3', 'read-voltage', 'resume');
 ```
 
 ## Bulk Operations
 
-### 1. clearAll()
+### 1. controlPolling(transportId, action)
 
-Clears all tasks and queues.
+Manages the state of **all** tasks on a specific transport.
 
-**Example:**
+**Parameters:**
 
-```js
-poll.clearAll();
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][PollingManager] Clearing all tasks
-[14:30:15][INFO][TaskController] Task stopped (for each)
-[14:30:15][INFO][PollingManager] All tasks cleared
-```
-
-### 2. restartAllTasks(), startAllTasks(), stopAllTasks(), pauseAllTasks(), resumeAllTasks()
-
-Similar to individual tasks, but for all tasks.
+- `transportId (string)`
+- `action (string):` 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
 
 **Example:**
 
 ```js
-poll.startAllTasks();
-```
+// Pause all polling on COM3 (e.g., before disconnecting or critical write)
+controller.controlPolling('com3', 'pauseAll');
 
-**Output:**
-
-```bash
-[14:30:15][INFO][PollingManager] Starting all tasks
-[14:30:15][INFO][TaskController] Task started (for each)
-[14:30:15][INFO][PollingManager] All tasks started
-```
-
-### 3. getAllTaskStats()
-
-Object `{ [id]: stats }` for all tasks.
-
-**Example:**
-
-```js
-console.log(poll.getAllTaskStats());
-// { 'sample-task': { totalRuns: 1, ... }, 'modbus-task': { ... } }
+// Resume
+controller.controlPolling('com3', 'resumeAll');
 ```
 
 ## Queues and the System
 
-### 1. getQueueInfo(resourceId)
+### 1. getPollingQueueInfo(transportId)
 
-Queue info: `{ resourceId, queueLength, tasks: [{ id, state }] }`.
+Returns information about the execution queue length and task states.
 
 **Example:**
 
 ```js
-console.log(poll.getQueueInfo('device-1'));
-// { resourceId: 'device-1', queueLength: 1, tasks: [ { id: 'modbus-task', state: { stopped: false, ... } } ] }
+const info = controller.getPollingQueueInfo('com3');
+console.log(info);
+// { queueLength: 1, tasks: [{ id: 'task1', state: {...} }] }
 ```
 
 > If the queue does not exist: null.
 
-### 2. getSystemStats()
+### 2. getPollingStats(transportId)
 
-Global statistics: `{ totalTasks, totalQueues, queuedTasks, tasks: { [id]: stats } }`.
-
-**Example:**
-
-```js
-console.log(poll.getSystemStats());
-// { totalTasks: 2, totalQueues: 1, queuedTasks: 1, tasks: { 'sample-task': {...}, ... } }
-```
-
-## Logging Controls
-
-All methods disable logging by default ('none'). Enable it as needed.
-
-### 1. enablePollingManagerLogger(level = 'info'), disablePollingManagerLogger()
-
-For the main PollingManager logger.
+Returns detailed statistics for all tasks on the transport.
 
 **Example:**
 
 ```js
-poll.enablePollingManagerLogger('debug');
-```
-
-> Now PollingManager logs will be output at debug level and higher.
-
-### 2. enableTaskQueueLoggers(level), disableTaskQueueLoggers()
-
-For all queues.
-
-**Example:**
-
-```js
-poll.enableTaskQueueLoggers('warn');
-```
-
-### 3. enableTaskControllerLoggers(level), disableTaskControllerLoggers()
-
-For all task controllers.
-
-**Example:**
-
-```js
-poll.enableTaskControllerLoggers('info');
-```
-
-### 4. enableTaskQueueLogger(resourceId, level), disableTaskQueueLogger(resourceId)
-
-For a specific queue.
-
-**Example:**
-
-```js
-poll.enableTaskQueueLogger('device-1', 'debug');
-```
-
-### 5. enableTaskControllerLogger(taskId, level), disableTaskControllerLogger(taskId)
-
-For a specific task.
-
-**Example:**
-
-```js
-poll.enableTaskControllerLogger('sample-task', 'trace');
-```
-
-### 6. enableAllLoggers(level), disableAllLoggers()
-
-Enables/disables all.
-
-**Example:**
-
-```js
-poll.enableAllLoggers('info');
-```
-
-### 7. setLogLevelForAll(level)
-
-Sets the same level for all.
-
-**Example:**
-
-```js
-poll.setLogLevelForAll('error');
+const stats = controller.getPollingStats('com3');
+console.log(stats);
+// { 'task1': { totalRuns: 10, totalErrors: 0, ... } }
 ```
 
 > **Output after enabling (with addTask):** Logs from the corresponding components will become visible, as in the examples above.
@@ -1968,47 +1721,47 @@ poll.setLogLevelForAll('error');
 ## Full usage example
 
 ```js
-const PollingManager = require('modbus-connect/polling-manager');
+const TransportController = require('modbus-connect/transport');
+const ModbusClient = require('modbus-connect/client');
 
-const poll = new PollingManager({ defaultMaxRetries: 2 });
+async function main() {
+  const controller = new TransportController();
 
-// Enable logging
-poll.enableAllLoggers('debug');
+  // 1. Add transport (PollingManager created internally)
+  await controller.addTransport(
+    'com3',
+    'node',
+    { port: 'COM3', baudRate: 9600, slaveIds: [1] },
+    {},
+    { logLevel: 'debug' } // Enable polling logs here
+  );
 
-// Modbus function (simulation)
-async function readModbus(slaveId) {
-  // Simulate an error sometimes
-  if (Math.random() > 0.7) throw new Error('Modbus error');
-  return { registers: [1, 2, 3], slaveId };
+  await controller.connectAll();
+
+  const client = new ModbusClient(controller, 1);
+
+  // 2. Add task via Controller
+  controller.addPollingTask('com3', {
+    id: 'modbus-loop',
+    interval: 1000,
+    fn: () => client.readHoldingRegisters(0, 2),
+    onData: results => console.log('Data:', results),
+    onError: err => console.error('Error:', err.message),
+  });
+
+  // 3. Pause polling after 5 seconds
+  setTimeout(() => {
+    console.log('Pausing polling...');
+    controller.controlPolling('com3', 'pauseAll');
+  }, 5000);
+
+  // 4. Check stats
+  setInterval(() => {
+    console.log('Stats:', controller.getPollingStats('com3'));
+  }, 10000);
 }
 
-// ADd a task
-poll.addTask({
-  id: 'modbus-poll',
-  resourceId: 'slave-1',
-  interval: 3000,
-  fn: () => readModbus(1),
-  onData: data => console.log('Modbus data:', data),
-  onError: err => console.error('Modbus error:', err.message),
-  onStart: () => console.log('Polling started'),
-  immediate: true,
-});
-
-// Update after 10 seconds
-setTimeout(() => {
-  poll.updateTask('modbus-poll', { interval: 5000 });
-}, 10000);
-
-// Statistics
-setInterval(() => {
-  console.log('Stats:', poll.getSystemStats());
-}, 15000);
-
-// Cleanup on exit
-process.on('SIGINT', () => {
-  poll.clearAll();
-  process.exit(0);
-});
+main();
 ```
 
 **Expected output (snippet):**
@@ -3338,6 +3091,15 @@ The recommended way to add proprietary or non-standard functionality is by creat
 <br>
 
 # <span id="changelog">CHANGELOG</span>
+
+### 2.7.21 (2025-11-25)
+
+- **Major Architecture Change:** `PollingManager` is now integrated directly into `TransportController`. Each transport has its own isolated polling queue.
+- **Breaking Change:** Removed `resourceId` from polling tasks. Tasks are now assigned to a specific transport ID.
+- **API Update:** Added methods `addPollingTask`, `removePollingTask`, `controlPolling` to `TransportController`.
+- **Fix:** Resolved deadlocks between polling tasks and manual client requests by implementing shared mutex logic.
+- **Fix:** Removed `TransportInfo` unused import in client.
+- **Improvement:** `ModbusClient` manual requests now automatically pause the polling queue for thread safety.
 
 ### 2.6.9 (2025-11-22)
 

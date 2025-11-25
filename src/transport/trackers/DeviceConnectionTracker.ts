@@ -136,6 +136,22 @@ export class DeviceConnectionTracker {
   }
 
   /**
+   * Полностью удаляет состояние устройства из памяти трекера.
+   * СИНХРОННЫЙ метод. Используется при принудительном удалении устройства из конфигурации.
+   * Гарантирует, что при следующем notifyConnected событие будет отправлено.
+   *
+   * @param slaveId Идентификатор устройства (1–255)
+   */
+  public removeState(slaveId: number): void {
+    const existingTimeout = this._debounceTimeouts.get(slaveId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      this._debounceTimeouts.delete(slaveId);
+    }
+    this._states.delete(slaveId);
+  }
+
+  /**
    * Выполняет фактическое уведомление об отключении (внутренний метод).
    */
   private async _doNotifyDisconnected(

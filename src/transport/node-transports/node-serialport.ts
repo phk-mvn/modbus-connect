@@ -245,6 +245,13 @@ class NodeSerialTransport implements Transport {
     }
   }
 
+  public removeConnectedDevice(slaveId: number): void {
+    if (this._connectedSlaveIds.has(slaveId)) {
+      this._connectedSlaveIds.delete(slaveId);
+      logger.debug(`Manually removed device ${slaveId} from connected set`);
+    }
+  }
+
   private async _notifyPortConnected(): Promise<void> {
     this._wasEverConnected = true;
     if (this._portStateHandler) {

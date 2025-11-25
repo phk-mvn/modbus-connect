@@ -691,6 +691,11 @@ class ModbusClient {
           throw new Error(`No transport available for slaveId ${this.slaveId}`);
         }
 
+        // Ищем transportId, чтобы использовать executeImmediate для блокировки polling
+        const allTransports = this.transportController.listTransports();
+        const transportInfo = allTransports.find(t => t.transport === transport);
+        const transportId = transportInfo?.id;
+
         try {
           const attemptStart = Date.now();
           const timeLeft = timeout - (attemptStart - startTime);
@@ -704,24 +709,47 @@ class ModbusClient {
 
           const packet = buildPacket(slaveId, pdu, this.crcFunc);
 
-          await transport.write(packet);
-          logger.debug('Packet written to transport', { bytes: packet.length, slaveId, funcCode });
+          // Определяем логику одной попытки (Write + Read), чтобы передать её в executeImmediate
+          const attemptLogic = async (): Promise<Uint8Array | undefined> => {
+            await transport.write(packet);
+            logger.debug('Packet written to transport', {
+              bytes: packet.length,
+              slaveId,
+              funcCode,
+            });
 
-          if (this.echoEnabled) {
-            logger.debug('Echo enabled, reading echo back...', { slaveId, funcCode });
-            const echoResponse = await transport.read(packet.length, timeLeft);
-            if (!echoResponse || echoResponse.length !== packet.length) {
-              throw new ModbusInsufficientDataError(
-                echoResponse ? echoResponse.length : 0,
-                packet.length
-              );
-            }
-            for (let i = 0; i < packet.length; i++) {
-              if (packet[i] !== echoResponse[i]) {
-                throw new Error('Echo mismatch detected');
+            if (this.echoEnabled) {
+              logger.debug('Echo enabled, reading echo back...', { slaveId, funcCode });
+              const echoResponse = await transport.read(packet.length, timeLeft);
+              if (!echoResponse || echoResponse.length !== packet.length) {
+                throw new ModbusInsufficientDataError(
+                  echoResponse ? echoResponse.length : 0,
+                  packet.length
+                );
               }
+              for (let i = 0; i < packet.length; i++) {
+                if (packet[i] !== echoResponse[i]) {
+                  throw new Error('Echo mismatch detected');
+                }
+              }
+              logger.debug('Echo verified successfully', { slaveId, funcCode });
             }
-            logger.debug('Echo verified successfully', { slaveId, funcCode });
+
+            if (ignoreNoResponse) {
+              return undefined;
+            }
+
+            return await this._readPacket(timeLeft, pdu);
+          };
+
+          let response: Uint8Array | undefined;
+
+          // Если нашли ID транспорта, используем executeImmediate для синхронизации с PollingManager
+          if (transportId && this.transportController.executeImmediate) {
+            response = await this.transportController.executeImmediate(transportId, attemptLogic);
+          } else {
+            // Если по какой-то причине ID не найден, выполняем как есть (блокируя только локальный мьютекс)
+            response = await attemptLogic();
           }
 
           if (ignoreNoResponse) {
@@ -734,7 +762,10 @@ class ModbusClient {
             return undefined;
           }
 
-          const response = await this._readPacket(timeLeft, pdu);
+          if (!response) {
+            // Should be unreachable if ignoreNoResponse is false, but for type safety
+            throw new Error('No response received');
+          }
 
           const elapsed = Date.now() - startTime;
           const { slaveAddress, pdu: responsePdu } = parsePacket(response, this.crcFunc);

@@ -1,6 +1,7 @@
 // src/transport/transport-controller.ts
 
 import Logger from '../logger.js';
+import PollingManager from '../polling-manager.js';
 import type {
   Transport,
   WebSerialPort,
@@ -9,6 +10,10 @@ import type {
   DeviceStateHandler,
   PortStateHandler,
   RSMode,
+  PollingTaskOptions,
+  PollingTaskStats,
+  PollingManagerConfig,
+  PollingQueueInfo,
 } from '../types/modbus-types.js';
 import { ConnectionErrorType } from '../types/modbus-types.js';
 import { DeviceConnectionTracker } from './trackers/DeviceConnectionTracker.js';
@@ -19,6 +24,7 @@ interface TransportInfo {
   id: string;
   type: 'node' | 'web';
   transport: Transport;
+  pollingManager: PollingManager;
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
   slaveIds: number[];
   rsMode: RSMode;
@@ -37,18 +43,24 @@ interface TransportStatus {
   connectedSlaveIds: number[];
   uptime: number;
   reconnectAttempts: number;
+  pollingStats?: {
+    queueLength: number;
+    tasksRunning: number;
+  };
 }
 
 type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
 
 /**
  * Контроллер транспорта для управления подключениями к устройствам.
+ * Также управляет задачами опроса (PollingManager) для каждого транспорта.
  */
 class TransportController {
   private transports: Map<string, TransportInfo> = new Map();
   private slaveTransportMap: Map<number, string[]> = new Map();
   private loadBalancerStrategy: LoadBalancerStrategy = 'first-available';
-  private logger = new Logger().createLogger('TransportController');
+  private loggerInstance = new Logger();
+  private logger = this.loggerInstance.createLogger('TransportController');
 
   private _roundRobinIndex: number = 0;
   private readonly _stickyMap = new Map<number, string>();
@@ -82,11 +94,12 @@ class TransportController {
   }
 
   /**
-   * Добавляет транспорт.
+   * Добавляет транспорт и инициализирует его PollingManager.
    * @param id - ID транспорта
    * @param type - Тип транспорта ('node' или 'web')
    * @param options - Опции транспорта
    * @param reconnectOptions - Параметры переподключения
+   * @param pollingConfig - Конфигурация для PollingManager
    */
   async addTransport(
     id: string,
@@ -95,7 +108,8 @@ class TransportController {
     reconnectOptions?: {
       maxReconnectAttempts?: number;
       reconnectInterval?: number;
-    }
+    },
+    pollingConfig?: PollingManagerConfig
   ): Promise<void> {
     if (this.transports.has(id)) {
       throw new Error(`Transport with id "${id}" already exists`);
@@ -223,10 +237,14 @@ class TransportController {
 
     const fallbacks = (options as any).fallbacks || [];
 
+    const pollingManager = new PollingManager(pollingConfig, this.loggerInstance);
+    pollingManager.logger = this.loggerInstance.createLogger(`PM:${id}`);
+
     const info: TransportInfo = {
       id,
       type,
       transport,
+      pollingManager,
       status: 'disconnected',
       slaveIds,
       rsMode: transport.getRSMode(),
@@ -255,7 +273,7 @@ class TransportController {
 
     this._updateSlaveTransportMap(id, slaveIds);
 
-    this.logger.info(`Transport "${id}" added`, { type, slaveIds });
+    this.logger.info(`Transport "${id}" added with PollingManager`, { type, slaveIds });
   }
 
   /**
@@ -265,6 +283,8 @@ class TransportController {
   async removeTransport(id: string): Promise<void> {
     const info = this.transports.get(id);
     if (!info) return;
+
+    info.pollingManager.clearAll();
 
     await this.disconnectTransport(id);
     this.transports.delete(id);
@@ -285,6 +305,139 @@ class TransportController {
 
     this.logger.info(`Transport "${id}" removed`);
   }
+
+  // =========================================================
+  // Методы управления PollingManager (Прокси)
+  // =========================================================
+
+  private _getTransportInfo(transportId: string): TransportInfo {
+    const info = this.transports.get(transportId);
+    if (!info) throw new Error(`Transport "${transportId}" not found`);
+    return info;
+  }
+
+  /**
+   * Добавляет задачу опроса в указанный транспорт.
+   * @param transportId - ID транспорта
+   * @param options - Опции задачи
+   */
+  public addPollingTask(transportId: string, options: PollingTaskOptions): void {
+    const info = this._getTransportInfo(transportId);
+    info.pollingManager.addTask(options);
+  }
+
+  /**
+   * Удаляет задачу опроса из указанного транспорта.
+   * @param transportId - ID транспорта
+   * @param taskId - ID задачи
+   */
+  public removePollingTask(transportId: string, taskId: string): void {
+    const info = this._getTransportInfo(transportId);
+    info.pollingManager.removeTask(taskId);
+  }
+
+  /**
+   * Обновляет задачу опроса.
+   * @param transportId - ID транспорта
+   * @param taskId - ID задачи
+   * @param newOptions - Новые опции
+   */
+  public updatePollingTask(
+    transportId: string,
+    taskId: string,
+    newOptions: Partial<PollingTaskOptions>
+  ): void {
+    const info = this._getTransportInfo(transportId);
+    info.pollingManager.updateTask(taskId, newOptions);
+  }
+
+  /**
+   * Управление состоянием конкретной задачи.
+   * @param transportId - ID транспорта
+   * @param taskId - ID задачи
+   * @param action - Действие (start, stop, pause, resume)
+   */
+  public controlTask(
+    transportId: string,
+    taskId: string,
+    action: 'start' | 'stop' | 'pause' | 'resume'
+  ): void {
+    const info = this._getTransportInfo(transportId);
+    switch (action) {
+      case 'start':
+        info.pollingManager.startTask(taskId);
+        break;
+      case 'stop':
+        info.pollingManager.stopTask(taskId);
+        break;
+      case 'pause':
+        info.pollingManager.pauseTask(taskId);
+        break;
+      case 'resume':
+        info.pollingManager.resumeTask(taskId);
+        break;
+    }
+  }
+
+  /**
+   * Управление всем опросом на транспорте.
+   * @param transportId - ID транспорта
+   * @param action - Действие (startAll, stopAll, pauseAll, resumeAll)
+   */
+  public controlPolling(
+    transportId: string,
+    action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
+  ): void {
+    const info = this._getTransportInfo(transportId);
+    switch (action) {
+      case 'startAll':
+        info.pollingManager.startAllTasks();
+        break;
+      case 'stopAll':
+        info.pollingManager.stopAllTasks();
+        break;
+      case 'pauseAll':
+        info.pollingManager.pauseAllTasks();
+        break;
+      case 'resumeAll':
+        info.pollingManager.resumeAllTasks();
+        break;
+    }
+  }
+
+  /**
+   * Получает статистику задач для транспорта.
+   * @param transportId - ID транспорта
+   * @returns Статистика задач
+   */
+  public getPollingStats(transportId: string): Record<string, PollingTaskStats> {
+    const info = this._getTransportInfo(transportId);
+    return info.pollingManager.getAllTaskStats();
+  }
+
+  /**
+   * Получает информацию об очереди.
+   * @param transportId - ID транспорта
+   * @returns Информация об очереди
+   */
+  public getPollingQueueInfo(transportId: string): PollingQueueInfo {
+    const info = this._getTransportInfo(transportId);
+    return info.pollingManager.getQueueInfo();
+  }
+
+  /**
+   * Позволяет выполнить функцию (например, запись) с использованием мьютекса PollingManager'а транспорта.
+   * Это предотвращает конфликты между опросом и ручными командами.
+   * @param transportId - ID транспорта
+   * @param fn - Функция для выполнения
+   * @returns Результат выполнения функции
+   */
+  public async executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T> {
+    const info = this._getTransportInfo(transportId);
+    return info.pollingManager.executeImmediate(fn);
+  }
+
+  // =========================================================
 
   /**
    * Получает транспорт по указанному ID.
@@ -338,6 +491,9 @@ class TransportController {
       await info.transport.connect();
       info.status = 'connected';
       info.reconnectAttempts = 0;
+
+      info.pollingManager.resumeAllTasks();
+
       this.logger.info(`Transport "${id}" connected`);
     } catch (err) {
       info.status = 'error';
@@ -367,6 +523,8 @@ class TransportController {
     if (!info) return;
 
     try {
+      info.pollingManager.pauseAllTasks();
+
       await info.transport.disconnect();
       info.status = 'disconnected';
       this.logger.info(`Transport "${id}" disconnected`);
@@ -405,6 +563,64 @@ class TransportController {
   }
 
   /**
+   * Удаляет slaveId из транспорта.
+   * Позволяет отвязать устройство, чтобы потом подключить его заново.
+   * @param transportId - ID транспорта
+   * @param slaveId - ID устройства
+   */
+  removeSlaveIdFromTransport(transportId: string, slaveId: number): void {
+    const info = this.transports.get(transportId);
+    if (!info) {
+      this.logger.warn(
+        `Attempted to remove slaveId ${slaveId} from non-existent transport "${transportId}"`
+      );
+      return;
+    }
+
+    const index = info.slaveIds.indexOf(slaveId);
+    if (index !== -1) {
+      info.slaveIds.splice(index, 1);
+    } else {
+      this.logger.warn(`SlaveId ${slaveId} was not found in transport "${transportId}"`);
+      return;
+    }
+
+    const transportList = this.slaveTransportMap.get(slaveId);
+    if (transportList) {
+      const updatedList = transportList.filter(tid => tid !== transportId);
+
+      if (updatedList.length === 0) {
+        this.slaveTransportMap.delete(slaveId);
+      } else {
+        this.slaveTransportMap.set(slaveId, updatedList);
+      }
+    }
+
+    const stickyTransport = this._stickyMap.get(slaveId);
+    if (stickyTransport === transportId) {
+      this._stickyMap.delete(slaveId);
+    }
+
+    const tracker = this.transportToDeviceTrackerMap.get(transportId);
+    if (tracker) {
+      try {
+        tracker.removeState(slaveId);
+      } catch (err: any) {
+        this.logger.warn(
+          `Failed to remove state for slaveId ${slaveId} from tracker: ${err.message}`
+        );
+      }
+    }
+
+    const transportAny = info.transport as any;
+    if (typeof transportAny.removeConnectedDevice === 'function') {
+      transportAny.removeConnectedDevice(slaveId);
+    }
+
+    this.logger.info(`Removed slaveId ${slaveId} from transport "${transportId}"`);
+  }
+
+  /**
    * Перезагружает транспорт с новыми опциями.
    * @param id - ID транспорта
    * @param options - Новые опции
@@ -417,6 +633,8 @@ class TransportController {
     if (!info) throw new Error(`Transport with id "${id}" not found`);
 
     const wasConnected = info.status === 'connected';
+
+    info.pollingManager.clearAll();
 
     await this.disconnectTransport(id);
 
@@ -639,6 +857,9 @@ class TransportController {
     if (id) {
       const info = this.transports.get(id);
       if (!info) return {} as TransportStatus;
+
+      const queueInfo = info.pollingManager.getQueueInfo();
+
       return {
         id: info.id,
         connected: info.status === 'connected',
@@ -646,11 +867,18 @@ class TransportController {
         connectedSlaveIds: info.slaveIds,
         uptime: Date.now() - info.createdAt.getTime(),
         reconnectAttempts: info.reconnectAttempts,
+        pollingStats: {
+          queueLength: queueInfo.queueLength,
+          tasksRunning: info.pollingManager.getSystemStats().tasks
+            ? Object.keys(info.pollingManager.getSystemStats().tasks).length
+            : 0,
+        },
       };
     }
 
     const result: Record<string, TransportStatus> = {};
     for (const [tid, info] of this.transports) {
+      const queueInfo = info.pollingManager.getQueueInfo();
       result[tid] = {
         id: info.id,
         connected: info.status === 'connected',
@@ -658,6 +886,12 @@ class TransportController {
         connectedSlaveIds: info.slaveIds,
         uptime: Date.now() - info.createdAt.getTime(),
         reconnectAttempts: info.reconnectAttempts,
+        pollingStats: {
+          queueLength: queueInfo.queueLength,
+          tasksRunning: info.pollingManager.getSystemStats().tasks
+            ? Object.keys(info.pollingManager.getSystemStats().tasks).length
+            : 0,
+        },
       };
     }
     return result;
@@ -767,15 +1001,19 @@ class TransportController {
       return;
     }
 
+    const info = this.transports.get(transportId);
+
     if (connected) {
       tracker.notifyConnected();
+      if (info) info.pollingManager.resumeAllTasks();
     } else {
       const errorType = (error?.type as ConnectionErrorType) || ConnectionErrorType.UnknownError;
       const errorMessage = error?.message || 'Port disconnected';
       tracker.notifyDisconnected(errorType, errorMessage, slaveIds);
+
+      if (info) info.pollingManager.pauseAllTasks();
     }
 
-    const info = this.transports.get(transportId);
     if (info) {
       info.status = connected ? 'connected' : 'disconnected';
       if (!connected) {
@@ -797,6 +1035,10 @@ class TransportController {
    * Уничтожает контроллер транспорта.
    */
   async destroy(): Promise<void> {
+    for (const info of this.transports.values()) {
+      info.pollingManager.clearAll();
+    }
+
     await this.disconnectAll();
     this.transports.clear();
     this.slaveTransportMap.clear();

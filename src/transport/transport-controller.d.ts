@@ -1,5 +1,6 @@
 // src/transport/transport-controller.d.ts
 
+import PollingManager from '../polling-manager.js';
 import type {
   Transport,
   WebSerialPort,
@@ -8,6 +9,10 @@ import type {
   DeviceStateHandler,
   PortStateHandler,
   RSMode,
+  PollingManagerConfig,
+  PollingTaskOptions,
+  PollingTaskStats,
+  PollingQueueInfo,
 } from '../types/modbus-types.js';
 
 // ========== Типы ==========
@@ -16,6 +21,7 @@ interface TransportInfo {
   id: string;
   type: 'node' | 'web';
   transport: Transport;
+  pollingManager: PollingManager;
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
   slaveIds: number[];
   rsMode: RSMode;
@@ -34,6 +40,10 @@ interface TransportStatus {
   connectedSlaveIds: number[];
   uptime: number;
   reconnectAttempts: number;
+  pollingStats?: {
+    queueLength: number;
+    tasksRunning: number;
+  };
 }
 
 type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
@@ -42,9 +52,23 @@ type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
 
 /**
  * Контроллер транспорта для управления подключениями к устройствам.
+ * Также управляет задачами опроса (PollingManager) для каждого транспорта.
  */
 declare class TransportController {
   constructor();
+
+  // === Управление обработчиками (Внешние) ===
+  /**
+   * Установить обработчик состояния устройства для внешнего мира.
+   * @param handler - Обработчик состояния
+   */
+  setDeviceStateHandler(handler: DeviceStateHandler): void;
+
+  /**
+   * Установить обработчик состояния порта для внешнего мира.
+   * @param handler - Обработчик состояния
+   */
+  setPortStateHandler(handler: PortStateHandler): void;
 
   // === Управление транспортами ===
   /**
@@ -53,6 +77,7 @@ declare class TransportController {
    * @param type - Тип транспорта ('node' или 'web')
    * @param options - Опции транспорта
    * @param reconnectOptions - Параметры переподключения
+   * @param pollingConfig - Конфигурация для PollingManager (опционально)
    */
   addTransport(
     id: string,
@@ -61,7 +86,8 @@ declare class TransportController {
     reconnectOptions?: {
       maxReconnectAttempts?: number;
       reconnectInterval?: number;
-    }
+    },
+    pollingConfig?: PollingManagerConfig
   ): Promise<void>;
 
   /**
@@ -69,6 +95,82 @@ declare class TransportController {
    * @param id - ID транспорта
    */
   removeTransport(id: string): Promise<void>;
+
+  // =========================================================
+  // Методы управления PollingManager (Прокси)
+  // =========================================================
+
+  /**
+   * Добавляет задачу опроса в указанный транспорт.
+   * @param transportId - ID транспорта
+   * @param options - Опции задачи
+   */
+  addPollingTask(transportId: string, options: PollingTaskOptions): void;
+
+  /**
+   * Удаляет задачу опроса из указанного транспорта.
+   * @param transportId - ID транспорта
+   * @param taskId - ID задачи
+   */
+  removePollingTask(transportId: string, taskId: string): void;
+
+  /**
+   * Обновляет задачу опроса.
+   * @param transportId - ID транспорта
+   * @param taskId - ID задачи
+   * @param newOptions - Новые опции
+   */
+  updatePollingTask(
+    transportId: string,
+    taskId: string,
+    newOptions: Partial<PollingTaskOptions>
+  ): void;
+
+  /**
+   * Управление состоянием конкретной задачи.
+   * @param transportId - ID транспорта
+   * @param taskId - ID задачи
+   * @param action - Действие (start, stop, pause, resume)
+   */
+  controlTask(
+    transportId: string,
+    taskId: string,
+    action: 'start' | 'stop' | 'pause' | 'resume'
+  ): void;
+
+  /**
+   * Управление всем опросом на транспорте.
+   * @param transportId - ID транспорта
+   * @param action - Действие (startAll, stopAll, pauseAll, resumeAll)
+   */
+  controlPolling(
+    transportId: string,
+    action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
+  ): void;
+
+  /**
+   * Получает статистику задач для транспорта.
+   * @param transportId - ID транспорта
+   */
+  getPollingStats(transportId: string): Record<string, PollingTaskStats>;
+
+  /**
+   * Получает информацию об очереди.
+   * @param transportId - ID транспорта
+   */
+  getPollingQueueInfo(transportId: string): PollingQueueInfo;
+
+  /**
+   * Позволяет выполнить функцию (например, запись) с использованием мьютекса PollingManager'а транспорта.
+   * Это предотвращает конфликты между опросом и ручными командами.
+   * @param transportId - ID транспорта
+   * @param fn - Функция для выполнения
+   */
+  executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T>;
+
+  // =========================================================
+  // Стандартные методы контроллера
+  // =========================================================
 
   /**
    * Получить транспорт по указанному ID.
@@ -132,6 +234,14 @@ declare class TransportController {
    */
   assignSlaveIdToTransport(transportId: string, slaveId: number): void;
 
+  /**
+   * Удаляет slaveId из транспорта.
+   * Позволяет отвязать устройство, чтобы потом подключить его заново или перенести.
+   * @param transportId - ID транспорта
+   * @param slaveId - ID устройства
+   */
+  removeSlaveIdFromTransport(transportId: string, slaveId: number): void;
+
   // === Статусы и диагностика ===
   /**
    * Получить статус транспорта.
@@ -153,19 +263,7 @@ declare class TransportController {
    */
   setLoadBalancer(strategy: LoadBalancerStrategy): void;
 
-  // === Управление обработчиками ===
-  /**
-   * Установить обработчик состояния устройства для внешнего мира.
-   * @param handler - Обработчик состояния
-   */
-  setDeviceStateHandler(handler: DeviceStateHandler): void;
-
-  /**
-   * Установить обработчик состояния порта для внешнего мира.
-   * @param handler - Обработчик состояния
-   */
-  setPortStateHandler(handler: PortStateHandler): void;
-
+  // === Управление обработчиками (Внутренние для транспорта) ===
   /**
    * Установить обработчик состояния устройства для транспорта.
    * @param transportId - ID транспорта
