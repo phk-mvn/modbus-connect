@@ -180,6 +180,7 @@ class TransportController {
     const fallbacks = options.fallbacks || [];
     const pollingManager = new import_polling_manager.default(pollingConfig, this.loggerInstance);
     pollingManager.logger = this.loggerInstance.createLogger(`PM:${id}`);
+    pollingManager.setLogLevelForAll("error");
     const info = {
       id,
       type,

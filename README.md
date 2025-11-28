@@ -3092,6 +3092,10 @@ The recommended way to add proprietary or non-standard functionality is by creat
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.7.22 (2025-11-28)
+
+- Disabled **DEBUG** logging of `pollingManager` in `TransportController`
+
 ### 2.7.21 (2025-11-25)
 
 - **Major Architecture Change:** `PollingManager` is now integrated directly into `TransportController`. Each transport has its own isolated polling queue.

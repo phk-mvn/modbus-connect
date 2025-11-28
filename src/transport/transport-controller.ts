@@ -239,6 +239,7 @@ class TransportController {
 
     const pollingManager = new PollingManager(pollingConfig, this.loggerInstance);
     pollingManager.logger = this.loggerInstance.createLogger(`PM:${id}`);
+    pollingManager.setLogLevelForAll('error');
 
     const info: TransportInfo = {
       id,
