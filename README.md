@@ -3092,6 +3092,10 @@ The recommended way to add proprietary or non-standard functionality is by creat
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.7.25 (2025-12-02)
+
+- Fixed import for `SlaveEmulator` module
+
 ### 2.7.22 (2025-11-28)
 
 - Disabled **DEBUG** logging of `pollingManager` in `TransportController`
