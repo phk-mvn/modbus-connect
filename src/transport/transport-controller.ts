@@ -19,6 +19,7 @@ import { ConnectionErrorType } from '../types/modbus-types.js';
 import { DeviceConnectionTracker } from './trackers/DeviceConnectionTracker.js';
 import { PortConnectionTracker } from './trackers/PortConnectionTracker.js';
 import { RSModeConstraintError } from '../errors.js';
+import { allocUint8Array } from '../utils/utils.js';
 
 interface TransportInfo {
   id: string;
@@ -714,6 +715,42 @@ class TransportController {
     }
 
     this.logger.info(`Transport "${id}" reloaded with new options`);
+  }
+
+  /**
+   * Выполняет операцию записи (или любую другую команду, требующую эксклюзивного доступа)
+   * на указанном транспорте, используя мьютекс PollingManager.
+   * @param transportId - ID транспорта, на котором нужно выполнить запись.
+   * @param data - Данные для записи (Uint8Array).
+   * @param readLength - Ожидаемая длина ответа (если есть).
+   * @param timeout - Таймаут на чтение ответа (в мс).
+   * @returns Прочитанный ответ (Uint8Array) или пустой буфер, если readLength=0.
+   */
+  public async writeToPort(
+    transportId: string,
+    data: Uint8Array,
+    readLength: number = 0,
+    timeout: number = 3000
+  ): Promise<Uint8Array> {
+    const info = this._getTransportInfo(transportId);
+
+    if (!info.transport.isOpen) {
+      throw new Error(
+        `Transport "${transportId}" is not open (connection status: ${info.status}).`
+      );
+    }
+
+    return info.pollingManager.executeImmediate(async () => {
+      await (info.transport as any).write(data);
+
+      if (readLength > 0) {
+        return (info.transport as any).read(readLength, timeout);
+      }
+
+      await (info.transport as any).flush();
+
+      return allocUint8Array(0);
+    });
   }
 
   /**

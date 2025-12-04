@@ -27,6 +27,7 @@ var import_modbus_types = require("../types/modbus-types.js");
 var import_DeviceConnectionTracker = require("./trackers/DeviceConnectionTracker.js");
 var import_PortConnectionTracker = require("./trackers/PortConnectionTracker.js");
 var import_errors = require("../errors.js");
+var import_utils = require("../utils/utils.js");
 class TransportController {
   transports = /* @__PURE__ */ new Map();
   slaveTransportMap = /* @__PURE__ */ new Map();
@@ -568,6 +569,31 @@ class TransportController {
       await this.connectTransport(id);
     }
     this.logger.info(`Transport "${id}" reloaded with new options`);
+  }
+  /**
+   * Выполняет операцию записи (или любую другую команду, требующую эксклюзивного доступа)
+   * на указанном транспорте, используя мьютекс PollingManager.
+   * @param transportId - ID транспорта, на котором нужно выполнить запись.
+   * @param data - Данные для записи (Uint8Array).
+   * @param readLength - Ожидаемая длина ответа (если есть).
+   * @param timeout - Таймаут на чтение ответа (в мс).
+   * @returns Прочитанный ответ (Uint8Array) или пустой буфер, если readLength=0.
+   */
+  async writeToPort(transportId, data, readLength = 0, timeout = 3e3) {
+    const info = this._getTransportInfo(transportId);
+    if (!info.transport.isOpen) {
+      throw new Error(
+        `Transport "${transportId}" is not open (connection status: ${info.status}).`
+      );
+    }
+    return info.pollingManager.executeImmediate(async () => {
+      await info.transport.write(data);
+      if (readLength > 0) {
+        return info.transport.read(readLength, timeout);
+      }
+      await info.transport.flush();
+      return (0, import_utils.allocUint8Array)(0);
+    });
   }
   /**
    * Установить сопоставление slaveId -> [transportId, fallback1, ...]

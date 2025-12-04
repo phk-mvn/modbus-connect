@@ -993,7 +993,52 @@ async function addAndTrackPort() {
 addAndTrackPort();
 ```
 
-### 9. `getStatus(id?)`
+### 9. `writeToPort(transportId, data, readLength?, timeout?)`
+
+Allows executing a direct write operation (or any command requiring exclusive port access) on a specific transport, leveraging the `PollingManager`'s mutex to prevent conflicts with background polling tasks. This is the safest way to send a non-polling, immediate command.
+
+**Parameters:**
+
+- `transportId (string)`: The ID of the transport to write to.
+- `data (Uint8Array)`: The data buffer to write to the port.
+- `readLength (number, optional)`: The expected length of the response data (in bytes). Defaults to `0` (no read).
+- `timeout (number, optional)`: Timeout for reading the response, in milliseconds. Defaults to `3000` ms.
+
+**Returns:** `Promise<Uint8Array>` - The received data buffer or an empty buffer if `readLength` was `0`.
+
+**Errors:** Throws Error if the transport is not found or if the underlying transport is not considered open/connected.
+
+**Example:**
+
+```js
+async function sendDirectCommand() {
+  const transportId = 'com3';
+  const dataToSend = new Uint8Array([0x01, 0x03, 0x00, 0x00, 0x00, 0x02, 0xcb, 0xfb]); // Example raw command
+  const expectedResponseLength = 9; // Command + 2 registers * 2 bytes/reg = 5 bytes response + header/CRC (example)
+
+  try {
+    console.log(`Sending direct command to transport ${transportId}...`);
+
+    // This call locks the transport's PollingManager, writes data, reads response, flushes, and releases lock.
+    const response = await controller.writeToPort(
+      transportId,
+      dataToSend,
+      expectedResponseLength,
+      5000 // 5 seconds timeout for this specific operation
+    );
+
+    console.log('Direct write successful. Response received:', response);
+  } catch (err) {
+    console.error(`Failed to write directly to transport ${transportId}:`, err.message);
+  }
+}
+
+sendDirectCommand();
+```
+
+> **Note on Transport State:** This method checks `info.transport.isOpen` internally. If you call this on a transport that is currently disconnecting or has an underlying error, it will likely fail, regardless of the PollingManager mutex being available. Ensure the transport is in the `'connected'` state before calling.
+
+### 10. `getStatus(id?)`
 
 Gets the status of a specific transport or all transports.
 
@@ -1010,7 +1055,7 @@ const status = controller.getStatus('com3');
 console.log('Transport status:', status);
 ```
 
-### 10. `getActiveTransportCount()`
+### 11. `getActiveTransportCount()`
 
 Returns the number of currently connected transports.
 
@@ -1018,7 +1063,7 @@ Returns the number of currently connected transports.
 
 **Returns:** number
 
-### 11. `setLoadBalancer(strategy)`
+### 12. `setLoadBalancer(strategy)`
 
 Sets the load balancing strategy for routing requests.
 
@@ -1032,7 +1077,7 @@ Sets the load balancing strategy for routing requests.
 controller.setLoadBalancer('round-robin');
 ```
 
-### 12. `reloadTransport(id, options)`
+### 13. `reloadTransport(id, options)`
 
 Asynchronously reloads an existing transport with a new configuration. This is useful for changing settings like `baudRate` or even the physical `port` on the fly.
 The controller will first safely disconnect the existing transport, then create a new transport instance with the provided options. If the original transport was connected, the controller will attempt to connect the new one automatically.
@@ -1069,7 +1114,7 @@ await controller.reloadTransport('com3', {
 console.log('Transport reloaded successfully.');
 ```
 
-### 13. Polling Task Management (Proxy Methods)
+### 14. Polling Task Management (Proxy Methods)
 
 The `TransportController` now acts as a facade for managing polling tasks specific to each transport.
 
@@ -1104,7 +1149,7 @@ await controller.executeImmediate('com3', async () => {
 controller.controlPolling('com3', 'pauseAll');
 ```
 
-### 14. `destroy()`
+### 15. `destroy()`
 
 Destroys the controller and disconnects all transports.
 
@@ -3091,6 +3136,10 @@ The recommended way to add proprietary or non-standard functionality is by creat
 <br>
 
 # <span id="changelog">CHANGELOG</span>
+
+### 2.7.26 (2025-12-04)
+
+- Added a method to `Transport Controller` that allows you to send your custom requests to the port directly
 
 ### 2.7.25 (2025-12-02)
 
