@@ -535,6 +535,12 @@ class ModbusClient {
           });
           const packet = (0, import_packet_builder.buildPacket)(slaveId, pdu, this.crcFunc);
           const attemptLogic = async () => {
+            if (transport.flush) {
+              try {
+                await transport.flush();
+              } finally {
+              }
+            }
             await transport.write(packet);
             logger.debug("Packet written to transport", {
               bytes: packet.length,

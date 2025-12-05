@@ -783,10 +783,12 @@ class PollingManager {
     this.executionQueue = this.executionQueue.filter(t => t.id !== taskId);
   }
 
+  private _sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   /**
    * Основной цикл обработки очереди.
-   * ИСПРАВЛЕНО: Убрана блокировка Mutex.
-   * Блокировка теперь управляется Client через executeImmediate.
    */
   private async _processQueue(): Promise<void> {
     if (this.isProcessing || this.paused || this.executionQueue.length === 0) {
@@ -797,11 +799,19 @@ class PollingManager {
 
     try {
       while (this.executionQueue.length > 0 && !this.paused) {
-        const task = this.executionQueue.shift();
+        const task = this.executionQueue[0];
+
         if (task) {
+          this.executionQueue.shift();
+
           this.logger.debug('Processing task from queue', { id: task.id } as LogContext);
+
+          await this._sleep(30);
+
           await task.execute();
         }
+
+        await this._sleep(10);
       }
     } catch (error: unknown) {
       this.logger.error('Critical error in processQueue loop', {
@@ -825,7 +835,7 @@ class PollingManager {
       return await fn();
     } finally {
       release();
-      this._processQueue();
+      // this._processQueue();
     }
   }
 

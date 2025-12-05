@@ -3137,6 +3137,14 @@ The recommended way to add proprietary or non-standard functionality is by creat
 
 # <span id="changelog">CHANGELOG</span>
 
+### 2.8.10 (2025-12-05)
+
+- **Fixed:** Critical deadlock in `PollingManager`. Removed `mutex.acquire()` from the internal queue processing loop to prevent tasks and the queue from blocking each other, which previously caused "Task timed out" errors.
+- **Fixed:** Improved stability for RS-485 buses with multiple devices. Added a 30ms inter-frame delay between polling tasks to respect bus turnaround times and prevent packet collisions.
+- **Fixed:** Optimized error recovery. The system now recovers immediately instead of hanging for extended periods when a device fails or times out.
+- **Added:** Mechanisms to support pausing and resuming polling for specific ports/devices. This allows for collision-free "heavy" operations (like initialization or writing registers) by temporarily silencing the polling queue.
+- **Improved:** `TaskController` now handles timeouts and retries more gracefully, preventing a single failing device from blocking the entire polling queue for other devices on the same port.
+
 ### 2.7.26 (2025-12-04)
 
 - Added a method to `Transport Controller` that allows you to send your custom requests to the port directly

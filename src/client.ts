@@ -711,6 +711,12 @@ class ModbusClient {
 
           // Определяем логику одной попытки (Write + Read), чтобы передать её в executeImmediate
           const attemptLogic = async (): Promise<Uint8Array | undefined> => {
+            if (transport.flush) {
+              try {
+                await transport.flush();
+              } finally {
+              }
+            }
             await transport.write(packet);
             logger.debug('Packet written to transport', {
               bytes: packet.length,
