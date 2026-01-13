@@ -34,10 +34,11 @@ var import_report_slave_id = require("./function-codes/report-slave-id.js");
 var import_read_device_identification = require("./function-codes/read-device-identification.js");
 var import_errors = require("./errors.js");
 var import_constants = require("./constants/constants.js");
-var import_packet_builder = require("./packet-builder.js");
 var import_logger = __toESM(require("./logger.js"));
 var import_crc = require("./utils/crc.js");
-var import_modbus_types = require("./types/modbus-types.js");
+var import_modbus_protocol = require("./framers/modbus-protocol.js");
+var import_rtu_framer = require("./framers/rtu-framer.js");
+var import_tcp_framer = require("./framers/tcp-framer.js");
 const crcAlgorithmMap = {
   crc16Modbus: import_crc.crc16Modbus,
   crc16CcittFalse: import_crc.crc16CcittFalse,
@@ -62,8 +63,6 @@ class ModbusClient {
   defaultTimeout;
   retryCount;
   retryDelay;
-  echoEnabled;
-  crcFunc;
   _mutex;
   _plugins = [];
   _customFunctions = /* @__PURE__ */ new Map();
@@ -112,13 +111,6 @@ class ModbusClient {
     this.defaultTimeout = options.timeout ?? 2e3;
     this.retryCount = options.retryCount ?? 0;
     this.retryDelay = options.retryDelay ?? 100;
-    this.echoEnabled = options.echoEnabled ?? false;
-    const algorithm = options.crcAlgorithm ?? "crc16Modbus";
-    const crcFunc = crcAlgorithmMap[algorithm];
-    if (!crcFunc) {
-      throw new import_errors.ModbusConfigError(`Unknown CRC algorithm: ${algorithm}`);
-    }
-    this.crcFunc = crcFunc;
     this._mutex = new import_async_mutex.Mutex();
     this._setAutoLoggerContext();
     if (options.plugins && Array.isArray(options.plugins)) {
@@ -126,7 +118,6 @@ class ModbusClient {
         this.use(new PluginClass());
       }
     }
-    this._resolveCrcFunction(options.crcAlgorithm ?? "crc16Modbus");
   }
   /**
    * Returns the effective transport for the client
@@ -223,10 +214,6 @@ class ModbusClient {
           this._customCrcAlgorithms.set(algoName, handler);
         }
       }
-      const currentCrcName = this.options.crcAlgorithm ?? "crc16Modbus";
-      if (plugin.customCrcAlgorithms[currentCrcName]) {
-        this._resolveCrcFunction(currentCrcName);
-      }
     }
     logger.info(`Plugin "${plugin.name}" registered successfully.`);
   }
@@ -249,22 +236,6 @@ class ModbusClient {
       return handler.parseResponse(new Uint8Array(0));
     }
     return handler.parseResponse(responsePdu);
-  }
-  /**
-   * Resolves the CRC function based on the provided algorithm.
-   * @param algorithm - The CRC algorithm to resolve.
-   */
-  _resolveCrcFunction(algorithm) {
-    const customFunc = this._customCrcAlgorithms.get(algorithm);
-    const builtInFunc = crcAlgorithmMap[algorithm];
-    if (customFunc) {
-      this.crcFunc = customFunc;
-      logger.debug(`Using custom CRC algorithm "${algorithm}" from a plugin.`);
-    } else if (builtInFunc) {
-      this.crcFunc = builtInFunc;
-    } else {
-      throw new import_errors.ModbusConfigError(`Unknown CRC algorithm: ${algorithm}`);
-    }
   }
   /**
    * Performs a logical connection check to ensure the client is ready for communication.
@@ -313,194 +284,6 @@ class ModbusClient {
     }
   }
   /**
-   * Converts a buffer to a hex string.
-   * @param buffer - The buffer to convert.
-   * @returns The hex string representation of the buffer.
-   */
-  _toHex(buffer) {
-    return Array.from(buffer).map((b) => b.toString(16).padStart(2, "0")).join(" ");
-  }
-  /**
-   * Calculates the expected response length based on the PDU.
-   * @param pdu - The PDU to calculate the expected response length for.
-   * @returns The expected response length, or null if the PDU is invalid.
-   */
-  _getExpectedResponseLength(pdu) {
-    if (!pdu || pdu.length === 0) return null;
-    const funcCode = pdu[0];
-    const modbusFuncCode = ModbusClient.FUNCTION_CODE_MAP.get(funcCode);
-    if (!modbusFuncCode) {
-      if (funcCode & 128) {
-        return 5;
-      }
-      return null;
-    }
-    switch (modbusFuncCode) {
-      case import_constants.ModbusFunctionCode.READ_COILS:
-      case import_constants.ModbusFunctionCode.READ_DISCRETE_INPUTS: {
-        if (pdu.length < 5) return null;
-        const bitCount = pdu[3] << 8 | pdu[4];
-        if (bitCount < 1 || bitCount > 2e3) {
-          throw new import_errors.ModbusInvalidQuantityError(bitCount, 1, 2e3);
-        }
-        return 5 + Math.ceil(bitCount / 8);
-      }
-      case import_constants.ModbusFunctionCode.READ_HOLDING_REGISTERS:
-      case import_constants.ModbusFunctionCode.READ_INPUT_REGISTERS: {
-        if (pdu.length < 5) return null;
-        const regCount = pdu[3] << 8 | pdu[4];
-        if (regCount < 1 || regCount > 125) {
-          throw new import_errors.ModbusInvalidQuantityError(regCount, 1, 125);
-        }
-        return 5 + regCount * 2;
-      }
-      case import_constants.ModbusFunctionCode.WRITE_SINGLE_COIL:
-      case import_constants.ModbusFunctionCode.WRITE_SINGLE_REGISTER:
-        return 8;
-      case import_constants.ModbusFunctionCode.WRITE_MULTIPLE_COILS:
-      case import_constants.ModbusFunctionCode.WRITE_MULTIPLE_REGISTERS:
-        return 8;
-      case import_constants.ModbusFunctionCode.READ_DEVICE_COMMENT:
-        return null;
-      case import_constants.ModbusFunctionCode.WRITE_DEVICE_COMMENT:
-        return 5;
-      case import_constants.ModbusFunctionCode.READ_DEVICE_IDENTIFICATION: {
-        if (pdu.length < 4) return null;
-        if (pdu[2] === 0) return 6;
-        if (pdu[2] === 4) return null;
-        return null;
-      }
-      case import_constants.ModbusFunctionCode.READ_FILE_LENGTH:
-        return 8;
-      case import_constants.ModbusFunctionCode.OPEN_FILE:
-        return 8;
-      case import_constants.ModbusFunctionCode.CLOSE_FILE:
-        return 5;
-      case import_constants.ModbusFunctionCode.RESTART_CONTROLLER:
-        return 0;
-      case import_constants.ModbusFunctionCode.GET_CONTROLLER_TIME:
-        return 10;
-      case import_constants.ModbusFunctionCode.SET_CONTROLLER_TIME:
-        return 8;
-      default:
-        return null;
-    }
-  }
-  /**
-   * Reads a packet from the Modbus transport.
-   * @param timeout - The timeout in milliseconds.
-   * @param requestPdu - The PDU of the request packet.
-   * @returns The received packet.
-   * @throws ModbusTimeoutError If the read operation times out.
-   */
-  async _readPacket(timeout, requestPdu = null) {
-    const start = Date.now();
-    let buffer = new Uint8Array(0);
-    const expectedLength = requestPdu ? this._getExpectedResponseLength(requestPdu) : null;
-    while (true) {
-      const timeLeft = timeout - (Date.now() - start);
-      if (timeLeft <= 0) throw new import_errors.ModbusTimeoutError("Read timeout");
-      const minPacketLength = 5;
-      const bytesToRead = expectedLength ? Math.max(1, expectedLength - buffer.length) : Math.max(1, minPacketLength - buffer.length);
-      const transport = this._effectiveTransport;
-      if (!transport) {
-        throw new Error(`No transport available for slaveId ${this.slaveId}`);
-      }
-      const chunk = await transport.read(bytesToRead, timeLeft);
-      if (!chunk || chunk.length === 0) continue;
-      const newBuffer = new Uint8Array(buffer.length + chunk.length);
-      newBuffer.set(buffer, 0);
-      newBuffer.set(chunk, buffer.length);
-      buffer = newBuffer;
-      const funcCode = requestPdu ? requestPdu[0] : void 0;
-      this._setAutoLoggerContext(funcCode);
-      logger.debug("Received chunk:", { bytes: chunk.length, total: buffer.length });
-      if (buffer.length >= minPacketLength) {
-        try {
-          (0, import_packet_builder.parsePacket)(buffer, this.crcFunc);
-          return buffer;
-        } catch (err) {
-          if (err instanceof import_errors.ModbusCRCError) {
-            logger.error("CRC mismatch detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusFramingError) {
-            logger.error("Framing error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusParityError) {
-            logger.error("Parity error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusNoiseError) {
-            logger.error("Noise error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusOverrunError) {
-            logger.error("Overrun error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusCollisionError) {
-            logger.error("Collision error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusSyncError) {
-            logger.error("Sync error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusFrameBoundaryError) {
-            logger.error("Frame boundary error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusLRCError) {
-            logger.error("LRC error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusChecksumError) {
-            logger.error("Checksum error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusMalformedFrameError) {
-            logger.error("Malformed frame error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusInvalidFrameLengthError) {
-            logger.error("Invalid frame length error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusInvalidTransactionIdError) {
-            logger.error("Invalid transaction ID error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusUnexpectedFunctionCodeError) {
-            logger.error("Unexpected function code error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusTooManyEmptyReadsError) {
-            logger.error("Too many empty reads error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusInterFrameTimeoutError) {
-            logger.error("Inter-frame timeout error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusSilentIntervalError) {
-            logger.error("Silent interval error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusResponseError) {
-            logger.error("Response error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusBufferOverflowError) {
-            logger.error("Buffer overflow error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusBufferUnderrunError) {
-            logger.error("Buffer underrun error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusMemoryError) {
-            logger.error("Memory error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusStackOverflowError) {
-            logger.error("Stack overflow error detected");
-            continue;
-          } else if (err instanceof import_errors.ModbusInsufficientDataError) {
-            logger.error("Insufficient data error detected");
-            continue;
-          } else if (err instanceof Error && err.message.startsWith("Invalid packet: too short")) {
-            continue;
-          } else if (err instanceof Error && err.message.startsWith("CRC mismatch")) {
-            continue;
-          } else {
-            throw err;
-          }
-        }
-      }
-    }
-  }
-  /**
    * Sends a request to the Modbus transport.
    * @param pdu - The PDU of the request packet.
    * @param timeout - The timeout in milliseconds.
@@ -514,193 +297,49 @@ class ModbusClient {
       const funcCode = pdu[0];
       const funcCodeEnum = ModbusClient.FUNCTION_CODE_MAP.get(funcCode) ?? funcCode;
       const slaveId = this.slaveId;
-      let lastError;
       const startTime = Date.now();
+      let lastError;
       for (let attempt = 0; attempt <= this.retryCount; attempt++) {
         const transport = this._effectiveTransport;
-        if (!transport) {
-          throw new Error(`No transport available for slaveId ${this.slaveId}`);
-        }
-        const allTransports = this.transportController.listTransports();
-        const transportInfo = allTransports.find((t) => t.transport === transport);
-        const transportId = transportInfo?.id;
+        if (!transport) throw new import_errors.ModbusNotConnectedError();
+        const framer = this.options.framing === "tcp" ? new import_tcp_framer.TcpFramer() : new import_rtu_framer.RtuFramer(crcAlgorithmMap[this.options.crcAlgorithm ?? "crc16Modbus"]);
+        const protocol = new import_modbus_protocol.ModbusProtocol(transport, framer);
+        this._setAutoLoggerContext(funcCodeEnum);
         try {
           const attemptStart = Date.now();
           const timeLeft = timeout - (attemptStart - startTime);
           if (timeLeft <= 0) throw new import_errors.ModbusTimeoutError("Timeout before request");
-          this._setAutoLoggerContext(funcCodeEnum);
-          logger.debug(`Attempt #${attempt + 1} \u2014 sending request`, {
-            slaveId,
-            funcCode
-          });
-          const packet = (0, import_packet_builder.buildPacket)(slaveId, pdu, this.crcFunc);
-          const attemptLogic = async () => {
-            if (transport.flush) {
-              try {
-                await transport.flush();
-              } finally {
-              }
-            }
-            await transport.write(packet);
-            logger.debug("Packet written to transport", {
-              bytes: packet.length,
-              slaveId,
-              funcCode
-            });
-            if (this.echoEnabled) {
-              logger.debug("Echo enabled, reading echo back...", { slaveId, funcCode });
-              const echoResponse = await transport.read(packet.length, timeLeft);
-              if (!echoResponse || echoResponse.length !== packet.length) {
-                throw new import_errors.ModbusInsufficientDataError(
-                  echoResponse ? echoResponse.length : 0,
-                  packet.length
-                );
-              }
-              for (let i = 0; i < packet.length; i++) {
-                if (packet[i] !== echoResponse[i]) {
-                  throw new Error("Echo mismatch detected");
-                }
-              }
-              logger.debug("Echo verified successfully", { slaveId, funcCode });
-            }
-            if (ignoreNoResponse) {
-              return void 0;
-            }
-            return await this._readPacket(timeLeft, pdu);
-          };
-          let response;
-          if (transportId && this.transportController.executeImmediate) {
-            response = await this.transportController.executeImmediate(transportId, attemptLogic);
-          } else {
-            response = await attemptLogic();
-          }
+          logger.debug(`Attempt #${attempt + 1} \u2014 exchange start`, { slaveId, funcCode });
           if (ignoreNoResponse) {
-            const elapsed2 = Date.now() - startTime;
-            logger.info("Request sent, no response expected", {
-              slaveId,
-              funcCode,
-              responseTime: elapsed2
-            });
+            await transport.write(framer.buildAdu(slaveId, pdu));
             return void 0;
           }
-          if (!response) {
-            throw new Error("No response received");
-          }
-          const elapsed = Date.now() - startTime;
-          const { slaveAddress, pdu: responsePdu } = (0, import_packet_builder.parsePacket)(response, this.crcFunc);
-          if (slaveAddress !== slaveId) {
-            throw new Error(`Slave address mismatch (expected ${slaveId}, got ${slaveAddress})`);
-          }
-          if (transport.notifyDeviceConnected) {
-            transport.notifyDeviceConnected(slaveId);
-          }
-          const responseFuncCode = responsePdu[0];
-          if ((responseFuncCode & 128) !== 0) {
-            const exceptionCode = responsePdu[1];
-            const modbusExceptionCode = ModbusClient.EXCEPTION_CODE_MAP.get(exceptionCode) ?? exceptionCode;
-            const exceptionMessage = import_constants.MODBUS_EXCEPTION_MESSAGES[exceptionCode] ?? `Unknown exception code: ${exceptionCode}`;
-            logger.warn("Modbus exception received", {
-              slaveId,
-              funcCode,
-              exceptionCode,
-              exceptionMessage,
-              responseTime: elapsed
-            });
-            throw new import_errors.ModbusExceptionError(responseFuncCode & 127, modbusExceptionCode);
+          const responsePdu = await protocol.exchange(slaveId, pdu, timeLeft);
+          if ((responsePdu[0] & 128) !== 0) {
+            const excCode = responsePdu[1];
+            const modbusExc = ModbusClient.EXCEPTION_CODE_MAP.get(excCode) ?? excCode;
+            throw new import_errors.ModbusExceptionError(responsePdu[0] & 127, modbusExc);
           }
           logger.info("Response received", {
             slaveId,
             funcCode,
-            responseTime: elapsed
+            responseTime: Date.now() - startTime
           });
           return responsePdu;
         } catch (err) {
+          lastError = err;
           const elapsed = Date.now() - startTime;
-          if (!(err instanceof import_errors.ModbusExceptionError)) {
-            if (transport.notifyDeviceDisconnected) {
-              let errorType = import_modbus_types.ConnectionErrorType.UnknownError;
-              if (err instanceof import_errors.ModbusTimeoutError) {
-                errorType = import_modbus_types.ConnectionErrorType.Timeout;
-              } else if (err instanceof import_errors.ModbusCRCError) {
-                errorType = import_modbus_types.ConnectionErrorType.CRCError;
-              }
-              const errorMessage = err instanceof Error ? err.message : String(err);
-              transport.notifyDeviceDisconnected(slaveId, errorType, errorMessage);
-            }
-          }
-          const isFlushedError = err instanceof import_errors.ModbusFlushError;
-          const errorCode = err instanceof Error && err.message.toLowerCase().includes("timeout") ? "timeout" : err instanceof Error && err.message.toLowerCase().includes("crc") ? "crc" : err instanceof import_errors.ModbusExceptionError ? "modbus-exception" : null;
-          if (transport.flush) {
-            try {
-              await transport.flush();
-              logger.debug("Transport flushed after error", { slaveId });
-            } catch (flushErr) {
-              logger.warn("Failed to flush transport after error", {
-                slaveId,
-                flushError: flushErr
-              });
-            }
-          }
-          this._setAutoLoggerContext(funcCodeEnum);
           logger.warn(
             `Attempt #${attempt + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
-            {
-              responseTime: elapsed,
-              error: err,
-              requestHex: this._toHex(pdu),
-              slaveId,
-              funcCode,
-              errorCode,
-              exceptionCode: err instanceof import_errors.ModbusExceptionError ? err.exceptionCode : null
-            }
+            { slaveId, funcCode, responseTime: elapsed }
           );
-          lastError = err;
-          if (isFlushedError) {
-            logger.info(`Attempt #${attempt + 1} failed due to flush, will retry`, {
-              slaveId,
-              funcCode
-            });
-          }
-          if (ignoreNoResponse && err instanceof Error && err.message.toLowerCase().includes("timeout") || isFlushedError) {
-            logger.info("Operation ignored due to ignoreNoResponse=true and timeout/flush", {
-              slaveId,
-              funcCode,
-              responseTime: elapsed
-            });
-            return void 0;
-          }
           if (attempt < this.retryCount) {
-            let delay = this.retryDelay;
-            if (isFlushedError) {
-              delay = Math.min(50, delay);
-              logger.debug(`Retrying after short delay ${delay}ms due to flush`, {
-                slaveId,
-                funcCode
-              });
-            } else {
-              logger.debug(`Retrying after delay ${delay}ms`, { slaveId, funcCode });
-            }
+            const delay = err instanceof import_errors.ModbusFlushError ? 50 : this.retryDelay;
             await new Promise((resolve) => setTimeout(resolve, delay));
-          } else {
-            if (transport.flush) {
-              try {
-                await transport.flush();
-                logger.debug("Final transport flush after all retries failed", { slaveId });
-              } catch (flushErr) {
-                logger.warn("Failed to final flush transport", { slaveId, flushError: flushErr });
-              }
-            }
-            logger.error(`All ${this.retryCount + 1} attempts exhausted`, {
-              error: lastError,
-              slaveId,
-              funcCode,
-              responseTime: elapsed
-            });
-            throw lastError instanceof Error ? lastError : new Error(String(lastError));
           }
         }
       }
-      throw new Error("Unexpected end of _sendRequest function");
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
     } finally {
       release();
     }

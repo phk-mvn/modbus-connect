@@ -3,6 +3,10 @@ var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -12,6 +16,9 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var transport_controller_d_exports = {};
-module.exports = __toCommonJS(transport_controller_d_exports);
-transport_controller_d_module.exports = TransportController;
+var web_tcp_transport_d_exports = {};
+__export(web_tcp_transport_d_exports, {
+  default: () => web_tcp_transport_d_default
+});
+module.exports = __toCommonJS(web_tcp_transport_d_exports);
+var web_tcp_transport_d_default = WebTcpTransport;

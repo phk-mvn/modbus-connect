@@ -12,6 +12,6 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-var transport_controller_d_exports = {};
-module.exports = __toCommonJS(transport_controller_d_exports);
-transport_controller_d_module.exports = TransportController;
+var node_tcp_transport_d_exports = {};
+module.exports = __toCommonJS(node_tcp_transport_d_exports);
+node_tcp_transport_d_module.exports = NodeTcpTransport;

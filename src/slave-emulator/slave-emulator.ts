@@ -1903,7 +1903,7 @@ class SlaveEmulator {
 
     for (let i = 0; i < qty; i++) {
       if (coils[i]) {
-        resp[1 + Math.floor(i / 8)]! |= 1 << i % 8;
+        resp[1 + Math.floor(i / 8)]! |= 1 << (i % 8);
       }
     }
 
@@ -1928,7 +1928,7 @@ class SlaveEmulator {
 
     for (let i = 0; i < qty; i++) {
       if (inputs[i]) {
-        resp[1 + Math.floor(i / 8)]! |= 1 << i % 8;
+        resp[1 + Math.floor(i / 8)]! |= 1 << (i % 8);
       }
     }
 

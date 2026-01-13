@@ -1,6 +1,6 @@
 # Modbus Connect (Node.js/Web Serial API)
 
-Modbus Connect is a cross-platform library for Modbus RTU communication in both Node.js and modern browsers (via the Web Serial API). It enables robust, easy interaction with industrial devices over serial ports.
+Modbus Connect is a cross-platform library for Modbus RTU/TCP communication in both Node.js and modern browsers (via the Web Serial API). It enables robust, easy interaction with industrial devices over serial ports.
 
 ## Navigation through documentation
 
@@ -9,6 +9,8 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - [Basic Usage](#basic-usage)
 - [Modbus Client](#modbus-client)
 - [Transport Controller](#transport-controller)
+- [Modbus TCP Support](#modbus-tcp)
+- [Architecture: Framers & Protocol](#architecture)
 - [Errors Types](#errors-types)
 - [Polling Manager](#polling-manager)
 - [Slave Emulator](#slave-emulator)
@@ -33,6 +35,9 @@ Modbus Connect is a cross-platform library for Modbus RTU communication in both 
 - Utility functions for CRC calculation, buffer manipulation, and data conversion.
 - Slave emulator for testing purposes (without COM port).
 - **Plugin System:** Extend client functionality with custom functions, data types, and CRC algorithms without modifying the library core.
+- Supports Modbus RTU and **Modbus TCP** (Node.js and Browser).
+- **Multilayer Architecture:** Separation of Transport, Framing, and Protocol logic.
+- **Intelligent Stream Reading:** Robust handling of partial packets and variable-length responses (perfect for custom archive functions).
 
 <br>
 
@@ -111,6 +116,25 @@ await controller.addTransport('web-port-1', 'web', {
 });
 
 await controller.connectAll();
+```
+
+**Node.js TCP:**
+
+```js
+await controller.addTransport('node-tcp-1', 'node-tcp', {
+  host: '192.168.1.10',
+  port: 502,
+  slaveIds: [1],
+});
+```
+
+**Web WebSocket Proxy (TCP):**
+
+```js
+await controller.addTransport('web-tcp-1', 'web-tcp', {
+  url: 'ws://localhost:8080',
+  slaveIds: [1],
+});
 ```
 
 To set the read/write speed parameters, specify writeTimeout and readTimeout during addTransport. Example:
@@ -197,7 +221,7 @@ try {
 
 # <span id="modbus-client">Modbus Client</span>
 
-The ModbusClient class is a client for working with Modbus devices (RTU/TCP, etc.) via the transport layer. It supports standard Modbus functions (reading/writing registers and coils), SGM130-specific functions (device comments, files, reboot, controller time), and integration with the logger from **Logger**. The client uses a **mutex** for synchronization, error retry, **diagnostics**, and **CRC checking**.
+The ModbusClient class is a client for working with Modbus devices (RTU/TCP, etc.) via the transport layer. It supports standard Modbus functions (reading/writing registers and coils), SGM130-specific functions (device comments, files, reboot, controller time), and integration with the logger from **Logger**. The client uses a **mutex** for synchronization, error retry, **diagnostics**, and protocol abstraction via **Framers**.
 
 Key Features:
 
@@ -255,7 +279,7 @@ const options = {
   plugins: [MyAwesomePlugin], // Pass plugin classes directly in constructor
 };
 
-const client = new ModbusClient(controller, 1, options);
+const client = new ModbusClient(controller, 1, options); // options: framing ('rtu' | 'tcp') - default: 'rtu'
 ```
 
 **_Initialization output (if logging is enabled):_** _No explicit output in the constructor. Logging is enabled by methods._
@@ -577,8 +601,6 @@ console.log(id); // { vendor: 'ABC', product: 'XYZ', ... }
 ## Internal methods (For expansion)
 
 - `_toHex(buffer):` Buffer to a hex string. Used in logs.
-- `_getExpectedResponseLength(pdu):` Expected response length for the PDU.
-- `_readPacket(timeout, requestPdu):` Read a packet
 - `_sendRequest(pdu, timeout, ignoreNoResponse):` Basic sending method with retry, echo, and diagnostics.
 - `_convertRegisters(registers, type):` Register conversion (supports 16/32/64-bit, float, string, BCD, hex, bool, binary with swaps: \_sw, \_sb, \_le, and combinations).
 
@@ -1275,6 +1297,66 @@ Registers from slave 3: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
 ```
 
 > For Web: Use `type: 'web'` and provide the `SerialPort` instance obtained via `navigator.serial.requestPort()` to the `addTransport` options. The process for setting state handlers is the same.
+
+<br>
+
+# <span id="modbus-tcp-support">Modbus TCP Support</span>
+
+THe library now provides full support for Modbus TCP, allowing communication over ethernet networks.
+
+### Key Differences from RTU:
+
+- **No CRC:** TCP uses the underlying network layer for error checking.
+- **MBAP Header:** Every packet is prefixed with a 7-byte Modbus Application Protocol header.
+- **Transaction ID:** Automated 16-bit counter to match requests and responses.
+
+### Node.js TCP
+
+Uses native `net` sockets. High performance, direct connection.
+
+```js
+await controller.addTransport('plc-1', 'node-tcp', {
+  host: '192.168.1.100',
+  port: 502,
+  slaveIds: [1], // In TCP, this is the Unit ID
+  readTimeout: 2000,
+});
+```
+
+### Web TCP (Browser)
+
+Since browsers cannot open raw TCP sockets, use the `web-tcp` transport. It connects via a WebSocket Proxy that forwards binary framers to the target PLC.
+
+```js
+await controller.addTransport('web-tcp-1', 'web-tcp', {
+  url: 'ws://your-proxy-server:8080',
+  slaveIds: [1],
+});
+```
+
+### Using TCP Client
+
+When creating a client for TCP, specify the `framing` option:
+
+```js
+const client = new ModbusClient(controller, 1, {
+  framing: 'tcp', // Defaults to 'rtu'
+  timeout: 4000,
+});
+```
+
+<br>
+
+# <span id="architecture">Architecture: Framers & Protocol</span>
+
+The library uses a tiered architecture to separate Modbus logic from byte-level packaging:
+
+- **Transport:** Handles raw data transmission (SerialPort, WebSerial, TCP Sockets).
+- **Framer:** Handles the Application Data Unit (ADU).
+  - `RtuFramer`: Adds/validates SlaveID and CRC.
+  - `TcpFramer`: Manages Transaction ID and MBAP header.
+- **Protocol:** Manages the communication cycle. It handles retries, flushes, and ensures a complete packet is read before returning data to the Client.
+- **Client:** High-level API for your application.
 
 <br>
 
@@ -3120,6 +3202,8 @@ A plugin can provide three types of extensions:
 - `customRegisterTypes`: Adds new string identifiers for the `type` option in `readHoldingRegisters` and `readInputRegisters`.
 - `customCrcAlgorithms`: Adds new CRC calculation functions, which can be selected via the `crcAlgorithm` option in the client constructor.
 
+> Note: Custom functions now automatically work over both RTU and TCP. The ModbusProtocol layer ensures your proprietary PDU is wrapped in the correct ADU (CRC or MBAP) depending on the transport.
+
 <br>
 
 # <span id="tips-for-use">Tips for use</span>
@@ -3136,6 +3220,18 @@ The recommended way to add proprietary or non-standard functionality is by creat
 <br>
 
 # <span id="changelog">CHANGELOG</span>
+
+### 3.0.0 (2026-01-13)
+
+- **Improved:** The `add Transport`, `remove Transport`, `reload Transport` and `destroy` methods in the **TransportController** module are now mutex protected.
+- **Improved:** Updated typing of the **TransportController** module in the `src/transport/transport-controller.d.ts` file
+- **Major Feature:** Added full **Modbus TCP** support for both Node.js and Web (WebSocket proxy).
+- **Architecture Overhaul:** Introduced `ModbusFramer` and `ModbusProtocol` layers.
+- **Performance Optimization:** Eliminated redundant framing checks in the main execution loop (Zero-Branching logic).
+- **Improved Reliability:** Implemented an intelligent stream reading loop in `ModbusProtocol` that waits for complete/valid packets. This fixes CRC errors on variable-length responses.
+- **Encapsulation:** Transaction ID management moved entirely to `TcpFramer`.
+- **Breaking Change:** Internal methods `_readPacket` and `_getExpectedResponseLength` removed from `ModbusClient`.
+- **Bug Fix:** Fixed plugin support for custom functions with dynamic response lengths (e.g., file/archive reading).
 
 ### 2.8.10 (2025-12-05)
 
@@ -3175,38 +3271,3 @@ The recommended way to add proprietary or non-standard functionality is by creat
 - **Removed** special functions for the SGM130
 - **Added** a [plugin system](#plugin-system) (for custom functions)
 - **Added** a importing library types (check [Basic Usage](#basic-usage))
-
-### 2.5.53 (2025-11-17)
-
-**RSMode has been introduced for RTU transportation:**
-
-- Added a new option `RSMode` (`RS485` or `RS232`) for **NodeSerialTransport** and **WebSerialTransport**, the default value is **RS485**.
-- **TransportController** now applies a strict restriction on the use of one device for transport configured in **RS232** mode, issuing a new **RSModeConstraintError** when violation during `addTransport` or `assignSlaveIdToTransport`.
-- **Improved transport selection logic:**
-- `ModbusClient` now supports the `RSMode` option to request a compatible transport.
-  - The `getTransportForSlave` method in the **TransportController** has been updated to select vehicles based on both the `SlaveID` and the required `RSMode`, which ensures proper routing in environments with mixed RS485 and RS232 buses.
-- **Updated TypeScript declarations:**
-- All relevant TypeScript declaration files (`.d.ts`) have been updated to reflect the new API changes, ensuring full input security for new features.
-- Updated documentation on **modules**: `ModbusClient`, `Transport controller`
-- Added the `reloadTransport` method to **TransportController**
-
-### 2.5.20 (2025-11-12)
-
-- Fixed a type mismatch (`string | null` vs `string | undefined`) in the `updateTask` method that caused a TypeScript compilation failure when updating a task with its `name` property set.
-- Implemented jitter in the exponential backoff strategy for task retries within `TaskController` to prevent the "thundering herd" problem under high load.
-- Performed a major internal refactoring of `TaskController` and `TaskQueue` to eliminate significant code duplication. Task execution, retry, and error handling logic has been centralized to improve maintainability and reduce the likelihood of future bugs.
-- Enhanced the reliability of the `updateTask` method to ensure atomic and safe replacement of task configurations, preventing potential race conditions.
-
-### 2.5.11 (2025-11-05)
-
-- **TransportController** now manages transport creation internally, removing the need for factory.ts
-- **Device and port connection trackers** (DeviceConnectionTracker, PortConnectionTracker) are now managed by TransportController
-- **ModbusClient** now works only with TransportController, direct Transport support has been removed
-- **Transports** (`NodeSerialTransport`, `WebSerialTransport`) no longer manage trackers internally, they delegate notifications to `TransportController`
-- Updated `.d.ts` files to reflect the changes
-- **Major** `WebSerialTransport` **Stability Fix**: Overhauled the internal read logic by removing the unreliable `_emptyReadCount` mechanism. The transport no longer produces false disconnection events during periods of silence and now behaves consistently with `NodeSerialTransport`.
-- `DeviceConnectionTracker` **Fix**: Fixed a critical race condition that caused repeated "ONLINE" notifications for a device even when its connection was stable. The tracker now correctly cancels pending disconnection timers upon receiving a successful connection signal.
-- `TransportController` **Load Balancer Implemented**: Fixed the non-functional `round-robin` and `sticky` load balancing strategies. They now operate with the correct logic instead of defaulting to the `first-available` strategy.
-- **Browser Port Release Fix**: Resolved an issue where browser tabs would not release a serial port after a physical device disconnection. The transport's internal resource cleanup is now correctly sequenced to ensure `port.close()` is called reliably.
-- `PortConnectionTracker` **Fix**: Corrected an issue where port disconnection notifications could be sent with an outdated `connected: true` status. The tracker now updates its internal state immediately upon disconnection, ensuring status queries are always accurate.
-- **API Cleanup**: Removed the non-functional `getStats` method from `TransportController` and its corresponding interface to simplify the public API.
