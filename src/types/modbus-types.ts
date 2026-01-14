@@ -3,6 +3,33 @@
 import { RegisterType } from '../constants/constants.js';
 
 // !=============================================================================
+// ! TCP/IP
+// !=============================================================================
+export enum ModbusFraming {
+  RTU = 'RTU',
+  TCP = 'TCP',
+}
+
+export interface NodeTcpTransportOptions {
+  host: string;
+  port: number;
+  readTimeout?: number;
+  writeTimeout?: number;
+  maxBufferSize?: number;
+  reconnectInterval?: number;
+  maxReconnectAttempts?: number;
+}
+
+export interface WebTcpTransportOptions {
+  url: string; // WebSocket URL (ws://... или wss://...)
+  readTimeout?: number;
+  writeTimeout?: number;
+  maxBufferSize?: number;
+  reconnectInterval?: number;
+  maxReconnectAttempts?: number;
+}
+
+// !=============================================================================
 // ! Типы для плагинов
 // !=============================================================================
 /**
@@ -199,7 +226,7 @@ export interface TransportControllerInterface {
    */
   addTransport(
     id: string,
-    type: 'node' | 'web',
+    type: 'node' | 'web' | 'node-tcp' | 'web-tcp',
     options: NodeSerialTransportOptions | (WebSerialTransportOptions & { port: WebSerialPort }),
     reconnectOptions?: {
       maxReconnectAttempts?: number;
@@ -289,7 +316,7 @@ export interface TransportControllerInterface {
 // --- Типы, используемые в TransportControllerInterface ---
 export interface TransportInfo {
   id: string;
-  type: 'node' | 'web';
+  type: 'node' | 'web' | 'node-tcp' | 'web-tcp';
   transport: Transport;
   // pollingManager не экспортируем в публичные типы, так как он внутри реализации
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -323,6 +350,7 @@ export type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
 
 /** Опции для конфигурации Modbus клиента */
 export interface ModbusClientOptions {
+  framing?: 'rtu' | 'tcp';
   RSMode?: RSMode;
   timeout?: number;
   retryCount?: number;
