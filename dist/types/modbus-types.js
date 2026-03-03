@@ -18,9 +18,15 @@ var __copyProps = (to, from, except, desc) => {
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var modbus_types_exports = {};
 __export(modbus_types_exports, {
-  ConnectionErrorType: () => ConnectionErrorType
+  ConnectionErrorType: () => ConnectionErrorType,
+  ModbusFraming: () => ModbusFraming
 });
 module.exports = __toCommonJS(modbus_types_exports);
+var ModbusFraming = /* @__PURE__ */ ((ModbusFraming2) => {
+  ModbusFraming2["RTU"] = "RTU";
+  ModbusFraming2["TCP"] = "TCP";
+  return ModbusFraming2;
+})(ModbusFraming || {});
 var ConnectionErrorType = /* @__PURE__ */ ((ConnectionErrorType2) => {
   ConnectionErrorType2["UnknownError"] = "UnknownError";
   ConnectionErrorType2["PortClosed"] = "PortClosed";
@@ -35,5 +41,6 @@ var ConnectionErrorType = /* @__PURE__ */ ((ConnectionErrorType2) => {
 })(ConnectionErrorType || {});
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  ConnectionErrorType
+  ConnectionErrorType,
+  ModbusFraming
 });

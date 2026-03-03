@@ -71,6 +71,22 @@ declare class ModbusClient {
   disconnect(): Promise<void>;
 
   /**
+   * Returns the current slave ID used by this client instance.
+   * Useful when slave ID can change dynamically (e.g., after network reconfiguration).
+   *
+   * @returns The current slave ID (1–255).
+   */
+  get currentSlaveId(): number;
+
+  /**
+   * Dynamically changes the slave ID of this client instance without recreating the client.
+   * After calling this method, all subsequent requests will use the new slave ID.
+   * @param newSlaveId - New slave ID (must be an integer between 1 and 255).
+   * @throws ModbusInvalidAddressError if newSlaveId is invalid.
+   */
+  setSlaveId(newSlaveId: number): void;
+
+  /**
    * Reads holding registers from the Modbus device.
    * @param startAddress - The starting address of the registers to read (0–65535).
    * @param quantity - The number of registers to read (1–125).

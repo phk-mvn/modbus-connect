@@ -23,216 +23,152 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var import_logger = __toESM(require("../logger.js"));
 var import_polling_manager = __toESM(require("../polling-manager.js"));
+var import_async_mutex = require("async-mutex");
+var import_transport_factory = require("./modules/transport-factory.js");
 var import_modbus_types = require("../types/modbus-types.js");
 var import_DeviceConnectionTracker = require("./trackers/DeviceConnectionTracker.js");
 var import_PortConnectionTracker = require("./trackers/PortConnectionTracker.js");
 var import_errors = require("../errors.js");
 var import_utils = require("../utils/utils.js");
 class TransportController {
+  /** Реестр всех добавленных транспортов */
   transports = /* @__PURE__ */ new Map();
+  /** Карта соответствия: SlaveID -> Список ID транспортов, которые могут с ним работать */
   slaveTransportMap = /* @__PURE__ */ new Map();
+  /** Текущая стратегия балансировки */
   loadBalancerStrategy = "first-available";
   loggerInstance = new import_logger.default();
   logger = this.loggerInstance.createLogger("TransportController");
+  /**
+   * Мьютекс для защиты реестра транспортов от состояния гонки (Race Conditions).
+   * Блокирует одновременное выполнение add/remove/reload/destroy.
+   */
+  _registryMutex = new import_async_mutex.Mutex();
+  // Переменные для стратегий балансировки
   _roundRobinIndex = 0;
   _stickyMap = /* @__PURE__ */ new Map();
+  // Карты трекеров и обработчиков
   transportToDeviceTrackerMap = /* @__PURE__ */ new Map();
   transportToPortTrackerMap = /* @__PURE__ */ new Map();
   transportToDeviceHandlerMap = /* @__PURE__ */ new Map();
   transportToPortHandlerMap = /* @__PURE__ */ new Map();
+  // Глобальные внешние обработчики
   _externalDeviceStateHandler = null;
   _externalPortStateHandler = null;
   constructor() {
     this.logger.setLevel("info");
   }
   /**
-   * Устанавливает обработчик состояния устройства для внешнего мира.
-   * @param handler - Обработчик состояния
+   * Устанавливает глобальный обработчик состояния устройств.
+   * Вызывается при изменении состояния любого устройства на любом транспорте.
+   * @param handler - Функция-обработчик
    */
   setDeviceStateHandler(handler) {
     this._externalDeviceStateHandler = handler;
   }
   /**
-   * Устанавливает обработчик состояния порта для внешнего мира.
-   * @param handler - Обработчик состояния
+   * Устанавливает глобальный обработчик состояния портов.
+   * Вызывается при подключении/отключении любого транспорта.
+   * @param handler - Функция-обработчик
    */
   setPortStateHandler(handler) {
     this._externalPortStateHandler = handler;
   }
   /**
-   * Добавляет транспорт и инициализирует его PollingManager.
-   * @param id - ID транспорта
-   * @param type - Тип транспорта ('node' или 'web')
-   * @param options - Опции транспорта
-   * @param reconnectOptions - Параметры переподключения
-   * @param pollingConfig - Конфигурация для PollingManager
+   * Добавляет новый транспорт в контроллер.
+   *
+   * Метод защищен мьютексом, чтобы предотвратить дублирование ID или конфликты
+   * при одновременной инициализации нескольких транспортов.
+   *
+   * @param id - Уникальный идентификатор транспорта.
+   * @param type - Тип транспорта ('node' | 'web' | 'node-tcp' | 'web-tcp').
+   * @param options - Опции конфигурации транспорта (порт, скорость и т.д.).
+   * @param reconnectOptions - Настройки автоматического переподключения.
+   * @param pollingConfig - Конфигурация встроенного менеджера опроса (PollingManager).
+   * @throws Error Если транспорт с таким ID уже существует или если произошла ошибка создания.
    */
   async addTransport(id, type, options, reconnectOptions, pollingConfig) {
-    if (this.transports.has(id)) {
-      throw new Error(`Transport with id "${id}" already exists`);
-    }
-    const rsMode = options.RSMode ?? "RS485";
-    const slaveIds = options.slaveIds || [];
-    if (rsMode === "RS232" && slaveIds.length > 1) {
-      throw new import_errors.RSModeConstraintError(
-        `Transport "${id}" with RSMode 'RS232' cannot be assigned more than one device. Provided ${slaveIds.length} devices.`
-      );
-    }
-    let transport;
-    try {
-      switch (type) {
-        case "node": {
-          const path = options.port || options.path;
-          if (!path) {
-            throw new Error('Missing "port" (or "path") option for node transport');
-          }
-          const NodeSerialTransport = (await import("./node-transports/node-serialport.js")).default;
-          const nodeOptions = {};
-          const allowedNodeKeys = [
-            "baudRate",
-            "dataBits",
-            "stopBits",
-            "parity",
-            "readTimeout",
-            "writeTimeout",
-            "maxBufferSize",
-            "reconnectInterval",
-            "maxReconnectAttempts",
-            "RSMode"
-          ];
-          for (const key of allowedNodeKeys) {
-            if (key in options) {
-              nodeOptions[key] = options[key];
-            }
-          }
-          transport = new NodeSerialTransport(path, nodeOptions);
-          break;
-        }
-        case "web": {
-          const webOptionsIn = options;
-          const port = webOptionsIn.port;
-          if (!port) {
-            throw new Error('Missing "port" option for web transport');
-          }
-          const WebSerialTransport = (await import("./web-transports/web-serialport.js")).default;
-          const portFactory = async () => {
-            this.logger.debug("WebSerialTransport portFactory: Returning provided port instance");
-            try {
-              if (port.readable || port.writable) {
-                this.logger.debug(
-                  "WebSerialTransport portFactory: Port seems to be in use, trying to close..."
-                );
-                try {
-                  await port.close();
-                  this.logger.debug("WebSerialTransport portFactory: Existing port closed");
-                } catch (closeErr) {
-                  this.logger.warn(
-                    "WebSerialTransport portFactory: Error closing existing port (might be already closed or broken):",
-                    closeErr.message
-                  );
-                }
-              }
-            } catch (err) {
-              this.logger.error(
-                "WebSerialTransport portFactory: Failed to prepare existing port for reuse:",
-                err
-              );
-            }
-            return port;
-          };
-          const webOptions = {};
-          const allowedWebKeys = [
-            "baudRate",
-            "dataBits",
-            "stopBits",
-            "parity",
-            "readTimeout",
-            "writeTimeout",
-            "reconnectInterval",
-            "maxReconnectAttempts",
-            "maxEmptyReadsBeforeReconnect",
-            "RSMode"
-          ];
-          for (const key of allowedWebKeys) {
-            if (key in webOptionsIn) {
-              webOptions[key] = webOptionsIn[key];
-            }
-          }
-          this.logger.debug("Creating WebSerialTransport with provided port");
-          transport = new WebSerialTransport(portFactory, webOptions);
-          break;
-        }
-        default:
-          throw new Error(`Unknown transport type: ${type}`);
+    await this._registryMutex.runExclusive(async () => {
+      if (this.transports.has(id)) {
+        throw new Error(`Transport with id "${id}" already exists`);
       }
-    } catch (err) {
-      this.logger.error(`Failed to create transport of type "${type}": ${err.message}`);
-      throw err;
-    }
-    const seenSlaveIds = /* @__PURE__ */ new Set();
-    for (const slaveId of slaveIds) {
-      if (seenSlaveIds.has(slaveId)) {
-        throw new Error(
-          `Duplicate slave ID ${slaveId} provided for transport "${id}". Each slave ID must be unique per transport.`
+      const rsMode = options.RSMode ?? "RS485";
+      const slaveIds = options.slaveIds || [];
+      if (rsMode === "RS232" && slaveIds.length > 1) {
+        throw new import_errors.RSModeConstraintError(
+          `Transport "${id}" with RSMode 'RS232' cannot be assigned more than one device. Provided ${slaveIds.length} devices.`
         );
       }
-      seenSlaveIds.add(slaveId);
-    }
-    const fallbacks = options.fallbacks || [];
-    const pollingManager = new import_polling_manager.default(pollingConfig, this.loggerInstance);
-    pollingManager.logger = this.loggerInstance.createLogger(`PM:${id}`);
-    pollingManager.setLogLevelForAll("error");
-    const info = {
-      id,
-      type,
-      transport,
-      pollingManager,
-      status: "disconnected",
-      slaveIds,
-      rsMode: transport.getRSMode(),
-      fallbacks,
-      createdAt: /* @__PURE__ */ new Date(),
-      reconnectAttempts: 0,
-      maxReconnectAttempts: reconnectOptions?.maxReconnectAttempts ?? 5,
-      reconnectInterval: reconnectOptions?.reconnectInterval ?? 2e3
-    };
-    this.transports.set(id, info);
-    const deviceTracker = new import_DeviceConnectionTracker.DeviceConnectionTracker();
-    const portTracker = new import_PortConnectionTracker.PortConnectionTracker();
-    this.transportToDeviceTrackerMap.set(id, deviceTracker);
-    this.transportToPortTrackerMap.set(id, portTracker);
-    transport.setDeviceStateHandler((slaveId, connected, error) => {
-      this._onDeviceStateChange(id, slaveId, connected, error);
+      const transport = await import_transport_factory.TransportFactory.create(type, options, this.logger);
+      const seenSlaveIds = /* @__PURE__ */ new Set();
+      for (const slaveId of slaveIds) {
+        if (seenSlaveIds.has(slaveId)) {
+          throw new Error(
+            `Duplicate slave ID ${slaveId} provided for transport "${id}". Each slave ID must be unique per transport.`
+          );
+        }
+        seenSlaveIds.add(slaveId);
+      }
+      const fallbacks = options.fallbacks || [];
+      const pollingManager = new import_polling_manager.default(pollingConfig, this.loggerInstance);
+      pollingManager.logger = this.loggerInstance.createLogger(`PM:${id}`);
+      pollingManager.setLogLevelForAll("error");
+      const info = {
+        id,
+        type,
+        transport,
+        pollingManager,
+        status: "disconnected",
+        slaveIds,
+        rsMode: transport.getRSMode(),
+        fallbacks,
+        createdAt: /* @__PURE__ */ new Date(),
+        reconnectAttempts: 0,
+        maxReconnectAttempts: reconnectOptions?.maxReconnectAttempts ?? 5,
+        reconnectInterval: reconnectOptions?.reconnectInterval ?? 2e3
+      };
+      this.transports.set(id, info);
+      const deviceTracker = new import_DeviceConnectionTracker.DeviceConnectionTracker();
+      const portTracker = new import_PortConnectionTracker.PortConnectionTracker();
+      this.transportToDeviceTrackerMap.set(id, deviceTracker);
+      this.transportToPortTrackerMap.set(id, portTracker);
+      transport.setDeviceStateHandler((slaveId, connected, error) => {
+        this._onDeviceStateChange(id, slaveId, connected, error);
+      });
+      transport.setPortStateHandler((connected, slaveIds2, error) => {
+        this._onPortStateChange(id, connected, slaveIds2, error);
+      });
+      this._updateSlaveTransportMap(id, slaveIds);
+      this.logger.info(`Transport "${id}" added with PollingManager`, { type, slaveIds });
     });
-    transport.setPortStateHandler((connected, slaveIds2, error) => {
-      this._onPortStateChange(id, connected, slaveIds2, error);
-    });
-    this._updateSlaveTransportMap(id, slaveIds);
-    this.logger.info(`Transport "${id}" added with PollingManager`, { type, slaveIds });
   }
   /**
-   * Удаляет транспорт по указанному ID.
-   * @param id - ID транспорта
+   * Удаляет транспорт по указанному ID, останавливает задачи опроса и закрывает соединение.
+   * Метод защищен мьютексом.
+   *
+   * @param id - ID транспорта.
    */
   async removeTransport(id) {
-    const info = this.transports.get(id);
-    if (!info) return;
-    info.pollingManager.clearAll();
-    await this.disconnectTransport(id);
-    this.transports.delete(id);
-    this.transportToDeviceTrackerMap.delete(id);
-    this.transportToPortTrackerMap.delete(id);
-    this.transportToDeviceHandlerMap.delete(id);
-    this.transportToPortHandlerMap.delete(id);
-    for (const [slaveId, list] of this.slaveTransportMap.entries()) {
-      const updated = list.filter((tid) => tid !== id);
-      if (updated.length === 0) {
-        this.slaveTransportMap.delete(slaveId);
-      } else {
-        this.slaveTransportMap.set(slaveId, updated);
+    await this._registryMutex.runExclusive(async () => {
+      const info = this.transports.get(id);
+      if (!info) return;
+      info.pollingManager.clearAll();
+      await this._disconnectTransportInternal(id);
+      this.transports.delete(id);
+      this.transportToDeviceTrackerMap.delete(id);
+      this.transportToPortTrackerMap.delete(id);
+      this.transportToDeviceHandlerMap.delete(id);
+      this.transportToPortHandlerMap.delete(id);
+      for (const [slaveId, list] of this.slaveTransportMap.entries()) {
+        const updated = list.filter((tid) => tid !== id);
+        if (updated.length === 0) {
+          this.slaveTransportMap.delete(slaveId);
+        } else {
+          this.slaveTransportMap.set(slaveId, updated);
+        }
       }
-    }
-    this.logger.info(`Transport "${id}" removed`);
+      this.logger.info(`Transport "${id}" removed`);
+    });
   }
   // =========================================================
   // Методы управления PollingManager (Прокси)
@@ -243,38 +179,32 @@ class TransportController {
     return info;
   }
   /**
-   * Добавляет задачу опроса в указанный транспорт.
-   * @param transportId - ID транспорта
-   * @param options - Опции задачи
+   * Добавляет задачу опроса в очередь указанного транспорта.
+   * @param transportId - ID транспорта.
+   * @param options - Параметры задачи.
    */
   addPollingTask(transportId, options) {
     const info = this._getTransportInfo(transportId);
     info.pollingManager.addTask(options);
   }
   /**
-   * Удаляет задачу опроса из указанного транспорта.
-   * @param transportId - ID транспорта
-   * @param taskId - ID задачи
+   * Удаляет задачу опроса из транспорта.
+   * @param transportId - ID транспорта.
+   * @param taskId - ID задачи.
    */
   removePollingTask(transportId, taskId) {
     const info = this._getTransportInfo(transportId);
     info.pollingManager.removeTask(taskId);
   }
   /**
-   * Обновляет задачу опроса.
-   * @param transportId - ID транспорта
-   * @param taskId - ID задачи
-   * @param newOptions - Новые опции
+   * Обновляет параметры существующей задачи опроса.
    */
   updatePollingTask(transportId, taskId, newOptions) {
     const info = this._getTransportInfo(transportId);
     info.pollingManager.updateTask(taskId, newOptions);
   }
   /**
-   * Управление состоянием конкретной задачи.
-   * @param transportId - ID транспорта
-   * @param taskId - ID задачи
-   * @param action - Действие (start, stop, pause, resume)
+   * Управление состоянием конкретной задачи (старт/стоп/пауза).
    */
   controlTask(transportId, taskId, action) {
     const info = this._getTransportInfo(transportId);
@@ -294,9 +224,7 @@ class TransportController {
     }
   }
   /**
-   * Управление всем опросом на транспорте.
-   * @param transportId - ID транспорта
-   * @param action - Действие (startAll, stopAll, pauseAll, resumeAll)
+   * Глобальное управление опросом на указанном транспорте.
    */
   controlPolling(transportId, action) {
     const info = this._getTransportInfo(transportId);
@@ -316,29 +244,22 @@ class TransportController {
     }
   }
   /**
-   * Получает статистику задач для транспорта.
-   * @param transportId - ID транспорта
-   * @returns Статистика задач
+   * Возвращает статистику по всем задачам транспорта.
    */
   getPollingStats(transportId) {
     const info = this._getTransportInfo(transportId);
     return info.pollingManager.getAllTaskStats();
   }
   /**
-   * Получает информацию об очереди.
-   * @param transportId - ID транспорта
-   * @returns Информация об очереди
+   * Возвращает информацию об очереди задач транспорта.
    */
   getPollingQueueInfo(transportId) {
     const info = this._getTransportInfo(transportId);
     return info.pollingManager.getQueueInfo();
   }
   /**
-   * Позволяет выполнить функцию (например, запись) с использованием мьютекса PollingManager'а транспорта.
-   * Это предотвращает конфликты между опросом и ручными командами.
-   * @param transportId - ID транспорта
-   * @param fn - Функция для выполнения
-   * @returns Результат выполнения функции
+   * Позволяет выполнить функцию (например, запись) с использованием мьютекса PollingManager'а.
+   * Это гарантирует, что операция не прервет текущий опрос и будет выполнена атомарно.
    */
   async executeImmediate(transportId, fn) {
     const info = this._getTransportInfo(transportId);
@@ -346,23 +267,20 @@ class TransportController {
   }
   // =========================================================
   /**
-   * Получает транспорт по указанному ID.
-   * @param id - ID транспорта
-   * @returns Транспорт или null, если транспорт не найден
+   * Возвращает экземпляр транспорта по ID (или null).
    */
   getTransport(id) {
     const info = this.transports.get(id);
     return info ? info.transport : null;
   }
   /**
-   * Получает список всех транспортов.
-   * @returns Массив объектов TransportInfo
+   * Возвращает список всех зарегистрированных транспортов.
    */
   listTransports() {
     return Array.from(this.transports.values());
   }
   /**
-   * Подключает все транспорты.
+   * Инициирует подключение всех зарегистрированных транспортов.
    */
   async connectAll() {
     const promises = Array.from(this.transports.values()).map(
@@ -380,8 +298,10 @@ class TransportController {
     await Promise.all(promises);
   }
   /**
-   * Подключает транспорт по указанному ID.
-   * @param id - ID транспорта
+   * Подключает конкретный транспорт.
+   * Если подключение успешно, запускает/возобновляет опрос (PollingManager).
+   *
+   * @param id - ID транспорта.
    */
   async connectTransport(id) {
     const info = this.transports.get(id);
@@ -411,10 +331,16 @@ class TransportController {
     }
   }
   /**
-   * Отключает транспорт по указанному ID.
-   * @param id - ID транспорта
+   * Отключает конкретный транспорт.
    */
   async disconnectTransport(id) {
+    await this._disconnectTransportInternal(id);
+  }
+  /**
+   * Внутренний метод отключения. Вызывает pause для поллинга и disconnect для транспорта.
+   * Не использует глобальный мьютекс реестра, поэтому может безопасно вызываться внутри других защищенных методов.
+   */
+  async _disconnectTransportInternal(id) {
     const info = this.transports.get(id);
     if (!info) return;
     try {
@@ -427,9 +353,8 @@ class TransportController {
     }
   }
   /**
-   * Назначить slaveId транспорту. Если транспорт уже обслуживает этот slaveId — игнорирует.
-   * @param transportId - ID транспорта
-   * @param slaveId - ID устройства
+   * Привязывает Slave ID к транспорту.
+   * Позволяет динамически маршрутизировать запросы для этого устройства через указанный транспорт.
    */
   assignSlaveIdToTransport(transportId, slaveId) {
     const info = this.transports.get(transportId);
@@ -452,10 +377,7 @@ class TransportController {
     this.logger.info(`Assigned slaveId ${slaveId} to transport "${transportId}"`);
   }
   /**
-   * Удаляет slaveId из транспорта.
-   * Позволяет отвязать устройство, чтобы потом подключить его заново.
-   * @param transportId - ID транспорта
-   * @param slaveId - ID устройства
+   * Отвязывает Slave ID от транспорта.
    */
   removeSlaveIdFromTransport(transportId, slaveId) {
     const info = this.transports.get(transportId);
@@ -502,82 +424,50 @@ class TransportController {
     this.logger.info(`Removed slaveId ${slaveId} from transport "${transportId}"`);
   }
   /**
-   * Перезагружает транспорт с новыми опциями.
-   * @param id - ID транспорта
-   * @param options - Новые опции
+   * Перезагружает (пересоздает) транспорт с новыми опциями.
+   * Полезно для изменения настроек (BaudRate и т.д.) без рестарта приложения.
+   * Метод защищен мьютексом.
+   *
+   * @param id - ID транспорта.
+   * @param options - Новые настройки.
    */
   async reloadTransport(id, options) {
-    const info = this.transports.get(id);
-    if (!info) throw new Error(`Transport with id "${id}" not found`);
-    const wasConnected = info.status === "connected";
-    info.pollingManager.clearAll();
-    await this.disconnectTransport(id);
-    let newTransport;
-    try {
-      switch (info.type) {
-        case "node": {
-          const nodeOptionsIn = options;
-          const path = nodeOptionsIn.port || nodeOptionsIn.path;
-          if (!path) {
-            throw new Error('Missing "port" (or "path") option for node transport');
-          }
-          const NodeSerialTransport = (await import("./node-transports/node-serialport.js")).default;
-          newTransport = new NodeSerialTransport(path, nodeOptionsIn);
-          break;
-        }
-        case "web": {
-          const webOptionsIn = options;
-          const port = webOptionsIn.port;
-          if (!port) {
-            throw new Error('Missing "port" option for web transport');
-          }
-          const WebSerialTransport = (await import("./web-transports/web-serialport.js")).default;
-          const portFactory = async () => {
-            return port;
-          };
-          newTransport = new WebSerialTransport(portFactory, webOptionsIn);
-          break;
-        }
-        default:
-          throw new Error(`Unknown transport type: ${info.type}`);
+    await this._registryMutex.runExclusive(async () => {
+      const info = this.transports.get(id);
+      if (!info) throw new Error(`Transport with id "${id}" not found`);
+      const wasConnected = info.status === "connected";
+      info.pollingManager.clearAll();
+      await this._disconnectTransportInternal(id);
+      const newTransport = await import_transport_factory.TransportFactory.create(info.type, options, this.logger);
+      const deviceTracker = new import_DeviceConnectionTracker.DeviceConnectionTracker();
+      const portTracker = new import_PortConnectionTracker.PortConnectionTracker();
+      this.transportToDeviceTrackerMap.set(id, deviceTracker);
+      this.transportToPortTrackerMap.set(id, portTracker);
+      newTransport.setDeviceStateHandler((slaveId, connected, error) => {
+        this._onDeviceStateChange(id, slaveId, connected, error);
+      });
+      newTransport.setPortStateHandler((connected, slaveIds, error) => {
+        this._onPortStateChange(id, connected, slaveIds, error);
+      });
+      const deviceHandler = this.transportToDeviceHandlerMap.get(id);
+      if (deviceHandler) {
+        await deviceTracker.setHandler(deviceHandler);
       }
-    } catch (err) {
-      this.logger.error(`Failed to create new transport of type "${info.type}": ${err.message}`);
-      throw err;
-    }
-    const deviceTracker = new import_DeviceConnectionTracker.DeviceConnectionTracker();
-    const portTracker = new import_PortConnectionTracker.PortConnectionTracker();
-    this.transportToDeviceTrackerMap.set(id, deviceTracker);
-    this.transportToPortTrackerMap.set(id, portTracker);
-    newTransport.setDeviceStateHandler((slaveId, connected, error) => {
-      this._onDeviceStateChange(id, slaveId, connected, error);
+      const portHandler = this.transportToPortHandlerMap.get(id);
+      if (portHandler) {
+        await portTracker.setHandler(portHandler);
+      }
+      info.transport = newTransport;
+      info.rsMode = newTransport.getRSMode();
+      if (wasConnected) {
+        await this.connectTransport(id);
+      }
+      this.logger.info(`Transport "${id}" reloaded with new options`);
     });
-    newTransport.setPortStateHandler((connected, slaveIds, error) => {
-      this._onPortStateChange(id, connected, slaveIds, error);
-    });
-    const deviceHandler = this.transportToDeviceHandlerMap.get(id);
-    if (deviceHandler) {
-      await deviceTracker.setHandler(deviceHandler);
-    }
-    const portHandler = this.transportToPortHandlerMap.get(id);
-    if (portHandler) {
-      await portTracker.setHandler(portHandler);
-    }
-    info.transport = newTransport;
-    info.rsMode = newTransport.getRSMode();
-    if (wasConnected) {
-      await this.connectTransport(id);
-    }
-    this.logger.info(`Transport "${id}" reloaded with new options`);
   }
   /**
-   * Выполняет операцию записи (или любую другую команду, требующую эксклюзивного доступа)
-   * на указанном транспорте, используя мьютекс PollingManager.
-   * @param transportId - ID транспорта, на котором нужно выполнить запись.
-   * @param data - Данные для записи (Uint8Array).
-   * @param readLength - Ожидаемая длина ответа (если есть).
-   * @param timeout - Таймаут на чтение ответа (в мс).
-   * @returns Прочитанный ответ (Uint8Array) или пустой буфер, если readLength=0.
+   * Прямая запись в порт через PollingManager (для атомарности).
+   * Используется для отправки команд записи Modbus.
    */
   async writeToPort(transportId, data, readLength = 0, timeout = 3e3) {
     const info = this._getTransportInfo(transportId);
@@ -596,8 +486,7 @@ class TransportController {
     });
   }
   /**
-   * Установить сопоставление slaveId -> [transportId, fallback1, ...]
-   * Вызывается автоматически при addTransport.
+   * Обновляет внутреннюю карту маршрутизации slaveId -> transportId.
    */
   _updateSlaveTransportMap(id, slaveIds) {
     for (const slaveId of slaveIds) {
@@ -609,8 +498,8 @@ class TransportController {
     }
   }
   /**
-   * Получить транспорт для конкретного slaveId.
-   * Использует стратегию балансировки или fallback.
+   * Находит подходящий транспорт для указанного Slave ID с учетом требований RSMode
+   * и выбранной стратегии балансировки нагрузки.
    */
   getTransportForSlave(slaveId, requiredRSMode) {
     const transportIds = this.slaveTransportMap.get(slaveId);
@@ -647,9 +536,7 @@ class TransportController {
     );
     return null;
   }
-  /**
-   * Получить транспорт по стратегии round-robin
-   */
+  // --- Стратегии выбора транспорта ---
   _getTransportRoundRobin(transportIds) {
     const connectedTransports = transportIds.map((id) => this.transports.get(id)).filter((info) => !!info && info.status === "connected");
     if (connectedTransports.length === 0) {
@@ -706,9 +593,7 @@ class TransportController {
     return null;
   }
   /**
-   * Получает статус транспорта по указанному ID.
-   * @param id - ID транспорта
-   * @returns Статус транспорта или пустой объект, если транспорт не найден
+   * Возвращает статус (диагностику) для конкретного транспорта или для всех сразу.
    */
   getStatus(id) {
     if (id) {
@@ -747,8 +632,7 @@ class TransportController {
     return result;
   }
   /**
-   * Получает количество активных транспортов.
-   * @returns Количество активных транспортов
+   * Возвращает количество активных (подключенных) транспортов.
    */
   getActiveTransportCount() {
     let count = 0;
@@ -758,16 +642,13 @@ class TransportController {
     return count;
   }
   /**
-   * Устанавливает стратегию балансировки.
-   * @param strategy - Стратегия балансировки ('round-robin', 'sticky', 'first-available')
+   * Устанавливает стратегию балансировки нагрузки.
    */
   setLoadBalancer(strategy) {
     this.loadBalancerStrategy = strategy;
   }
   /**
-   * Устанавливает обработчик состояния устройства для транспорта.
-   * @param transportId - ID транспорта
-   * @param handler - Обработчик состояния
+   * Устанавливает персональный обработчик состояния устройства для конкретного транспорта.
    */
   async setDeviceStateHandlerForTransport(transportId, handler) {
     const tracker = this.transportToDeviceTrackerMap.get(transportId);
@@ -778,9 +659,7 @@ class TransportController {
     this.transportToDeviceHandlerMap.set(transportId, handler);
   }
   /**
-   * Устанавливает обработчик состояния порта для транспорта.
-   * @param transportId - ID транспорта
-   * @param handler - Обработчик состояния
+   * Устанавливает персональный обработчик состояния порта для конкретного транспорта.
    */
   async setPortStateHandlerForTransport(transportId, handler) {
     const tracker = this.transportToPortTrackerMap.get(transportId);
@@ -790,9 +669,7 @@ class TransportController {
     await tracker.setHandler(handler);
     this.transportToPortHandlerMap.set(transportId, handler);
   }
-  /**
-   * Внутренний метод: вызывается транспортом при изменении состояния устройства.
-   */
+  // --- Внутренние обработчики событий (Callbacks) ---
   _onDeviceStateChange(transportId, slaveId, connected, error) {
     const tracker = this.transportToDeviceTrackerMap.get(transportId);
     if (!tracker) {
@@ -814,9 +691,6 @@ class TransportController {
       this._externalDeviceStateHandler(slaveId, connected, error);
     }
   }
-  /**
-   * Внутренний метод: вызывается транспортом при изменении состояния порта.
-   */
   _onPortStateChange(transportId, connected, slaveIds, error) {
     const tracker = this.transportToPortTrackerMap.get(transportId);
     if (!tracker) {
@@ -848,27 +722,32 @@ class TransportController {
     }
   }
   /**
-   * Уничтожает контроллер транспорта.
+   * Уничтожает контроллер: останавливает все задачи, отключает транспорты и очищает память.
+   * Метод защищен мьютексом для предотвращения новых добавлений во время уничтожения.
    */
   async destroy() {
-    for (const info of this.transports.values()) {
-      info.pollingManager.clearAll();
-    }
-    await this.disconnectAll();
-    this.transports.clear();
-    this.slaveTransportMap.clear();
-    for (const tracker of this.transportToDeviceTrackerMap.values()) {
-      await tracker.clear();
-    }
-    for (const tracker of this.transportToPortTrackerMap.values()) {
-      await tracker.clear();
-    }
-    this.transportToDeviceTrackerMap.clear();
-    this.transportToPortTrackerMap.clear();
-    this.transportToDeviceHandlerMap.clear();
-    this.transportToPortHandlerMap.clear();
-    this._externalDeviceStateHandler = null;
-    this._externalPortStateHandler = null;
+    await this._registryMutex.runExclusive(async () => {
+      for (const info of this.transports.values()) {
+        info.pollingManager.clearAll();
+      }
+      await Promise.all(
+        Array.from(this.transports.values()).map((info) => this._disconnectTransportInternal(info.id))
+      );
+      this.transports.clear();
+      this.slaveTransportMap.clear();
+      for (const tracker of this.transportToDeviceTrackerMap.values()) {
+        await tracker.clear();
+      }
+      for (const tracker of this.transportToPortTrackerMap.values()) {
+        await tracker.clear();
+      }
+      this.transportToDeviceTrackerMap.clear();
+      this.transportToPortTrackerMap.clear();
+      this.transportToDeviceHandlerMap.clear();
+      this.transportToPortHandlerMap.clear();
+      this._externalDeviceStateHandler = null;
+      this._externalPortStateHandler = null;
+    });
     this.logger.info("TransportController destroyed");
   }
 }

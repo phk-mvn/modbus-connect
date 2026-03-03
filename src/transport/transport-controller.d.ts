@@ -15,11 +15,11 @@ import type {
   PollingQueueInfo,
 } from '../types/modbus-types.js';
 
-// ========== Типы ==========
+// ========== Типы (Добавлен export для использования извне) ==========
 
-interface TransportInfo {
+export interface TransportInfo {
   id: string;
-  type: 'node' | 'web';
+  type: 'node' | 'web' | 'node-tcp' | 'web-tcp';
   transport: Transport;
   pollingManager: PollingManager;
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -33,7 +33,7 @@ interface TransportInfo {
   reconnectInterval: number;
 }
 
-interface TransportStatus {
+export interface TransportStatus {
   id: string;
   connected: boolean;
   lastError?: Error;
@@ -46,7 +46,13 @@ interface TransportStatus {
   };
 }
 
-type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
+export type LoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available';
+
+// Вспомогательный тип для опций с дополнительными полями, которые вычитываются через (options as any)
+type TransportOptionsWithExtras<T> = T & {
+  slaveIds?: number[];
+  fallbacks?: string[];
+};
 
 // ========== Класс ==========
 
@@ -75,14 +81,16 @@ declare class TransportController {
    * Добавить транспорт.
    * @param id - ID транспорта
    * @param type - Тип транспорта ('node' или 'web')
-   * @param options - Опции транспорта
+   * @param options - Опции транспорта (включая slaveIds и fallbacks)
    * @param reconnectOptions - Параметры переподключения
    * @param pollingConfig - Конфигурация для PollingManager (опционально)
    */
   addTransport(
     id: string,
-    type: 'node' | 'web',
-    options: NodeSerialTransportOptions | (WebSerialTransportOptions & { port: WebSerialPort }),
+    type: 'node' | 'web' | 'node-tcp' | 'web-tcp',
+    options:
+      | TransportOptionsWithExtras<NodeSerialTransportOptions>
+      | TransportOptionsWithExtras<WebSerialTransportOptions & { port: WebSerialPort }>,
     reconnectOptions?: {
       maxReconnectAttempts?: number;
       reconnectInterval?: number;
@@ -168,6 +176,21 @@ declare class TransportController {
    */
   executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T>;
 
+  /**
+   * Прямая запись в порт через PollingManager (для атомарности).
+   * Используется для отправки команд записи Modbus.
+   * @param transportId - ID транспорта
+   * @param data - Данные для записи
+   * @param readLength - Ожидаемая длина ответа (0 если ответ не нужен)
+   * @param timeout - Таймаут операции
+   */
+  writeToPort(
+    transportId: string,
+    data: Uint8Array,
+    readLength?: number,
+    timeout?: number
+  ): Promise<Uint8Array>;
+
   // =========================================================
   // Стандартные методы контроллера
   // =========================================================
@@ -192,7 +215,9 @@ declare class TransportController {
    */
   reloadTransport(
     id: string,
-    options: NodeSerialTransportOptions | (WebSerialTransportOptions & { port: WebSerialPort })
+    options:
+      | TransportOptionsWithExtras<NodeSerialTransportOptions>
+      | TransportOptionsWithExtras<WebSerialTransportOptions & { port: WebSerialPort }>
   ): Promise<void>;
 
   // === Подключение/отключение ===

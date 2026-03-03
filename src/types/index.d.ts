@@ -12,3 +12,6 @@ export * from '../slave-emulator/slave-emulator.d.js';
 export * from '../transport/trackers/DeviceConnectionTracker.d.js';
 export * from '../transport/trackers/PortConnectionTracker.d.js';
 export * from '../transport/transport-controller.d.js';
+export * from '../transport/modules/transport-factory.d.js';
+export * from '../transport/node-transports/node-tcp-transport.d.js';
+export * from '../transport/web-transports/web-tcp-transport.d.js';

@@ -27,6 +27,9 @@ __reExport(index_d_exports, require("../slave-emulator/slave-emulator.d.js"), mo
 __reExport(index_d_exports, require("../transport/trackers/DeviceConnectionTracker.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/trackers/PortConnectionTracker.d.js"), module.exports);
 __reExport(index_d_exports, require("../transport/transport-controller.d.js"), module.exports);
+__reExport(index_d_exports, require("../transport/modules/transport-factory.d.js"), module.exports);
+__reExport(index_d_exports, require("../transport/node-transports/node-tcp-transport.d.js"), module.exports);
+__reExport(index_d_exports, require("../transport/web-transports/web-tcp-transport.d.js"), module.exports);
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ...require("./modbus-types.js"),
@@ -40,5 +43,8 @@ __reExport(index_d_exports, require("../transport/transport-controller.d.js"), m
   ...require("../slave-emulator/slave-emulator.d.js"),
   ...require("../transport/trackers/DeviceConnectionTracker.d.js"),
   ...require("../transport/trackers/PortConnectionTracker.d.js"),
-  ...require("../transport/transport-controller.d.js")
+  ...require("../transport/transport-controller.d.js"),
+  ...require("../transport/modules/transport-factory.d.js"),
+  ...require("../transport/node-transports/node-tcp-transport.d.js"),
+  ...require("../transport/web-transports/web-tcp-transport.d.js")
 });
