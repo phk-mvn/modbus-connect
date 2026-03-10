@@ -7,7 +7,7 @@ async function main() {
 
     // 1. Настройка транспорта
     await controller.addTransport(TRANSPORT_ID, 'node', {
-        port: 'COM3',
+        port: 'COM4',
         baudRate: 9600,
         dataBits: 8,
         stopBits: 1,
@@ -47,7 +47,10 @@ async function main() {
         interval: 1000, // Опрос каждую секунду (1000 мс)
         
         // Сама функция запроса
-        fn: () => client.readHoldingRegisters(0, 2, { type: 'uint16' }),
+        fn: () => {
+            const promise = client.readHoldingRegisters(0, 2, { type: 'uint16' })
+            console.log(promise)
+        },
         
         // Коллбэк при успешном получении данных
         onData: (data) => {

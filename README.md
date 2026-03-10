@@ -3288,6 +3288,20 @@ The recommended way to add proprietary or non-standard functionality is by creat
 
 # <span id="changelog">CHANGELOG</span>
 
+### 3.2.0 (2026-03-05)
+
+**Major Feature: Universal Polling Function Support**
+
+- **Enhanced `fn` flexibility** — `PollingManager` now supports any type of function as a task: synchronous arrow functions, multi-line logic blocks, and standard asynchronous functions.
+- **Removed strict Promise requirement** — The execution engine no longer requires `fn` to explicitly return a `Promise`. Synchronous code (like `console.log` or local variable manipulations) now executes correctly within the polling cycle without throwing validation errors.
+- **Improved Type Definitions** — Updated `PollingTaskOptions` and `TaskController` signatures to accept `() => unknown | Promise<unknown>`, providing better IDE support for both sync and async tasks.
+
+**Improvements & Fixes:**
+
+- **Robust Task Validation** — Rewritten `_validateTaskOptions` logic to perform deep validation of the `fn` parameter. If an array of functions is provided, the manager now verifies every single element to ensure it is a valid function before starting the task.
+- **Execution Safety** — Internal task runner now wraps all calls in `Promise.resolve()`, ensuring that even functions returning `undefined` or non-promise values are handled gracefully by the timeout and retry logic.
+- **Arrow Function Support** — Explicitly tested and optimized for arrow functions with multi-line blocks, allowing complex logic directly within the task definition.
+
 ### 3.1.2 (2026-03-03)
 
 **Major Features:**
@@ -3319,42 +3333,3 @@ The recommended way to add proprietary or non-standard functionality is by creat
 - **Encapsulation:** Transaction ID management moved entirely to `TcpFramer`.
 - **Breaking Change:** Internal methods `_readPacket` and `_getExpectedResponseLength` removed from `ModbusClient`.
 - **Bug Fix:** Fixed plugin support for custom functions with dynamic response lengths (e.g., file/archive reading).
-
-### 2.8.10 (2025-12-05)
-
-- **Fixed:** Critical deadlock in `PollingManager`. Removed `mutex.acquire()` from the internal queue processing loop to prevent tasks and the queue from blocking each other, which previously caused "Task timed out" errors.
-- **Fixed:** Improved stability for RS-485 buses with multiple devices. Added a 30ms inter-frame delay between polling tasks to respect bus turnaround times and prevent packet collisions.
-- **Fixed:** Optimized error recovery. The system now recovers immediately instead of hanging for extended periods when a device fails or times out.
-- **Added:** Mechanisms to support pausing and resuming polling for specific ports/devices. This allows for collision-free "heavy" operations (like initialization or writing registers) by temporarily silencing the polling queue.
-- **Improved:** `TaskController` now handles timeouts and retries more gracefully, preventing a single failing device from blocking the entire polling queue for other devices on the same port.
-
-### 2.7.26 (2025-12-04)
-
-- Added a method to `Transport Controller` that allows you to send your custom requests to the port directly
-
-### 2.7.25 (2025-12-02)
-
-- Fixed import for `SlaveEmulator` module
-
-### 2.7.22 (2025-11-28)
-
-- Disabled **DEBUG** logging of `pollingManager` in `TransportController`
-
-### 2.7.21 (2025-11-25)
-
-- **Major Architecture Change:** `PollingManager` is now integrated directly into `TransportController`. Each transport has its own isolated polling queue.
-- **Breaking Change:** Removed `resourceId` from polling tasks. Tasks are now assigned to a specific transport ID.
-- **API Update:** Added methods `addPollingTask`, `removePollingTask`, `controlPolling` to `TransportController`.
-- **Fix:** Resolved deadlocks between polling tasks and manual client requests by implementing shared mutex logic.
-- **Fix:** Removed `TransportInfo` unused import in client.
-- **Improvement:** `ModbusClient` manual requests now automatically pause the polling queue for thread safety.
-
-### 2.6.9 (2025-11-22)
-
-- **Fixed** a bug in the `polling-manager` module that caused an extra function call in each cycle of the `addTask` method, in the `fn([])` part
-
-### 2.6.8 (2025-11-18)
-
-- **Removed** special functions for the SGM130
-- **Added** a [plugin system](#plugin-system) (for custom functions)
-- **Added** a importing library types (check [Basic Usage](#basic-usage))

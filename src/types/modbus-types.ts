@@ -477,7 +477,7 @@ export interface PollingTaskOptions {
   // resourceId?: string; // УДАЛЕНО
   priority?: number;
   interval: number;
-  fn: (() => Promise<unknown>) | Array<() => Promise<unknown>>;
+  fn: (() => unknown | Promise<unknown>) | Array<() => unknown | Promise<unknown>>;
   onData?: (data: unknown[]) => void;
   onError?: (error: Error, fnIndex: number, retryCount: number) => void;
   onStart?: () => void;

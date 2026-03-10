@@ -74,7 +74,7 @@ class TaskController {
   public id: string;
   public priority: number;
   public name: string | null;
-  public fn: Array<() => Promise<unknown>>;
+  public fn: Array<() => unknown | Promise<unknown>>;
   public interval: number;
   public onData?: (data: unknown[]) => void;
   public onError?: (error: Error, fnIndex: number, retryCount: number) => void;
@@ -284,14 +284,18 @@ class TaskController {
               );
             }
 
-            const promiseResult = fnToExecute();
-            if (!(promiseResult instanceof Promise)) {
-              throw new PollingManagerError(
-                `Task ${this.id} fn ${fnIndex} did not return a Promise`
-              );
-            }
+            const executionResult = fnToExecute();
 
-            result = await this._withTimeout(promiseResult, this.taskTimeout);
+            result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
+
+            // const promiseResult = fnToExecute();
+            // if (!(promiseResult instanceof Promise)) {
+            //   throw new PollingManagerError(
+            //     `Task ${this.id} fn ${fnIndex} did not return a Promise`
+            //   );
+            // }
+
+            // result = await this._withTimeout(promiseResult, this.taskTimeout);
             fnSuccess = true;
             this.stats.successes++;
             this.stats.lastError = null;
@@ -547,13 +551,31 @@ class PollingManager {
   }
 
   private _validateTaskOptions(options: PollingTaskOptions): void {
-    if (!options || typeof options !== 'object')
+    if (!options || typeof options !== 'object') {
       throw new PollingTaskValidationError('Task options must be an object');
-    if (!options.id) throw new PollingTaskValidationError('Task must have an "id"');
-    if (typeof options.interval !== 'number' || options.interval <= 0)
+    }
+    if (!options.id) {
+      throw new PollingTaskValidationError('Task must have an "id"');
+    }
+    if (typeof options.interval !== 'number' || options.interval <= 0) {
       throw new PollingTaskValidationError('Interval must be a positive number');
-    if (!options.fn || (!Array.isArray(options.fn) && typeof options.fn !== 'function'))
-      throw new PollingTaskValidationError('fn must be a function or array of functions');
+    }
+
+    // Проверка fn:
+    const { fn } = options;
+
+    if (Array.isArray(fn)) {
+      // Если это массив, проверяем, чтобы он не был пустым и все элементы были функциями
+      if (fn.length === 0) {
+        throw new PollingTaskValidationError('fn array cannot be empty');
+      }
+      if (fn.some(f => typeof f !== 'function')) {
+        throw new PollingTaskValidationError('All elements in fn array must be functions');
+      }
+    } else if (typeof fn !== 'function') {
+      // Если это не массив и не функция — это ошибка
+      throw new PollingTaskValidationError('fn must be a function or an array of functions');
+    }
   }
 
   public addTask(options: PollingTaskOptions): void {

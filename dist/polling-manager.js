@@ -209,13 +209,8 @@ class TaskController {
                 `Task ${this.id} fn at index ${fnIndex} is not a function`
               );
             }
-            const promiseResult = fnToExecute();
-            if (!(promiseResult instanceof Promise)) {
-              throw new import_errors.PollingManagerError(
-                `Task ${this.id} fn ${fnIndex} did not return a Promise`
-              );
-            }
-            result = await this._withTimeout(promiseResult, this.taskTimeout);
+            const executionResult = fnToExecute();
+            result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
             fnSuccess = true;
             this.stats.successes++;
             this.stats.lastError = null;
@@ -443,13 +438,26 @@ class PollingManager {
     });
   }
   _validateTaskOptions(options) {
-    if (!options || typeof options !== "object")
+    if (!options || typeof options !== "object") {
       throw new import_errors.PollingTaskValidationError("Task options must be an object");
-    if (!options.id) throw new import_errors.PollingTaskValidationError('Task must have an "id"');
-    if (typeof options.interval !== "number" || options.interval <= 0)
+    }
+    if (!options.id) {
+      throw new import_errors.PollingTaskValidationError('Task must have an "id"');
+    }
+    if (typeof options.interval !== "number" || options.interval <= 0) {
       throw new import_errors.PollingTaskValidationError("Interval must be a positive number");
-    if (!options.fn || !Array.isArray(options.fn) && typeof options.fn !== "function")
-      throw new import_errors.PollingTaskValidationError("fn must be a function or array of functions");
+    }
+    const { fn } = options;
+    if (Array.isArray(fn)) {
+      if (fn.length === 0) {
+        throw new import_errors.PollingTaskValidationError("fn array cannot be empty");
+      }
+      if (fn.some((f) => typeof f !== "function")) {
+        throw new import_errors.PollingTaskValidationError("All elements in fn array must be functions");
+      }
+    } else if (typeof fn !== "function") {
+      throw new import_errors.PollingTaskValidationError("fn must be a function or an array of functions");
+    }
   }
   addTask(options) {
     try {
