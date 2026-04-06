@@ -1,0 +1,10 @@
+.vscode/
+modbus/
+node_modules/
+.gitignore
+.npmignore
+.prettierrc.json
+eslint.config.js
+test.js
+tsconfig.json
+tsconfig.tsbuildinfo

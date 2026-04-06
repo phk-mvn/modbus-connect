@@ -1,3292 +1,1131 @@
-# Modbus Connect (Node.js/Web Serial API)
+# Modbus Connect (Node.js & Web Serial)
 
-Modbus Connect is a cross-platform library for Modbus RTU communication in both Node.js and modern browsers (via the Web Serial API). It enables robust, easy interaction with industrial devices over serial ports.
+Modbus connect is a cross-platform library for Modbus RTU/TCP communication in both NodeJS and modern browsers (via the Web Serial API).
 
-## Navigation through documentation
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![NPM Version](https://img.shields.io/npm/v/modbus-connect.svg)](https://www.npmjs.com/package/modbus-connect)
 
-- [Features](#features)
-- [Installation](#installation)
-- [Basic Usage](#basic-usage)
-- [Modbus Client](#modbus-client)
-- [Transport Controller](#transport-controller)
-- [Modbus TCP Support](#modbus-tcp)
-- [Architecture: Framers & Protocol](#architecture)
-- [Errors Types](#errors-types)
-- [Polling Manager](#polling-manager)
-- [Slave Emulator](#slave-emulator)
-- [Logger](#logger)
-- [Utils](#utils)
-- [Utils CRC](#utils-crc)
-- [Plugin System](#plugin-system)
-- [Tips for use](#tips-for-use)
-- [Expansion](#expansion)
-- [CHANGELOG](#changelog)
+## Features
 
-<br>
+- 🌐 **Isomorphism**: Works in Node.js and modern browsers.
+- 🛡️ **Security (Mutex)**: Eliminates collisions between background polling and manual commands.
+- 🔄 **Polling Manager**: A queue of tasks with priorities, delays and exponential backoff.
+- ⚡ **Smart reconnect**: Automatic connection recovery for Serial and TCP.
+- 🧪 **Emulator**: Full-fiedged TCP-slave and RTU-slave for testing without hardware.
 
-# <span id="features">Features</span>
-
-- Supports Modbus RTU over serial ports (Node.js) and Web Serial API (Browser).
-- Automatic reconnection mechanisms (primarily in transport layer).
-- Robust error handling with specific Modbus exception types.
-- Integrated polling manager for scheduled data acquisition.
-- Built-in logging with configurable levels and categories.
-- Diagnostic tools for monitoring communication performance.
-- Utility functions for CRC calculation, buffer manipulation, and data conversion.
-- Slave emulator for testing purposes (without COM port).
-- **Plugin System:** Extend client functionality with custom functions, data types, and CRC algorithms without modifying the library core.
-- Supports Modbus RTU and **Modbus TCP** (Node.js and Browser).
-- **Multilayer Architecture:** Separation of Transport, Framing, and Protocol logic.
-- **Intelligent Stream Reading:** Robust handling of partial packets and variable-length responses (perfect for custom archive functions).
-
-<br>
-
-# <span id="installation">Installation</span>
+## Install
 
 ```bash
 npm install modbus-connect
 ```
 
-<br>
+or
 
-# <span id="basic-usage">Basic Usage</span>
+```bash
+yarn add modbus-connect
+```
 
-### Importing Modules
-
-The library provides several entry points for different functionalities:
+## Node RTU connection
 
 ```js
-// Types library
-import { _type_ } from 'modbus-connect/types';
-
-// Main Modbus client
+import TransportController from 'modbus-connect/transport';
 import ModbusClient from 'modbus-connect/client';
 
-// Transport controller for managing connections
-import TransportController from 'modbus-connect/transport';
-
-// Logger for diagnostics and debugging
-import Logger from 'modbus-connect/logger';
-
-// Slave emulator for testing
-import SlaveEmulator from 'modbus-connect/slave-emulator';
-```
-
-### Creating Transports via TransportController
-
-The `TransportController` is the centralized way to manage one or more transport connections. It handles routing, reconnection, and assignment of slave IDs to specific transports.
-**Node.js Serial Port:**
-
-```js
-await controller.addTransport(
-  'node-port-1',
-  'node',
-  {
-    port: '/dev/ttyUSB', // or 'COM' on Windows
-    baudRate: 19200,
-    slaveIds: [1, 2], // Assign these slave IDs to this transport
-  },
-  {
-    maxReconnectAttempts: 10, // Reconnect options
-  },
-  {
-    defaultInterval: 1000, // Polling options (Optional)
-  }
-);
-
-await controller.connectAll();
-```
-
-**Web Serial API port:**
-
-```js
-// Function to request a SerialPort instance, typically called from a user gesture
-const getSerialPort = await navigator.serial.requestPort();
-
-await controller.addTransport('web-port-1', 'web', {
-  port: getSerialPort,
-  baudRate: 9600,
-  dataBits: 8,
-  stopBits: 1,
-  parity: 'none',
-  reconnectInterval: 3000,
-  maxReconnectAttempts: 5,
-  maxEmptyReadsBeforeReconnect: 10,
-  slaveIds: [3, 4],
-});
-
-await controller.connectAll();
-```
-
-**Node.js TCP:**
-
-```js
-await controller.addTransport('node-tcp-1', 'node-tcp', {
-  host: '192.168.1.10',
-  port: 502,
-  slaveIds: [1],
-});
-```
-
-**Web WebSocket Proxy (TCP):**
-
-```js
-await controller.addTransport('web-tcp-1', 'web-tcp', {
-  url: 'ws://localhost:8080',
-  slaveIds: [1],
-});
-```
-
-To set the read/write speed parameters, specify writeTimeout and readTimeout during addTransport. Example:
-
-```js
-await controller.addTransport('node-port-2', 'node', {
-  port: 'COM3',
-  writeTimeout: 500,
-  readTimeout: 500,
-  slaveIds: [5],
-});
-```
-
-> If you do not specify values ​​for `readTimeout/writeTimeout` during initialization, the default parameter will be used - 1000 ms for both values
-
-### Creating a Client
-
-```js
-const client = new ModbusClient(controller, 1, {
-  /* ...options */
-});
-```
-
-- `controller` — The `TransportController` instance.
-- `slaveId` — Device address (1..247). The controller will route requests to the correct transport.
-- `options` — `{ timeout, retryCount, retryDelay, plugins }`
-
-### Connecting and Communicating
-
-```js
-try {
-  await client.connect();
-  console.log('Connected to device');
-
-  const registers = await client.readHoldingRegisters(0, 10);
-  console.log('Registers:', registers);
-
-  await client.writeSingleRegister(5, 1234);
-} catch (error) {
-  console.error('Communication error:', error.message);
-} finally {
-  await client.disconnect();
-  await controller.disconnectAll(); // Disconnect all managed transports
-}
-```
-
-### Work via RS485
-
-In order to work via RS485, you first need to connect the COM port.
-
-```js
-await controller.addTransport('rs485-port', 'node', {
-  port: 'COM3',
-  baudRate: 9600,
-  dataBits: 8,
-  stopBits: 1,
-  parity: 'none',
-  writeTimeout: 500,
-  readTimeout: 500,
-  slaveIds: [38, 51], // Multiple devices on the same port
-});
-
-await controller.connectAll();
-
-const device_1 = new ModbusClient(controller, 38, { timeout: 1000 });
-const device_2 = new ModbusClient(controller, 51, { timeout: 1000 });
-
-try {
-  const registers_1 = await device_1.readHoldingRegisters(0, 10);
-  console.log('Registers 1:', registers_1);
-
-  const registers_2 = await device_2.readHoldingRegisters(0, 10);
-  console.log('Registers 2:', registers_2);
-} catch (error) {
-  console.error('Communication error:', error.message);
-} finally {
-  await device_1.disconnect();
-  await device_2.disconnect();
-  await controller.disconnectAll();
-}
-```
-
-<br>
-
-# <span id="modbus-client">Modbus Client</span>
-
-The ModbusClient class is a client for working with Modbus devices (RTU/TCP, etc.) via the transport layer. It supports standard Modbus functions (reading/writing registers and coils), SGM130-specific functions (device comments, files, reboot, controller time), and integration with the logger from **Logger**. The client uses a **mutex** for synchronization, error retry, **diagnostics**, and protocol abstraction via **Framers**.
-
-Key Features:
-
-- **Transport:** Works **exclusively** through a `TransportController` instance, which manages routing to the underlying physical transports. Direct interaction with a transport is no longer supported.
-- **Retry and Timeouts**: Automatic retry (up to retryCount), retryDelay delay, default timeout of 2000ms.
-- **Logging**: Integration with Logger (default 'error' level). Context support (slaveId, funcCode).
-- **Data Conversion**: Automatic conversion of registers to types (`uint16`, `float`, strin`g, etc.), with byte/word swap support.
-- **Errors**: Special classes (`ModbusTimeoutError`, `ModbusCRCError`, `ModbusExceptionError`, etc.).
-- **CRC**: Support for various algorithms (`crc16Modbus` by default).
-- **Echo**: Optional echo check for serial (for debugging).
-- **Extensible via Plugins:** Supports external plugins to add proprietary function codes, custom data types, and new CRC algorithms without modifying the library's source code.
-  **Dependencies:**
-
-- async-mutex for synchronization.
-- Functions from ./function-codes/\* for building/parsing PDUs.
-- Logger, Diagnostics, packet-builder, utils, errors, crc.
-
-**Logging levels:** Defaults to 'error'. Enable enableLogger() for more details.
-
-## Initialization
-
-Include the module:
-
-```js
-const ModbusClient = require('modbus-connect/client');
-const TransportController = require('modbus-connect/transport');
-```
-
-Create an instance:
-
-```js
-// Import your plugin class
-const { MyAwesomePlugin } = require('./plugins/my-awesome-plugin.js');
-
-const controller = new TransportController();
-await controller.addTransport('com-port-3', 'node', {
-  port: 'COM3',
-  baudRate: 9600,
-  parity: 'none',
-  dataBits: 8,
-  stopBits: 1,
-  slaveIds: [1],
-  RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
-});
-
-await controller.connectAll();
-
-const options = {
-  timeout: 3000,
-  retryCount: 2,
-  retryDelay: 200,
-  diagnostics: true,
-  echoEnabled: true,
-  crcAlgorithm: 'crc16Modbus',
-  plugins: [MyAwesomePlugin], // Pass plugin classes directly in constructor
-};
-
-const client = new ModbusClient(controller, 1, options); // options: framing ('rtu' | 'tcp') - default: 'rtu'
-```
-
-**_Initialization output (if logging is enabled):_** _No explicit output in the constructor. Logging is enabled by methods._
-
-**Connection:**
-
-```js
-await client.connect();
-```
-
-**Output (if level >= 'info'):**
-
-```bash
-[04:28:57][INFO][NodeSerialTransport] Serial port COM3 opened
-```
-
-**Disconnect:**
-
-```js
-await client.disconnect();
-```
-
-**Output:**
-
-```bash
-[05:53:17][INFO][NodeSerialTransport] Serial port COM3 closed
-```
-
-## Logging Controls
-
-### 1. enableLogger(level = 'info')
-
-Enables ModbusClient logging.
-
-**Example:**
-
-```js
-client.enableLogger('debug');
-```
-
-Now all requests/errors will be logged.
-
-### 2. disableLogger()
-
-Disables (sets 'error').
-
-**Example:**
-
-```js
-client.disableLogger();
-```
-
-### 3. setLoggerContext(context)
-
-Adds a global context (e.g., { custom: 'value' }).
-
-**Example:**
-
-```js
-client.setLoggerContext({ env: 'test' });
-```
-
-The context is added to all logs.
-
-## Dynamic Slave ID Change (Hot-Swapping Addresses)
-
-Starting from version **3.1.0**, `ModbusClient` supports **changing the slave ID at runtime** without recreating the client instance or reconnecting the transport.
-
-This feature is essential when:
-
-- The device changes its own Modbus address via configuration registers
-- You need to re-assign the same physical port to a different slave ID
-- Multiple devices share one serial port (RS-485 bus)
-
-### Key methods
-
-| Method Property                                 | Description                                                                                                                                         |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setSlaveId(newSlaveId: number): Promise<void>` | Immediatelly changes the slave ID used by this client. All subsequent request use the new ID. Throws `ModbusInvalidAddressError` if ID is not 1-255 |
-| `currentSlaveId: number` (readonly)             | Returns the currently active slave ID. Useful in polling callbacks, logging, and diagnostics.                                                       |
-
-### Required Steps After Changing the Device Address
-
-When you change the device's Modbus address (e.g. by writing to a configuration registers):
-
-1. Write the new address to the device (via `writeSingleRegister` or `writeMultipleRegisters`).
-2. Update the Client:
-
-```ts
-client.setSlaveId(newId);
-```
-
-3. Update routing in the `TransportController` (critical!):
-
-```ts
-controller.removeSlaveIdFromTransport(transportId, oldId);
-controller.assignSlaveIdToTransport(transportId, newId);
-```
-
-4. Strongly recommended - recreate polling tasks to ensure they use the new ID reliably:
-
-### Full Example: Changing Slave ID from 13 to 14
-
-```ts
-// Assume client is connected and using slaveId = 13
-
-const NEW_ID = 14;
-
-// 1. Write new addressto device (example: register 0x0101)
-await client.writeSingleRegister(0x0101, 14);
-await new Promise(r => setTimeout(r, 250)); // give device time to apply
-
-// 2. Update client instance
-const oldId = client.currentSlaveId; // -> 13
-client.setSlaveId(NEW_ID);
-
-// 3. Update transport routing
-const transportId = 'com-port-1';
-controller.removeSlaveIdFromTransport(transportId, oldId);
-controller.assignSlaveIdToTransport(transportId, NEW_ID);
-
-// ... Recreate polling tasks (critical for stability)
-```
-
-#### Important Notes
-
-- The change is **immediate** - no `disconnect()`/`connect()` needed.
-- Always recreate polling tasks after changing the slave ID to avoid stale closures or callbacks using the old ID.
-- If multiple clients share the same transport, update **all** of them.
-- `TransportController` automatically routes requests to the correct physical port after `assignSlaveIdToTransport`.
-
-## Basic Modbus methods (standard functions)
-
-### Standard Modbus Functions
-
-| HEX  | Name                       |
-| :--: | -------------------------- |
-| 0x03 | Read Holding Registers     |
-| 0x04 | Read Input Registers       |
-| 0x10 | Write Multiple Registers   |
-| 0x06 | Write Single Register      |
-| 0x01 | Read Coils                 |
-| 0x02 | Read Discrete Inputs       |
-| 0x05 | Write Single Coil          |
-| 0x0F | Write multiple Coils       |
-| 0x2B | Read Device Identification |
-| 0x11 | Report Slave ID            |
-
-### Summary type data
-
-| Type             | Size (regs)  | DataView Method       | Endian / Swap          | Notes                                           |
-| ---------------- | ------------ | --------------------- | ---------------------- | ----------------------------------------------- |
-| `uint16`         | 1            | `getUint16`           | Big Endian             | No changes                                      |
-| `int16`          | 1            | `getInt16`            | Big Endian             |                                                 |
-| `uint32`         | 2            | `getUint32`           | Big Endian             | Standard 32-bit read                            |
-| `int32`          | 2            | `getInt32`            | Big Endian             |                                                 |
-| `float`          | 2            | `getFloat32`          | Big Endian             | IEEE 754 single precision float                 |
-| `uint32_le`      | 2            | `getUint32`           | Little Endian          |                                                 |
-| `int32_le`       | 2            | `getInt32`            | Little Endian          |                                                 |
-| `float_le`       | 2            | `getFloat32`          | Little Endian          |                                                 |
-| `uint32_sw`      | 2            | `getUint32`           | Word Swap              | Swap words (e.g., 0xAABBCCDD → 0xCCDDAABB)      |
-| `int32_sw`       | 2            | `getInt32`            | Word Swap              |                                                 |
-| `float_sw`       | 2            | `getFloat32`          | Word Swap              |                                                 |
-| `uint32_sb`      | 2            | `getUint32`           | Byte Swap              | Swap bytes (e.g., 0xAABBCCDD → 0xBBAADDCC)      |
-| `int32_sb`       | 2            | `getInt32`            | Byte Swap              |                                                 |
-| `float_sb`       | 2            | `getFloat32`          | Byte Swap              |                                                 |
-| `uint32_sbw`     | 2            | `getUint32`           | Byte + Word Swap       | Swap bytes and words (0xAABBCCDD → 0xDDCCBBAA)  |
-| `int32_sbw`      | 2            | `getInt32`            | Byte + Word Swap       |                                                 |
-| `float_sbw`      | 2            | `getFloat32`          | Byte + Word Swap       |                                                 |
-| `uint32_le_sw`   | 2            | `getUint32`           | LE + Word Swap         | Little Endian with Word Swap                    |
-| `int32_le_sw`    | 2            | `getInt32`            | LE + Word Swap         |                                                 |
-| `float_le_sw`    | 2            | `getFloat32`          | LE + Word Swap         |                                                 |
-| `uint32_le_sb`   | 2            | `getUint32`           | LE + Byte Swap         | Little Endian with Byte Swap                    |
-| `int32_le_sb`    | 2            | `getInt32`            | LE + Byte Swap         |                                                 |
-| `float_le_sb`    | 2            | `getFloat32`          | LE + Byte Swap         |                                                 |
-| `uint32_le_sbw`  | 2            | `getUint32`           | LE + Byte + Word Swap  | Little Endian with Byte + Word Swap             |
-| `int32_le_sbw`   | 2            | `getInt32`            | LE + Byte + Word Swap  |                                                 |
-| `float_le_sbw`   | 2            | `getFloat32`          | LE + Byte + Word Swap  |                                                 |
-| `uint64`         | 4            | `getUint32` + BigInt  | Big Endian             | Combined BigInt from high and low parts         |
-| `int64`          | 4            | `getUint32` + BigInt  | Big Endian             | Signed BigInt                                   |
-| `double`         | 4            | `getFloat64`          | Big Endian             | IEEE 754 double precision float                 |
-| `uint64_le`      | 4            | `getUint32` + BigInt  | Little Endian          |                                                 |
-| `int64_le`       | 4            | `getUint32` + BigInt  | Little Endian          |                                                 |
-| `double_le`      | 4            | `getFloat64`          | Little Endian          |                                                 |
-| `hex`            | 1+           | —                     | —                      | Returns array of HEX strings per register       |
-| `string`         | 1+           | —                     | Big Endian (Hi → Lo)   | Each 16-bit register → 2 ASCII chars            |
-| `bool`           | 1+           | —                     | —                      | 0 → false, nonzero → true                       |
-| `binary`         | 1+           | —                     | —                      | Each register converted to 16 boolean bits      |
-| `bcd`            | 1+           | —                     | —                      | BCD decoding from registers                     |
-
-### Expanded Usage Examples
-
-| Example usage        | Description                                                                  |
-| -------------------- | ---------------------------------------------------------------------------- |
-| `type: 'uint16'`     | Reads registers as unsigned 16-bit integers (default no byte swapping)       |
-| `type: 'int16'`      | Reads registers as signed 16-bit integers                                    |
-| `type: 'uint32'`     | Reads every 2 registers as unsigned 32-bit big-endian integers               |
-| `type: 'int32'`      | Reads every 2 registers as signed 32-bit big-endian integers                 |
-| `type: 'float'`      | Reads every 2 registers as 32-bit IEEE 754 floats (big-endian)               |
-| `type: 'uint32_le'`  | Reads every 2 registers as unsigned 32-bit little-endian integers            |
-| `type: 'int32_le'`   | Reads every 2 registers as signed 32-bit little-endian integers              |
-| `type: 'float_le'`   | Reads every 2 registers as 32-bit IEEE 754 floats (little-endian)            |
-| `type: 'uint32_sw'`  | Reads every 2 registers as unsigned 32-bit with word swap                    |
-| `type: 'int32_sb'`   | Reads every 2 registers as signed 32-bit with byte swap                      |
-| `type: 'float_sbw'`  | Reads every 2 registers as float with byte+word swap                         |
-| `type: 'hex'`        | Returns an array of hex strings, e.g., `["0010", "FF0A"]`                    |
-| `type: 'string'`     | Converts registers to ASCII string (each register = 2 chars)                 |
-| `type: 'bool'`       | Returns an array of booleans, 0 = false, otherwise true                      |
-| `type: 'binary'`     | Returns array of 16-bit boolean arrays per register (each bit separately)    |
-| `type: 'bcd'`        | Decodes BCD-encoded numbers from registers, e.g., `0x1234` → `1234`          |
-| `type: 'uint64'`     | Reads 4 registers as a combined unsigned 64-bit integer (BigInt)             |
-| `type: 'int64_le'`   | Reads 4 registers as signed 64-bit little-endian integer (BigInt)            |
-| `type: 'double'`     | Reads 4 registers as 64-bit IEEE 754 double precision float (big-endian)     |
-| `type: 'double_le'`  | Reads 4 registers as 64-bit IEEE 754 double precision float (little-endian)  |
-
-All methods are asynchronous and use `_sendRequest` to send with retry. They return data or a response object. The timeout is optional (uses default).
-
-### 4. readHoldingRegisters(startAddress, quantity, options = {})
-
-Reads holding registers (function 0x03). Converts to the type from options.type.
-
-**Parameters:**
-
-- `startAddress (number):` Start address (0-65535).
-- `quantity (number):` Number of registers (1-125).
-- `options.type (string, opt):` 'uint16', 'int16', 'uint32', 'float', 'string', 'hex', 'bool', 'bcd', etc. (see \_convertRegisters).
-
-**Example 1: Basic reading of uint16.**
-
-```js
-const registers = await client.readHoldingRegisters(100, 2);
-console.log(registers); // [1234, 5678] (array of numbers)
-```
-
-**Log output (if level >= 'debug'):**
-
-```bash
-[14:30:15][DEBUG] Attempt #1 — sending request { slaveId: 1, funcCode: 3 }
-[14:30:15][DEBUG] Packet written to transport { bytes: 8, slaveId: 1, funcCode: 3 }
-[14:30:15][DEBUG] Echo verified successfully { slaveId: 1, funcCode: 3 } (if echoEnabled)
-[14:30:15][DEBUG] Received chunk: { bytes: 9, total: 9 }
-[14:30:15][INFO] Response received { slaveId: 1, funcCode: 3, responseTime: 50 }
-```
-
-**Example 2: Reading as a float (2 registers = 1 float).**
-
-```js
-const floats = await client.readHoldingRegisters(200, 2, { type: 'float' });
-console.log(floats); // [3.14159] (array of float)
-```
-
-**Example 3: Reading a string.**
-
-```js
-const str = await client.readHoldingRegisters(300, 5, { type: 'string' });
-console.log(str); // 'Hello' (string)
-```
-
-**Errors:** ModbusTimeoutError, ModbusCRCError, ModbusExceptionError (with exception code).
-
-### 5. readInputRegisters(startAddress, quantity, options = {})
-
-Reads input registers (function 0x04). Same as readHoldingRegisters.
-
-**Example:**
-
-```js
-const inputs = await client.readInputRegisters(50, 3, { type: 'uint32' });
-console.log(inputs); // [12345678, 87654321] (2 uint32 from 4 registers)
-```
-
-**Output:** Same as readHoldingRegisters, funcCode=4.
-
-### 6. writeSingleRegister(address, value, timeout)
-
-Writes a single holding register (function 0x06).
-
-**Parameters:**
-
-- `address (number):` Address.
-- `value (number):` Value (0-65535).
-- `timeout (number, optional):` Timeout.
-
-**Example:**
-
-```js
-const response = await client.writeSingleRegister(400, 999);
-console.log(response); // { address: 400, value: 999 }
-```
-
-**Log output:**
-
-```bash
-[14:30:15][INFO] Response received { slaveId: 1, funcCode: 6, responseTime: 30 }
-```
-
-### 7. writeMultipleRegisters(startAddress, values, timeout)
-
-Writes multiple holding registers (function 0x10).
-
-**Parameters:**
-
-- startAddress (number).
-- values ​​(number[]): Array of values.
-- timeout (number, optional).
-
-**Example:**
-
-```js
-const response = await client.writeMultipleRegisters(500, [100, 200, 300]);
-console.log(response); // { startAddress: 500, quantity: 3 }
-```
-
-**Output:** funcCode=16 (0x10).
-
-### 8. readCoils(startAddress, quantity, timeout)
-
-Reads coils (function 0x01). Returns `{ coils: boolean[] }`.
-
-**Example:**
-
-```js
-const { coils } = await client.readCoils(0, 8);
-console.log(coils); // [true, false, true, ...]
-```
-
-**Output:** funcCode=1.
-
-### 9. readDiscreteInputs(startAddress, quantity, timeout)
-
-Reads discrete inputs (function 0x02). Same as readCoils.
-
-**Example:**
-
-```js
-const { inputs } = await client.readDiscreteInputs(100, 10);
-console.log(inputs); // [false, true, ...]
-```
-
-### 10 writeSingleCoil(address, value, timeout)
-
-Writes a single coil (function 0x05). value: 0xFF00 (true) or 0x0000 (false).
-
-**Example:**
-
-```js
-const response = await client.writeSingleCoil(10, 0xff00); // Enable
-console.log(response); // { address: 10, value: 0xFF00 }
-```
-
-### 11. writeMultipleCoils(startAddress, values, timeout)
-
-Writes multiple coils (function 0x0F). values: `boolean[]` or `number[]` (0/1).
-
-**Example:**
-
-```js
-const response = await client.writeMultipleCoils(20, [true, false, true]);
-console.log(response); // { startAddress: 20, quantity: 3 }
-```
-
-## Special Modbus Functions
-
-### 1. reportSlaveId(timeout)
-
-Report slave ID (function 0x11). Returns { slaveId, runStatus, ... }.
-
-**Example:**
-
-```js
-const info = await client.reportSlaveId();
-console.log(info); // { slaveId: 1, runStatus: true, ... }
-```
-
-### 2. readDeviceIdentification(timeout)
-
-Reading identification (function 0x2B). SlaveId is temporarily reset to 0.
-
-**Example:**
-
-```js
-const id = await client.readDeviceIdentification();
-console.log(id); // { vendor: 'ABC', product: 'XYZ', ... }
-```
-
-## Internal methods (For expansion)
-
-- `_toHex(buffer):` Buffer to a hex string. Used in logs.
-- `_sendRequest(pdu, timeout, ignoreNoResponse):` Basic sending method with retry, echo, and diagnostics.
-- `_convertRegisters(registers, type):` Register conversion (supports 16/32/64-bit, float, string, BCD, hex, bool, binary with swaps: \_sw, \_sb, \_le, and combinations).
-
-**Conversion example with swap:**
-
-```js
-// In readHoldingRegisters options: { type: 'float_sw' } — word swap for float.
-const swapped = await client.readHoldingRegisters(400, 2, { type: 'float_sw' });
-```
-
-## Diagnostics
-
-The client uses Diagnostics for statistics (recordRequest, recordError, etc.). Access via client.diagnostics.
-
-**Example:**
-
-```js
-console.log(client.diagnostics.getStats()); // { requests: 10, errors: 2, ... }
-```
-
-## Full usage example
-
-```js
-const ModbusClient = require('modbus-connect/client');
-const TransportController = require('modbus-connect/transport');
+const SLAVE_ID = 92;
+const TRANSPORT_ID = 'TEST_RTU';
 
 async function main() {
   const controller = new TransportController();
-
-  await controller.addTransport('com-port-3', 'node', {
-    port: 'COM3',
+  await controller.addTransport(TRANSPORT_ID, 'node-rtu', {
+    path: '/dev/tty.usbserial-01AB5F6D',
     baudRate: 9600,
-    parity: 'none',
     dataBits: 8,
     stopBits: 1,
-    slaveIds: [1],
-    RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
+    parity: 'none',
+    writeTimeout: 500,
+    readTimeout: 500,
+    slaveIds: [SLAVE_ID],
   });
 
-  await controller.connectAll();
-
-  const client = new ModbusClient(controller, 1, { timeout: 1000, retryCount: 1 });
-  client.enableLogger('info');
-
-  try {
-    await client.connect();
-
-    const regs = await client.readHoldingRegisters(0, 10, { type: 'uint16' });
-    console.log('Registers:', regs);
-
-    await client.writeSingleRegister(0, 1234);
-
-    const time = await client.getControllerTime();
-    console.log('Controller time:', time);
-
-    await client.disconnect();
-  } catch (err) {
-    console.error('Modbus error:', err);
-  } finally {
-    await controller.disconnectAll();
-  }
-}
-
-main();
-```
-
-**Expected output (snippet):**
-
-```bash
-[05:53:16][INFO][NodeSerialTransport] Serial port COM3 opened
-[05:53:17][INFO] Response received { slaveId: 1, funcCode: 3, responseTime: 45 }
-Registers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-[05:53:18][INFO] Response received { slaveId: 1, funcCode: 6, responseTime: 20 }
-Controller time: { datetime: '2025-10-07T10:00:00Z' }
-[05:53:19][INFO][NodeSerialTransport] Serial port COM3 closed
-```
-
-**On error (timeout):**
-
-```bash
-[14:30:15][WARN] Attempt #1 failed: Read timeout { responseTime: 1000, error: ModbusTimeoutError, ... }
-[14:30:15][DEBUG] Retrying after delay 200ms { slaveId: 1, funcCode: 3 }
-[14:30:15][ERROR] All 2 attempts exhausted { error: ModbusTimeoutError, ... }
-Modbus error: Read timeout
-```
-
-<br>
-
-# <span id="transport-controller">Transport Controller</span>
-
-The `transport/transport-controller.js` module provides a centralized way to manage **multiple** Modbus transports (serial or TCP) depending on the environment (Node.js or Web). `TransportController` allows you to **manage connections**, **route requests** between devices with different `slaveId`s via different transports, and provides **load balancing** and **fault tolerance**.
-
-**Key Features:**
-
-- **Transport Management:** Add, remove, connect, disconnect.
-- **Routing:** Automatically routes requests from `ModbusClient` to the correct transport based on `slaveId`.
-- **Dynamic Assignment:** Ability to assign new `slaveId`s to an already connected transport.
-- **Fault Tolerance:** Supports fallback transports.
-- **Logging:** Integrated with the main logger.
-- **Diagnostics:** Can provide transport-level statistics.
-- **Device/Port State Tracking:** Internally leverages the state tracking capabilities of the underlying `NodeSerialTransport` and `WebSerialTransport`. These transports use `DeviceConnectionTracker` and `PortConnectionTracker` to monitor the connection status of individual Modbus slaves and the physical port itself, providing detailed error types and messages. `TransportController` manages these states for all managed transports. **You can subscribe to state changes by setting handlers directly on the individual transports added to the controller.**
-
-The module exports the `TransportController` class. It maintains its own internal state for managing transports and routing.
-
-**Dependencies:**
-
-- `./factory.js`: For creating underlying transport instances (NodeSerialTransport, WebSerialTransport).
-- `../logger.js`: For logging.
-- `../types/modbus-types.js`: For type definitions.
-
-## Initialization
-
-Include the module
-
-```js
-const TransportController = require('modbus-connect/transport');
-```
-
-Or in the browser:
-
-```js
-import TransportController from 'modbus-connect/transport';
-```
-
-Create an instance:
-
-```js
-const controller = new TransportController();
-```
-
-Logging and diagnostics are configured internally or via the main logger.
-
-## Main functions
-
-### 1. `addTransport(id, type, options, reconnectOptions?, pollingConfig?)`
-
-Asynchronously adds a new transport to the controller and initializes its internal PollingManager.
-
-**Parameters:**
-
-- `id (string)`: A unique identifier for this transport within the controller.
-- `type (string)`: Type ('node', 'web').
-- `options (object)`: Config:
-  - `For 'node':` `{ port: 'COM3', baudRate: 9600, ..., slaveIds: [1, 2] }` (SerialPort options + `slaveIds` array).
-  - `For 'web':` `{ port: SerialPort instance, ..., slaveIds: [3, 4] }` (Web Serial Port instance + `slaveIds` array).
-  - `slaveIds (number[], optional):` An array of `slaveId`s that this transport will handle. These are registered internally for routing.
-  - `RSMode (string, optional):` 'RS485' or 'RS232'. Default is 'RS485'.
-  - `fallbacks (string[], optional):` An array of transport IDs to use as fallbacks for the assigned `slaveIds` if the primary transport fails.
-    **Returns:** Promise<void>
-    **Errors:** Throws Error on invalid options, duplicate ID.
-- `reconnectOptions (object, optional)`: `{ maxReconnectAttempts: number, reconnectInterval: number }`.
-- `pollingConfig (object, optional)`: Configuration for the internal PollingManager (e.g., `{ defaultInterval: 1000, maxRetries: 3 }`).
-
-**Example 1: Add Node.js serial transport.**
-
-```js
-async function addNodeTransport() {
-  try {
-    await controller.addTransport('com3', 'node', {
-      port: 'COM3', // Use path for Node
-      baudRate: 19200,
-      dataBits: 8,
-      stopBits: 1,
-      parity: 'none',
-      slaveIds: [13, 14], // Assign slave IDs 13 and 14 to this transport
-      RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
-    });
-    console.log('Transport added to controller:', 'com3');
-  } catch (err) {
-    console.error('Failed to add transport:', err.message);
-  }
-}
-
-addNodeTransport();
-```
-
-**Output (logs if level >= 'info'; simulation):**
-
-```bash
-[14:30:15][INFO][TransportController] Transport "com3" added {"type":"node","slaveIds":[13, 14]}
-```
-
-**Example 2: Add Web serial transport.**
-
-```js
-// In the browser, after navigator.serial.requestPort()
-async function addWebTransport(port) {
-  try {
-    await controller.addTransport('webPort1', 'web', {
-      port, // The SerialPort instance obtained via Web Serial API
-      slaveIds: [15, 16], // Assign slave IDs 15 and 16 to this transport
-      RSMode: 'RS485', // or 'RS232'. Default is 'RS485'.
-    });
-    console.log('Transport added to controller:', 'webPort1');
-  } catch (err) {
-    console.error('Failed to add transport:', err.message);
-  }
-}
-
-// Simulation: const port = await navigator.serial.requestPort();
-addWebTransport(port);
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][TransportController] Transport "webPort1" added {"type":"web","slaveIds":[15, 16]}
-```
-
-### 2. `removeTransport(id)`
-
-Asynchronously removes a transport from the controller. Disconnects it first if connected.
-
-**Parameters:**
-
-- `id (string)`: The ID of the transport to remove.
-
-**Returns:** Promise<void>
-
-**Example:**
-
-```js
-async function removeTransport() {
-  try {
-    await controller.removeTransport('com3');
-    console.log('Transport removed from controller:', 'com3');
-  } catch (err) {
-    console.error('Failed to remove transport:', err.message);
-  }
-}
-
-removeTransport();
-```
-
-### 3. `connectAll()` / `connectTransport(id)`
-
-Connects all managed transports or a specific one.
-
-**Parameters:**
-
-- `id (string, optional)`: The ID of the specific transport to connect.
-
-**Returns:** Promise<void>
-
-**Example:**
-
-```js
-async function connectAllTransports() {
-  try {
-    await controller.connectAll(); // Connect all added transports
-    console.log('All transports connected via controller.');
-  } catch (err) {
-    console.error('Failed to connect transports:', err.message);
-  }
-}
-
-connectAllTransports();
-```
-
-### 4. `listTransports()`
-
-Returns an array of all managed transports with their details.
-
-**Parameters:** None
-
-**Returns:** TransportInfo[] - Array of transport info objects.
-
-**Example:**
-
-```js
-const transports = controller.listTransports();
-console.log('All transports:', transports);
-```
-
-### 5. `assignSlaveIdToTransport(transportId, slaveId)`
-
-Dynamically assigns a `slaveId` to an already added and potentially connected transport. Useful if you discover a new device on an existing port.
-
-**Parameters:**
-
-- `transportId (string)`: The ID of the target transport.
-- `slaveId (number)`: The Modbus slave ID to assign.
-
-**Returns:** void
-
-**Errors:** Throws Error if `transportId` is not found.
-
-**Example:**
-
-```js
-// Assume 'com3' transport was added earlier and is connected
-// Later, you discover a device with slaveId 122 is also on COM3
-controller.assignSlaveIdToTransport('com3', 122);
-console.log('Assigned slaveId 122 to transport com3');
-// ModbusClient with slaveId 122 will now use the 'com3' transport.
-```
-
-### 6. `removeSlaveIdFromTransport(transportId, slaveId)`
-
-Dynamically removes a `slaveId` from a transport's configuration. This clears the internal registry, routing maps, **and resets the internal connection tracker state** for that specific device. This method is essential if you plan to re-assign the same `slaveId` to the transport later (e.g., after a physical reconnection sequence) to avoid "already managing this ID" errors or connection state debounce issues.
-
-**Parameters:**
-
-- `transportId (string)`: The ID of the target transport
-- `slaveId (number)`: The Modbus slave ID to remove
-
-**Returns:** void
-
-**Errors:** Logs a warning if `transportId` is not found or if the `slaveId` was not assigned to that transport, but does not throw an exception
-
-**Example:**
-
-```js
-// Assume we need to reboot or physically reconnect the device with slaveId 13
-// First, remove it from the controller logic
-controller.removeSlaveIdFromTransport('com3', 13);
-console.log('Removed slaveId 13 from transport com3');
-
-// ... physical reconnection happens ...
-
-// Now you can safely re-assign it
-controller.assignSlaveIdToTransport('com3', 13);
-```
-
-### 7. `getTransportForSlave(slaveId)`
-
-Gets the currently assigned transport for a specific `slaveId`. Used internally by `ModbusClient` if needed, but can be useful for direct interaction.
-
-**Parameters:**
-
-- `slaveId (number)`: The Modbus slave ID.
-
-**Returns:** `Transport | null` - The assigned transport instance or null if not found.
-
-**Example:**
-
-```js
-const assignedTransport = controller.getTransportForSlave(13);
-if (assignedTransport) {
-  console.log('Transport for slave 13:', assignedTransport.constructor.name);
-} else {
-  console.log('No transport assigned for slave 13');
-}
-```
-
-### 8. `Device/Port State Tracking`
-
-To track the connection state of devices or the port itself, you need to access the individual transport instance managed by the `TransportController` and set the handler on it.
-
-**Example: Setting Device State Handler**
-
-```js
-async function addAndTrackDevice() {
-  await controller.addTransport('com3', 'node', {
-    port: 'COM3',
-    baudRate: 9600,
-    slaveIds: [1, 2],
+  await controller.connectTransport(TRANSPORT_ID);
+
+  const client = new ModbusClient(controller, SLAVE_ID, {
+    framing: 'rtu',
+    timeout: 3000,
   });
 
-  await controller.connectAll();
+  await new Promise(r => setTimeout(r, 250));
 
-  // Get the transport instance for 'com3'
-  const transport = controller.getTransport('com3');
-  if (transport && transport.setDeviceStateHandler) {
-    // Set the handler to receive state updates for devices on this transport
-    transport.setDeviceStateHandler((slaveId, connected, error) => {
-      console.log(`[Transport 'com3'] Device ${slaveId} is ${connected ? 'ONLINE' : 'OFFLINE'}`);
-      if (error) {
-        console.log(`[Transport 'com3'] Device ${slaveId} Error: ${error.type}, ${error.message}`);
-      }
-    });
-  }
-
-  // Create clients using the controller
-  const client1 = new ModbusClient(controller, 1, { timeout: 2000, RSMode: 'RS485' });
-  await client1.connect(); // This will trigger the handler for slaveId 1
-}
-
-addAndTrackDevice();
-```
-
-**Example: Setting Port State Handler**
-
-```js
-async function addAndTrackPort() {
-  await controller.addTransport('com4', 'node', {
-    port: 'COM4',
-    baudRate: 115200,
-    slaveIds: [3],
-  });
-
-  // Get the transport instance for 'com4' *before* connecting if needed
-  const transport = controller.getTransport('com4');
-  if (transport && transport.setPortStateHandler) {
-    // Set the handler to receive state updates for the physical port
-    transport.setPortStateHandler((connected, slaveIds, error) => {
-      console.log(`[Transport 'com4'] Port is ${connected ? 'CONNECTED' : 'DISCONNECTED'}`);
-      console.log(`[Transport 'com4'] Affected slave IDs:`, slaveIds || []);
-      if (error) {
-        console.log(`[Transport 'com4'] Port Error: ${error.type}, ${error.message}`);
-      }
-    });
-  }
-
-  await controller.connectAll();
-
-  // Create clients using the controller
-  const client3 = new ModbusClient(controller, 3, { timeout: 2000, RSMode: 'RS485' });
-  await client3.connect();
-}
-
-addAndTrackPort();
-```
-
-### 9. `writeToPort(transportId, data, readLength?, timeout?)`
-
-Allows executing a direct write operation (or any command requiring exclusive port access) on a specific transport, leveraging the `PollingManager`'s mutex to prevent conflicts with background polling tasks. This is the safest way to send a non-polling, immediate command.
-
-**Parameters:**
-
-- `transportId (string)`: The ID of the transport to write to.
-- `data (Uint8Array)`: The data buffer to write to the port.
-- `readLength (number, optional)`: The expected length of the response data (in bytes). Defaults to `0` (no read).
-- `timeout (number, optional)`: Timeout for reading the response, in milliseconds. Defaults to `3000` ms.
-
-**Returns:** `Promise<Uint8Array>` - The received data buffer or an empty buffer if `readLength` was `0`.
-
-**Errors:** Throws Error if the transport is not found or if the underlying transport is not considered open/connected.
-
-**Example:**
-
-```js
-async function sendDirectCommand() {
-  const transportId = 'com3';
-  const dataToSend = new Uint8Array([0x01, 0x03, 0x00, 0x00, 0x00, 0x02, 0xcb, 0xfb]); // Example raw command
-  const expectedResponseLength = 9; // Command + 2 registers * 2 bytes/reg = 5 bytes response + header/CRC (example)
-
-  try {
-    console.log(`Sending direct command to transport ${transportId}...`);
-
-    // This call locks the transport's PollingManager, writes data, reads response, flushes, and releases lock.
-    const response = await controller.writeToPort(
-      transportId,
-      dataToSend,
-      expectedResponseLength,
-      5000 // 5 seconds timeout for this specific operation
-    );
-
-    console.log('Direct write successful. Response received:', response);
-  } catch (err) {
-    console.error(`Failed to write directly to transport ${transportId}:`, err.message);
-  }
-}
-
-sendDirectCommand();
-```
-
-> **Note on Transport State:** This method checks `info.transport.isOpen` internally. If you call this on a transport that is currently disconnecting or has an underlying error, it will likely fail, regardless of the PollingManager mutex being available. Ensure the transport is in the `'connected'` state before calling.
-
-### 10. `getStatus(id?)`
-
-Gets the status of a specific transport or all transports.
-
-**Parameters:**
-
-- `id (string, optional)`: The ID of the transport to get the status for. If not provided, returns the status of all transports.
-
-**Returns:** TransportStatus[] - Array of transport status objects.
-
-**Example:**
-
-```js
-const status = controller.getStatus('com3');
-console.log('Transport status:', status);
-```
-
-### 11. `getActiveTransportCount()`
-
-Returns the number of currently connected transports.
-
-**Parameters:** None
-
-**Returns:** number
-
-### 12. `setLoadBalancer(strategy)`
-
-Sets the load balancing strategy for routing requests.
-
-**Parameters:**
-
-- strategy (string): 'round-robin', 'sticky', 'first-available'
-
-**Example:**
-
-```js
-controller.setLoadBalancer('round-robin');
-```
-
-### 13. `reloadTransport(id, options)`
-
-Asynchronously reloads an existing transport with a new configuration. This is useful for changing settings like `baudRate` or even the physical `port` on the fly.
-The controller will first safely disconnect the existing transport, then create a new transport instance with the provided options. If the original transport was connected, the controller will attempt to connect the new one automatically.
-
-**Parameters:**
-
-- `id (string)`: The unique identifier of the transport to be reloaded.
-- `options (object)`: A new configuration object, identical in structure to the one used in `addTransport`.
-
-**Returns:** `Promise<void>`
-
-**Example:**
-
-```js
-// Initially, the transport is configured with a 9600 baudRate
-await controller.addTransport('com3', 'node', {
-  port: 'COM3',
-  baudRate: 9600,
-  slaveIds: [1],
-  RSMode: 'RS485',
-});
-await controller.connectAll();
-
-// ...some time later...
-
-// Reload the same transport with a new baudRate of 19200
-console.log('Reloading transport with new settings...');
-await controller.reloadTransport('com3', {
-  port: 'COM3',
-  baudRate: 19200,
-  slaveIds: [1], // Note: You must provide all required options again
-  RSMode: 'RS485',
-});
-console.log('Transport reloaded successfully.');
-```
-
-### 14. Polling Task Management (Proxy Methods)
-
-The `TransportController` now acts as a facade for managing polling tasks specific to each transport.
-
-**Methods:**
-
-- `addPollingTask(transportId, options)`: Adds a polling task to the specified transport.
-- `removePollingTask(transportId, taskId)`: Removes a task.
-- `updatePollingTask(transportId, taskId, options)`: Updates an existing task.
-- `controlTask(transportId, taskId, action)`: Controls a specific task. Action: `'start' | 'stop' | 'pause' | 'resume'`.
-- `controlPolling(transportId, action)`: Controls all tasks on the transport. Action: `'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'`.
-- `getPollingStats(transportId)`: Returns statistics for all tasks on the transport.
-- `executeImmediate(transportId, fn)`: Executes a function using the transport's polling mutex. This ensures the function runs atomatically, without conflicting with background polling tasks.
-
-**Example:**
-
-```js
-// Add a periodic reading task to 'com3'
-controller.addPollingTask('com3', {
-  id: 'read-sensors',
-  interval: 1000,
-  fn: () => client.readHoldingRegisters(0, 10),
-  onData: data => console.log('Data:', data),
-  onError: err => console.error('Error:', err.message),
-});
-
-// Execute a manual write operation safely while polling is active
-await controller.executeImmediate('com3', async () => {
-  await client.writeSingleRegister(10, 123);
-});
-
-// Pause all polling on this transport (e.g. during maintenance)
-controller.controlPolling('com3', 'pauseAll');
-```
-
-### 15. `destroy()`
-
-Destroys the controller and disconnects all transports.
-
-**Parameters:** None
-
-**Returns:** Promise<void>
-
-**Example:**
-
-```js
-await controller.destroy();
-console.log('Controller destroyed');
-```
-
-## Full usage example
-
-Integration with `ModbusClient`. Creating a controller, adding transports, setting state handlers, and using the controller in clients.
-
-```js
-const TransportController = require('modbus-connect/transport'); // Import TransportController
-const ModbusClient = require('modbus-connect/client');
-const Logger = require('modbus-connect/logger');
-
-async function modbusExample() {
-  const logger = new Logger();
-  logger.enableLogger('info'); // Enable logs
-
-  const controller = new TransportController();
-
-  try {
-    // Add Node.js transport for slave IDs 1 and 2
-    await controller.addTransport('com3', 'node', {
-      port: 'COM3',
-      baudRate: 9600,
-      slaveIds: [1, 2],
-      RSMode: 'RS485',
-    });
-
-    // Add another Node.js transport for slave ID 3
-    await controller.addTransport('com4', 'node', {
-      port: 'COM4',
-      baudRate: 115200,
-      slaveIds: [3],
-      RSMode: 'RS485',
-    });
-
-    // Set up state tracking for each transport *after* adding but before connecting
-    const transport3 = controller.getTransport('com3');
-    if (transport3 && transport3.setDeviceStateHandler) {
-      transport3.setDeviceStateHandler((slaveId, connected, error) => {
-        console.log(`[COM3] Device ${slaveId}: ${connected ? 'ONLINE' : 'OFFLINE'}`);
-        if (error) console.error(`[COM3] Device ${slaveId} Error:`, error);
-      });
-    }
-
-    const transport4 = controller.getTransport('com4');
-    if (transport4 && transport4.setPortStateHandler) {
-      transport4.setPortStateHandler((connected, slaveIds, error) => {
-        console.log(`[COM4] Port: ${connected ? 'UP' : 'DOWN'}. Slaves affected:`, slaveIds);
-        if (error) console.error(`[COM4] Port Error:`, error);
-      });
-    }
-
-    // Connect all added transports
-    await controller.connectAll();
-
-    // Create clients, passing the controller instance and their specific slaveId
-    const client1 = new ModbusClient(controller, 1, { timeout: 2000, RSMode: 'RS485' }); // Uses 'com3'
-    const client2 = new ModbusClient(controller, 2, { timeout: 2000, RSMode: 'RS485' }); // Uses 'com3'
-    const client3 = new ModbusClient(controller, 3, { timeout: 2000, RSMode: 'RS485' }); // Uses 'com4'
-
-    await client1.connect();
-    await client2.connect();
-    await client3.connect();
-
-    const registers1 = await client1.readHoldingRegisters(0, 10, { type: 'uint16' });
-    console.log('Registers from slave 1:', registers1);
-
-    const registers2 = await client2.readHoldingRegisters(0, 10, { type: 'uint16' });
-    console.log('Registers from slave 2:', registers2);
-
-    const registers3 = await client3.readHoldingRegisters(0, 10, { type: 'uint16' });
-    console.log('Registers from slave 3:', registers3);
-
-    await client1.disconnect();
-    await client2.disconnect();
-    await client3.disconnect();
-  } catch (err) {
-    console.error('Modbus error:', err.message);
-  } finally {
-    // Disconnect all transports managed by the controller
-    await controller.disconnectAll();
-  }
-}
-
-modbusExample();
-```
-
-**Expected output (snippet):**
-
-```bash
-[14:30:15][INFO][TransportController] Transport "com3" added {"type":"node","slaveIds":[1, 2]}
-[14:30:15][INFO][TransportController] Transport "com4" added {"type":"node","slaveIds":[3]}
-[14:30:15][INFO][NodeSerialTransport] Serial port COM3 opened
-[14:30:15][INFO][NodeSerialTransport] Serial port COM4 opened
-[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' } // For client 1
-[COM3] Device 1: ONLINE // Output from device state handler
-[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' } // For client 2
-[COM3] Device 2: ONLINE // Output from device state handler
-[14:30:15][INFO] Transport connected { transport: 'NodeSerialTransport' } // For client 3
-[COM4] Port: UP. Slaves affected: [ 3 ] // Output from port state handler
-[14:30:15][INFO] Response received { slaveId: 1, funcCode: 3, responseTime: 50 }
-Registers from slave 1: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-[14:30:15][INFO] Response received { slaveId: 2, funcCode: 3, responseTime: 48 }
-Registers from slave 2: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-[14:30:15][INFO] Response received { slaveId: 3, funcCode: 3, responseTime: 60 }
-Registers from slave 3: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
-[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' } // For client 1
-[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' } // For client 2
-[14:30:16][INFO] Transport disconnected { transport: 'NodeSerialTransport' } // For client 3
-[14:30:16][INFO][TransportController] Transport "com3" disconnected
-[14:30:16][INFO][TransportController] Transport "com4" disconnected
-```
-
-> For Web: Use `type: 'web'` and provide the `SerialPort` instance obtained via `navigator.serial.requestPort()` to the `addTransport` options. The process for setting state handlers is the same.
-
-<br>
-
-# <span id="modbus-tcp-support">Modbus TCP Support</span>
-
-THe library now provides full support for Modbus TCP, allowing communication over ethernet networks.
-
-### Key Differences from RTU:
-
-- **No CRC:** TCP uses the underlying network layer for error checking.
-- **MBAP Header:** Every packet is prefixed with a 7-byte Modbus Application Protocol header.
-- **Transaction ID:** Automated 16-bit counter to match requests and responses.
-
-### Node.js TCP
-
-Uses native `net` sockets. High performance, direct connection.
-
-```js
-await controller.addTransport('plc-1', 'node-tcp', {
-  host: '192.168.1.100',
-  port: 502,
-  slaveIds: [1], // In TCP, this is the Unit ID
-  readTimeout: 2000,
-});
-```
-
-### Web TCP (Browser)
-
-Since browsers cannot open raw TCP sockets, use the `web-tcp` transport. It connects via a WebSocket Proxy that forwards binary framers to the target PLC.
-
-```js
-await controller.addTransport('web-tcp-1', 'web-tcp', {
-  url: 'ws://your-proxy-server:8080',
-  slaveIds: [1],
-});
-```
-
-### Using TCP Client
-
-When creating a client for TCP, specify the `framing` option:
-
-```js
-const client = new ModbusClient(controller, 1, {
-  framing: 'tcp', // Defaults to 'rtu'
-  timeout: 4000,
-});
-```
-
-<br>
-
-# <span id="architecture">Architecture: Framers & Protocol</span>
-
-The library uses a tiered architecture to separate Modbus logic from byte-level packaging:
-
-- **Transport:** Handles raw data transmission (SerialPort, WebSerial, TCP Sockets).
-- **Framer:** Handles the Application Data Unit (ADU).
-  - `RtuFramer`: Adds/validates SlaveID and CRC.
-  - `TcpFramer`: Manages Transaction ID and MBAP header.
-- **Protocol:** Manages the communication cycle. It handles retries, flushes, and ensures a complete packet is read before returning data to the Client.
-- **Client:** High-level API for your application.
-
-<br>
-
-# <span id="errors-types">Errors Types</span>
-
-The errors.js module defines a hierarchy of error classes for Modbus operations. All classes inherit from the base `ModbusError (extends Error)`, allowing for easy catching in catch blocks (e.g., `catch (err) { if (err instanceof ModbusError) { ... } }`). These classes are used in **ModbusClient** (the previous module) for specific scenarios: **timeouts**, **CRC errors**, **Modbus exceptions**, etc.
-
-**Key Features:**
-
-- **Base Class:** ModbusError — common to all, with name = 'ModbusError'.
-- **Specific Classes:** Each has a unique name and default message. ModbusExceptionError uses the EXCEPTION_CODES constants from `./constants/constants.js` to describe exceptions (e.g., 0x01 = 'Illegal Function').
-- **Hierarchy:** All extend ModbusError, so instanceof **_ModbusError_** catches everything.
-- **Usage:** Throw in code for custom errors or catch from the transport/client. Supports stack and message as standard Error.
-- **Constants:** Depends on **_EXCEPTION_CODES_** (object { code: 'description' }).
-
-The module exports classes. No initialization required—just import and use for throw/catch.
-
-## Basic Error Classes
-
-Each class has a constructor with an optional message. When throwing, the message, name, and stack (standard for Error) are displayed.
-
-### 1. ModbusError(message)
-
-Base class for all Modbus errors.
-
-**Parameters:**
-
-- `message (string, optional):` Custom message. Defaults to ''.
-
-### 2. ModbusTimeoutError(message = 'Modbus request timed out')
-
-Request timeout error.
-
-### 3. ModbusCRCError(message = 'Modbus CRC check failed')
-
-There was a CRC check error in the package.
-
-### 4. ModbusResponseError(message = 'Invalid Modbus response')
-
-Invalid response error (eg unexpected PDU length).
-
-### 5. ModbusTooManyEmptyReadsError(message = 'Too many empty reads from transport')
-
-Too many empty reads from transport (e.g., serial)
-
-### 6. ModbusExceptionError(functionCode, exceptionCode)
-
-Modbus exception error (response with funcCode | 0x80). Uses EXCEPTION_CODES for description.
-
-**Parameters:**
-
-- `functionCode (number):` Original funcCode (without 0x80).
-- `exceptionCode (number):` Exception code (0x01–0xFF).
-
-### 8. ModbusFlushError(message = 'Modbus operation interrupted by transport flush')
-
-Error interrupting operation with transport flash (buffer clearing).
-
-## Error Catching (General)
-
-All classes are caught as ModbusError.
-
-## Data Validation Errors
-
-### 9. ModbusInvalidAddressError(address)
-
-Invalid Modbus slave address (must be 0-247).
-
-**Parameters:**
-
-- `address (number):` Invalid address value.
-
-### 10. ModbusInvalidFunctionCodeError(functionCode)
-
-Invalid Modbus function code.
-
-**Parameters:**
-
-- `functionCode (number):` Invalid function code.
-
-### 11. ModbusInvalidQuantityError(quantity, min, max)
-
-Invalid register/coil quantity.
-
-**Parameters:**
-
-- `quantity (number):` Invalid quantity.
-- `min (number):` Minimum allowed.
-- `max (number):` Maximum allowed.
-
-## Modbus Exception Errors
-
-### 12. ModbusIllegalDataAddressError(address, quantity)
-
-Modbus exception 0x02 - Illegal Data Address.
-
-**Parameters:**
-
-- `address (number):` Starting address.
-- `quantity (number):` Quantity requested.
-
-### 13. ModbusIllegalDataValueError(value, expected)
-
-Modbus exception 0x03 - Illegal Data Value.
-
-**Parameters:**
-
-- `value (any):` Invalid value.
-- `expected (string):` Expected format.
-
-### 14. ModbusSlaveBusyError()
-
-Modbus exception 0x04 - Slave Device Busy.
-
-### 15. ModbusAcknowledgeError()
-
-Modbus exception 0x05 - Acknowledge.
-
-### 16. ModbusSlaveDeviceFailureError()
-
-Modbus exception 0x06 - Slave Device Failure.
-
-## Message Format Errors
-
-### 17. ModbusMalformedFrameError(rawData)
-
-Malformed Modbus frame received.
-
-**Parameters:**
-
-- `rawData (Buffer | Uint8Array):` Raw received data.
-
-### 18. ModbusInvalidFrameLengthError(received, expected)
-
-Invalid frame length.
-
-**Parameters:**
-
-- `received (number):` Bytes received.
-- `expected (number):` Expected bytes.
-
-### 19. ModbusInvalidTransactionIdError(received, expected)
-
-Invalid transaction ID mismatch.
-
-**Parameters:**
-
-- `received (number):` Received ID.
-- `expected (number):` Expected ID.
-
-### 20. ModbusUnexpectedFunctionCodeError(sent, received)
-
-Unexpected function code in response.
-
-**Parameters:**
-
-- `sent (number):` Sent function code.
-- `received (number):` Received function code.
-
-## Connection Errors
-
-### 21. ModbusConnectionRefusedError(host, port)
-
-Connection refused by device.
-
-**Parameters:**
-
-- `host (string):` Target host.
-- `port (number):` Target port.
-
-### 22. ModbusConnectionTimeoutError(host, port, timeout)
-
-Connection timeout.
-
-**Parameters:**
-
-- `host (string):` Target host.
-- `port (number):` Target port.
-- `timeout (number):` Timeout in ms.
-
-### 23. ModbusNotConnectedError()
-
-Operation attempted without connection.
-
-### 24. ModbusAlreadyConnectedError()
-
-Attempt to connect when already connected.
-
-## Buffer & Data Errors
-
-### 25. ModbusBufferOverflowError(size, max)
-
-Buffer exceeds maximum size.
-
-**Parameters:**
-
-- `size (number):` Current size.
-- `max (number):` Maximum allowed.
-
-### 26. ModbusInsufficientDataError(received, required)
-
-Not enough data received.
-
-**Parameters:**
-
-- `received (number):` Bytes received.
-- `required (number):` Bytes needed.
-
-### 27. ModbusDataConversionError(data, expectedType)
-
-Data type conversion failure.
-
-**Parameters:**
-
-- `data (any):` Invalid data.
-- `expectedType (string):` Expected type.
-
-## Gateway Errors
-
-### 28. ModbusGatewayPathUnavailableError()
-
-Gateway path unavailable (exception 0x0A).
-
-### 29. ModbusGatewayTargetDeviceError()
-
-Gateway target device failed to respond (exception 0x0B).
-
-## Polling Errors
-
-### 30. PollingTaskAlreadyExistsError(id)
-
-Polling task ID already registered.
-
-**Parameters:**
-
-- `id (string):` Task ID.
-
-### 31. PollingTaskNotFoundError(id)
-
-Polling task ID not found.
-
-**Parameters:**
-
-- `id (string):` Task ID.
-
-<br>
-
-# <span id="polling-manager">Polling Manager</span>
-
-The `PollingManager` class is now **integrated directly into the** `TransportController`. You typically do not create instances of it manually. Instead, a separate manager is automatically created for each transport you add. This ensures that issues on one port (like timeouts) do not affect polling on other ports.
-
-**Key Features:**
-
-- **Transport Isolation:** Each transport has its own independent polling queue.
-- **Concurrency Safety:** Resolves conflicts between automatic polling and manual Client requests using a shared mutex.
-- **No Resource ID:** Tasks are simply added to a specific transport.
-
-**Dependencies:**
-
-- **async-mutex** for mutexes.
-- **Logger** from ./logger for logging.
-
-**Logging levels:** Disabled by default ('none'). Use the enable\*Logger methods to activate.
-
-## Initialization
-
-You **do not** need to instantiate this class manually. It is created automatically when you add a transport.
-Pass the configuration in the 5th argument of `addTransport`:
-
-```js
-const TransportController = require('modbus-connect/transport');
-
-const controller = new TransportController();
-
-// PollingManager is initialized internally here:
-await controller.addTransport(
-  'my-transport',
-  'node',
-  { port: 'COM1', slaveIds: [1] }, // Transport config
-  {}, // Reconnect config
-  {
-    // PollingManager config
-    defaultMaxRetries: 5,
-    defaultBackoffDelay: 2000,
-    defaultTaskTimeout: 10000,
-    logLevel: 'info',
-  }
-);
-```
-
-## Task management methods
-
-| METHOD                                        | DESCRIPTION                                                                        |
-| --------------------------------------------- | ---------------------------------------------------------------------------------- |
-| addPollingTask(transportId, opts)             | Add a new polling task to a specific transport                                     |
-| removePollingTask(transportId, taskId)        | Remove a task from a transport                                                     |
-| updatePollingTask(transportId, taskId, opts)  | Update an existing task (removes and recreates)                                    |
-| controlTask(transportId, taskId, action)      | Control a specific task (`start`, `stop`, `pause`, `resume`)                       |
-| controlPolling(transportId, action)           | Control all tasks on a transport (`startAll`, `stopAll`, `pauseAll`, `resumeAll`)  |
-| getPollingStats(transportId)                  | Get stats for all tasks on a transport                                             |
-| getPollingQueueInfo(transportId)              | Get detailed queue information for a transport                                     |
-
-## Adding and managing Tasks
-
-### 1. addPollingTask(transportId, options)
-
-Adds a new task to the specified transport queue.
-
-**Parameters:**
-
-- `transportId (string):` The ID of the transport.
-- `options (object):` Task configuration.
-
-```js
-controller.addPollingTask('my-transport', {
-  // Required parameters
-  id: string,                    // Unique task ID
-  interval: number,              // Polling interval in ms
-  fn: Function | Function[],     // Function(s) to execute
-
-  // Optional parameters
-  priority?: number,             // Task priority (default: 0)
-  name?: string,                 // Human-readable task name
-  immediate?: boolean,           // Run immediately (default: true)
-  maxRetries?: number,           // Retry attempts
-  backoffDelay?: number,         // Retry delay
-  taskTimeout?: number,          // Timeout per function
-
-  // Callbacks (onData, onError, onStart, onStop, onFinish, etc.)
-});
-```
-
-**Example 1: A simple task without a resource (independent).**
-
-```js
-// Add a task to the transport 'com3'
-controller.addPollingTask('com3', {
-  id: 'read-voltage',
-  interval: 1000,
-  fn: () => client.readHoldingRegisters(0, 2),
-  onData: res => console.log('Voltage:', res),
-});
-```
-
-**Output (logs if enabled; simulation):**
-
-```bash
-[14:30:15][TRACE][PollingManager] Creating TaskController { id: 'sample-task', resourceId: undefined }
-[14:30:15][TRACE][TaskController] TaskController trace log
-[14:30:15][DEBUG][TaskController] TaskController created { id: 'sample-task', resourceId: undefined, priority: 0, interval: 2000, maxRetries: 2, backoffDelay: 1000, taskTimeout: 3000 }
-[14:30:15][WARN][TaskController] TaskController warning log
-[14:30:15][ERROR][TaskController] TaskController error log
-[14:30:15][INFO][PollingManager] Task added successfully { id: 'sample-task', resourceId: undefined, immediate: true }
-[14:30:16][INFO][TaskController] Task started
-[14:30:16][DEBUG][TaskController] Executing task once
-[14:30:16][DEBUG][TaskController] Transport flushed successfully (if there is transport)
-[14:30:16][INFO][TaskController] Task execution completed { success: true, resultsCount: 1 }
-Data obtained: [ 'Data received' ]
-[14:30:18][DEBUG][TaskController] Scheduling next run (loop)
-... (repeat every 2 seconds)
-```
-
-**Validation errors:**
-
-- If id is missing: Error: Task must have an `id`
-- If a task with ID exists: Error: Polling task with id `sample-task` already exists.
-
-### 2. updatePollingTask(transportId, taskId, newOptions)
-
-Updates an existing task by recreating it with new options.
-
-**Parameters:**
-
-- **id (string):** Task ID.
-  **- newOptions (object):** New options (as in addTask, without id).
-
-**Example:**
-
-```js
-controller.updatePollingTask('com3', 'read-voltage', { interval: 5000 });
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][PollingManager] Updating task { id: 'sample-task', newOptions: { interval: 3000, fn: [Function] } }
-[14:30:15][INFO][PollingManager] Task removed { id: 'sample-task', resourceId: undefined }
-[14:30:15][INFO][PollingManager] Task added successfully { id: 'sample-task', resourceId: undefined, immediate: false }
-```
-
-> If the task does not exist: Error: Polling task with id `sample-task` does not exist.
-
-### 3. removePollingTask(transportId, taskId)
-
-Stops and removes the task from the transport.
-
-**Parameters:**
-
-- id (string).
-
-**Example:**
-
-```js
-controller.removePollingTask('com3', 'read-voltage');
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][TaskController] Task stopped
-[14:30:15][INFO][PollingManager] Task removed { id: 'sample-task', resourceId: undefined }
-```
-
-> If it doesn't exist: a warning in the logs.
-
-## Managing Task State
-
-### 1. controlTask(transportId, taskId, action)
-
-Manages the state of a single task.
-
-**Parameters:**
-
-- `transportId (string)`
-- `taskId (string)`
-- `action (string):` 'start' | 'stop' | 'pause' | 'resume'
-
-**Example:**
-
-```js
-// Pause a specific task
-controller.controlTask('com3', 'read-voltage', 'pause');
-
-// Resume it later
-controller.controlTask('com3', 'read-voltage', 'resume');
-```
-
-## Bulk Operations
-
-### 1. controlPolling(transportId, action)
-
-Manages the state of **all** tasks on a specific transport.
-
-**Parameters:**
-
-- `transportId (string)`
-- `action (string):` 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
-
-**Example:**
-
-```js
-// Pause all polling on COM3 (e.g., before disconnecting or critical write)
-controller.controlPolling('com3', 'pauseAll');
-
-// Resume
-controller.controlPolling('com3', 'resumeAll');
-```
-
-## Queues and the System
-
-### 1. getPollingQueueInfo(transportId)
-
-Returns information about the execution queue length and task states.
-
-**Example:**
-
-```js
-const info = controller.getPollingQueueInfo('com3');
-console.log(info);
-// { queueLength: 1, tasks: [{ id: 'task1', state: {...} }] }
-```
-
-> If the queue does not exist: null.
-
-### 2. getPollingStats(transportId)
-
-Returns detailed statistics for all tasks on the transport.
-
-**Example:**
-
-```js
-const stats = controller.getPollingStats('com3');
-console.log(stats);
-// { 'task1': { totalRuns: 10, totalErrors: 0, ... } }
-```
-
-> **Output after enabling (with addTask):** Logs from the corresponding components will become visible, as in the examples above.
-
-## Full usage example
-
-```js
-const TransportController = require('modbus-connect/transport');
-const ModbusClient = require('modbus-connect/client');
-
-async function main() {
-  const controller = new TransportController();
-
-  // 1. Add transport (PollingManager created internally)
-  await controller.addTransport(
-    'com3',
-    'node',
-    { port: 'COM3', baudRate: 9600, slaveIds: [1] },
-    {},
-    { logLevel: 'debug' } // Enable polling logs here
-  );
-
-  await controller.connectAll();
-
-  const client = new ModbusClient(controller, 1);
-
-  // 2. Add task via Controller
-  controller.addPollingTask('com3', {
-    id: 'modbus-loop',
+  const pollingTask = {
+    id: 'task-read-holding-registers',
     interval: 1000,
-    fn: () => client.readHoldingRegisters(0, 2),
-    onData: results => console.log('Data:', results),
-    onError: err => console.error('Error:', err.message),
-  });
-
-  // 3. Pause polling after 5 seconds
-  setTimeout(() => {
-    console.log('Pausing polling...');
-    controller.controlPolling('com3', 'pauseAll');
-  }, 5000);
-
-  // 4. Check stats
-  setInterval(() => {
-    console.log('Stats:', controller.getPollingStats('com3'));
-  }, 10000);
-}
-
-main();
-```
-
-**Expected output (snippet):**
-
-```bash
-Polling started
-[14:30:15][DEBUG][PollingManager] Creating new TaskQueue { resourceId: 'slave-1' }
-[14:30:15][INFO][TaskController] Task started
-[14:30:15][DEBUG][TaskQueue] Task enqueued { taskId: 'modbus-poll' }
-[14:30:15][DEBUG][TaskController] Executing task once
-Modbus data: { registers: [1,2,3], slaveId: 1 }
-[14:30:18][DEBUG][TaskQueue] Task marked as ready { taskId: 'modbus-poll' }
-... (Retry)
-Modbus error: Modbus error (on error, with retry)
-Stats: { totalTasks: 1, totalQueues: 1, queuedTasks: 0, tasks: { modbus-poll: { totalRuns: 5, ... } } }
-```
-
-<br>
-
-# <span id="slave-emulator">Slave Emulator</span>
-
-The SlaveEmulator class is a Modbus device emulator (slave) that simulates slave behavior in the RTU protocol. It stores the states of coils, discrete inputs, and holding/input registers in a Map (for sparse addresses), supports address/function exceptions, infinite value changes (infinityChange), and processing of full RTU frames (handleRequest). This class is designed for testing and debugging Modbus clients without real hardware.
-
-**Key Features:**
-
-- **Data Storage:** Map of addresses (0–65535); default values ​​are 0/false.
-- **Validation:** Addresses (0–65535), quantity (1–125/2000), values ​​(0–65535 for registers, boolean for coils).
-- **Exceptions:** setException to simulate ModbusExceptionError (by funcCode+address).
-- **Infinity tasks:** Automatically change values ​​by interval (random in range).
-- **RTU processing:** handleRequest: CRC check, slaveAddr, funcCode; returns a Uint8Array response.
-- **Logging:** Optional (loggerEnabled); uses Logger (category 'SlaveEmulator').
-- **Function support:** Read/Write coils/registers (01, 02, 03, 04, 05, 06, 0F, 10); throws Illegal Function for others.
-
-> The class is exported as SlaveEmulator. Asynchronous for connect/disconnect.
-
-## Initialization
-
-Include the module:
-
-```js
-const SlaveEmulator = require('modbus-connect/slave-emulator');
-const Logger = require('modbus-connect/logger');
-```
-
-Create an instance:
-
-```js
-const options = {
-  loggerEnabled: true, // Enable logging (default: false)
-};
-
-const emulator = new SlaveEmulator(1, options); // slaveAddress=1
-```
-
-**Output during initialization (if loggerEnabled):** No explicit output in the constructor.
-
-**Enable\Disable logging:**
-
-```js
-emulator.enableLogger(); // Enable (if false)
-emulator.disableLogger(); // Disable
-```
-
-**Connecting:**
-
-```js
-await emulator.connect();
-```
-
-**Output (logs):**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Connecting to emulator...
-[14:30:15][INFO][SlaveEmulator] Connected
-```
-
-**Disabling:**
-
-```js
-await emulator.disconnect();
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Disconnecting from emulator...
-[14:30:15][INFO][SlaveEmulator] Disconnected
-```
-
-**Error in constructor:**
-
-```js
-const invalid = new SlaveEmulator(300); // >247
-```
-
-**Output:**
-
-```bash
-Error: Slave address must be a number between 0 and 247
-```
-
-## Main Methods
-
-### 1. infinityChange({ typeRegister, register, range, interval })
-
-Starts an infinite change of a value (random in range) over an interval.
-
-**Parameters:**
-
-- `typeRegister (string):` 'Holding', 'Input', 'Coil', 'Discrete'.
-- `register (number):` Address (0–65535).
-- `range (number[]):` [min, max] for registers; ignored for coils (random boolean).
-- `interval (number):` ms (positive).
-
-**Returns:** void.
-**Errors:** Invalid params, range min>max, invalid type.
-
-**Example:**
-
-```js
-emulator.infinityChange({
-  typeRegister: 'Holding',
-  register: 100,
-  range: [0, 1000],
-  interval: 1000,
-});
-// Stop
-emulator.stopInfinityChange({ typeRegister: 'Holding', register: 100 });
-```
-
-**Output (logs, level >= 'info'):**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Infinity change started { typeRegister: 'Holding', register: 100, interval: 1000 }
-[14:30:16][DEBUG][SlaveEmulator] Infinity change updated { typeRegister: 'Holding', register: 100, value: 456 }
-[14:30:16][DEBUG][SlaveEmulator] Infinity change stopped { typeRegister: 'Holding', register: 100 }
-```
-
-### 2. stopInfinityChange({ typeRegister, register })
-
-Stops a task based on a key.
-
-**Parameters:**
-
-- typeRegister (string), register (number).
-  **Returns:** void.
-  **Example:** See above.
-
-### 3. setException(functionCode, address, exceptionCode)
-
-Sets an exception for funcCode+address.
-
-**Parameters:**
-
-- `functionCode (number):` e.g., 3.
-- `address (number):` 0–65535.
-- `exceptionCode (number):` e.g., 1 (Illegal Function).
-  **Returns:** void.
-
-**Example:**
-
-```js
-emulator.setException(3, 100, 1); // Illegal Function on read addr 100
-emulator.clearExceptions(); // Clear all
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Exception set: functionCode=0x3, address=100, exceptionCode=0x1
-[14:30:15][INFO][SlaveEmulator] All exceptions cleared
-```
-
-### 4. addRegisters(definitions)
-
-Bulk adds registers from an array of objects { start, value }.
-
-**Parameters:**
-
-- `definitions (object):` { coils: [{start, value}], discrete: [...], holding: [...], input: [...] }.
-  **Returns:** void.
-  **Errors:** Invalid definitions.
-
-**Example:**
-
-```js
-const defs = {
-  holding: [
-    { start: 0, value: 123 },
-    { start: 1, value: 456 },
-  ],
-  coils: [{ start: 10, value: true }],
-};
-emulator.addRegisters(defs);
-console.log('Holding 0:', emulator.getHoldingRegister(0)); // 123
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Registers added successfully { coils: 1, discrete: 0, holding: 2, input: 0 }
-Holding 0: 123
-```
-
-### 5. setCoil(address, value), getCoil(address)
-
-Sets/reads coil (boolean).
-
-**Parameters:**
-
-- `address (number):` 0–65535.
-- `value (boolean):` For set.
-  **Returns:** void (set) / boolean (get, default false).
-  **Errors:** Invalid address/value.
-
-**Example:**
-
-```js
-emulator.setCoil(10, true);
-console.log('Coil 10:', emulator.getCoil(10)); // true
-```
-
-**Output:**
-
-```bash
-[14:30:15][DEBUG][SlaveEmulator] Coil set { address: 10, value: true }
-Coil 10: true
-```
-
-### 6. readCoils(startAddress, quantity)
-
-Reads coils (01).
-
-**Parameters:**
-
-- `startAddress (number):` Start.
-- `quantity (number):` 1–2000.
-  **Returns:** boolean[].
-  **Errors:** Invalid addr/quantity, ModbusExceptionError.
-
-**Example:**
-
-```js
-emulator.setCoil(0, true);
-emulator.setCoil(1, false);
-const coils = emulator.readCoils(0, 2);
-console.log('Coils:', coils); // [true, false]
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] readCoils { startAddress: 0, quantity: 2 }
-Coils: [ true, false ]
-```
-
-### 7. writeSingleCoil(address, value)
-
-Writes one coil (05).
-
-**Parameters:**
-
-- `address (number)`
-- `value (boolean)`
-  **Returns:** void.
-
-**Example:**
-
-```js
-emulator.writeSingleCoil(10, true);
-console.log('Coil 10 after write:', emulator.getCoil(10)); // true
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] writeSingleCoil { address: 10, value: true }
-Coil 10 after write: true
-```
-
-### 8. writeMultipleCoils(startAddress, values)
-
-Writes multiple coils (0F).
-
-**Parameters:**
-
-- `startAddress (number)`.
-- `values (boolean[] | number[]):` 1–1968.
-  **Returns:** void.
-
-**Example:**
-
-```js
-emulator.writeMultipleCoils(0, [true, false, true]);
-console.log('Coils 0-2:', emulator.readCoils(0, 3)); // [true, false, true]
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] writeMultipleCoils { startAddress: 0, values: [true, false, true] }
-Coils 0-2: [ true, false, true ]
-```
-
-### 9. setDiscreteInput(address, value), getDiscreteInput(address)
-
-Sets/reads discrete input (boolean).
-
-**Parameters:** Same as coils.
-
-**Example:**
-
-```js
-emulator.setDiscreteInput(20, true);
-console.log('Discrete 20:', emulator.getDiscreteInput(20)); // true
-```
-
-**Output:**
-
-```bash
-[14:30:15][DEBUG][SlaveEmulator] Discrete Input set { address: 20, value: true }
-Discrete 20: true
-```
-
-### 10. readDiscreteInputs(startAddress, quantity)
-
-Reads discrete inputs (02).
-
-**Parameters:** Same as readCoils.
-
-**Example:**
-
-```js
-const inputs = emulator.readDiscreteInputs(20, 1);
-console.log('Inputs:', inputs); // [true]
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] readDiscreteInputs { startAddress: 20, quantity: 1 }
-Inputs: [ true ]
-```
-
-### 11. setHoldingRegister(address, value), getHoldingRegister(address)
-
-Sets/reads the holding register (0–65535).
-
-**Parameters:**
-
-- `address (number)`.
-- `value (number):` For set; mask & 0xFFFF.
-  **Returns:** void / number (default 0).
-
-**Example:**
-
-```js
-emulator.setHoldingRegister(100, 12345);
-console.log('Holding 100:', emulator.getHoldingRegister(100)); // 12345
-```
-
-**Output:**
-
-```bash
-[14:30:15][DEBUG][SlaveEmulator] Holding Register set { address: 100, value: 12345 }
-Holding 100: 12345
-```
-
-### 12. readHoldingRegisters(startAddress, quantity)
-
-Reads holding registers (03).
-
-**Parameters:** 1–125.
-
-**Example:**
-
-```js
-const regs = emulator.readHoldingRegisters(100, 1);
-console.log('Registers:', regs); // [12345]
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] readHoldingRegisters { startAddress: 100, quantity: 1 }
-Registers: [ 12345 ]
-```
-
-### 13. writeSingleRegister(address, value)
-
-Writes a single holding register (06).
-
-**Parameters:** Same as setHoldingRegister.
-
-**Example:**
-
-```js
-emulator.writeSingleRegister(100, 67890);
-console.log('After write:', emulator.getHoldingRegister(100)); // 67890
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] writeSingleRegister { address: 100, value: 67890 }
-After write: 67890
-```
-
-### 14. writeMultipleRegisters(startAddress, values)
-
-Writes multiple holding registers (10).
-
-**Parameters:**
-
-- `startAddress (number)`.
-- `values (number[]):` 1–123.
-
-**Example:**
-
-```js
-emulator.writeMultipleRegisters(200, [100, 200]);
-console.log('Registers 200-201:', emulator.readHoldingRegisters(200, 2)); // [100, 200]
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] writeMultipleRegisters { startAddress: 200, values: [100, 200] }
-Registers 200-201: [ 100, 200 ]
-```
-
-### 15. setInputRegister(address, value), getInputRegister(address)
-
-Sets/reads the input register (0–65535).
-
-**Parameters:** Same as holding.
-
-**Example:**
-
-```js
-emulator.setInputRegister(300, 999);
-console.log('Input 300:', emulator.getInputRegister(300)); // 999
-```
-
-**Output:**
-
-```bash
-[14:30:15][DEBUG][SlaveEmulator] Input Register set { address: 300, value: 999 }
-Input 300: 999
-```
-
-### 16. readInputRegisters(startAddress, quantity)
-
-Reads input registers (04).
-
-**Parameters:** Same as readHoldingRegisters.
-
-**Example:**
-
-```js
-const inputs = emulator.readInputRegisters(300, 1);
-console.log('Input registers:', inputs); // [999]
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] readInputRegisters { startAddress: 300, quantity: 1 }
-Input registers: [ 999 ]
-```
-
-### 17. readHolding(start, quantity), readInput(start, quantity)
-
-Direct reads (without funcCode logic).
-
-**Parameters:** Same as read\*Registers.
-
-**Example:**
-
-```js
-console.log('Direct holding:', emulator.readHolding(100, 1)); // [67890]
-```
-
-**Output:**
-
-```bash
-Direct holding: [ 67890 ]
-```
-
-### 18. getRegisterStats()
-
-Statistics: Map dimensions.
-
-**Parameters:** None.
-**Returns:** { coils, discreteInputs, holdingRegisters, inputRegisters, exceptions, infinityTasks }.
-
-**Example:**
-
-```js
-console.log(emulator.getRegisterStats()); // { coils: 2, ..., infinityTasks: 1 }
-```
-
-**Output:**
-
-```bash
-{ coils: 2, discreteInputs: 0, holdingRegisters: 3, inputRegisters: 1, exceptions: 1, infinityTasks: 1 }
-```
-
-### 19. getRegisterDump()
-
-Dump all values ​​(Object.fromEntries).
-
-**Parameters:** None.
-**Returns:** { coils, discreteInputs, holdingRegisters, inputRegisters }.
-
-**Example:**
-
-```js
-console.log(emulator.getRegisterDump()); // { holdingRegisters: { '100': 67890, ... } }
-```
-
-**Output:**
-
-```bash
-{ holdingRegisters: { '100': 67890, '200': 100, '201': 200 }, ... }
-```
-
-### 20. getInfinityTasks()
-
-List of task keys.
-
-**Parameters:** None.
-**Returns:** string[] (e.g., ['Holding:100']).
-
-**Example:**
-
-```js
-console.log(emulator.getInfinityTasks()); // ['Holding:100']
-```
-
-**Output:**
-
-```bash
-[ 'Holding:100' ]
-```
-
-### 21-23. clearAllRegisters(), clearExceptions(), clearInfinityTasks()
-
-Clear data/exceptions/tasks.
-
-**Parameters:** None.
-**Returns:** void.
-
-**Example:**
-
-```js
-emulator.clearAllRegisters();
-console.log('Stats after clear:', emulator.getRegisterStats().holdingRegisters); // 0
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] All registers cleared
-Stats after clear: 0
-```
-
-### 24. destroy()
-
-Graceful shutdown: stop tasks, disconnect, clear all.
-
-**Parameters:** None.
-**Returns:** Promise<_void_>.
-
-**Example:**
-
-```js
-await emulator.destroy();
-console.log('Destroyed:', !emulator.connected); // true
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Destroying SlaveEmulator
-[14:30:15][INFO][SlaveEmulator] All infinity tasks cleared
-[14:30:15][INFO][SlaveEmulator] Disconnecting from emulator...
-[14:30:15][INFO][SlaveEmulator] Disconnected
-[14:30:15][INFO][SlaveEmulator] All registers cleared
-[14:30:15][INFO][SlaveEmulator] All exceptions cleared
-[14:30:15][INFO][SlaveEmulator] SlaveEmulator destroyed
-Destroyed: true
-```
-
-### 25. handleRequest(buffer)
-
-Processes an RTU frame: CRC, slaveAddr, funcCode; returns the response or null.
-
-**Parameters:**
-
-- buffer (Uint8Array | Buffer): The complete frame.
-  **Returns:** Uint8Array (response) or null (ingnore/error).
-  **Errors:** ModbusExceptionError (internal).
-
-**Example:**
-
-```js
-// Simulate a read holding reg 100 frame (qty 1): complete ADU [1, 3, 0, 100, 0, 1, CRC-low, CRC-high]
-const requestBuffer = new Uint8Array([1, 3, 0, 100, 0, 1, 0xd5, 0xca]); // Example with CRC
-const response = emulator.handleRequest(requestBuffer);
-console.log(
-  'Response hex:',
-  response
-    ? Array.from(response)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join(' ')
-    : 'null (exception)'
-);
-```
-
-**Output:**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Modbus request received { slaveAddress: 1, functionCode: '0x3', data: '00640001', dataLength: 4 }
-[14:30:15][INFO][SlaveEmulator] Modbus response created { response: '0103020000d5ca', length: 8 }  // Example
-Response hex: 01 03 02 00 00 d5 ca
-```
-
-**If the slave is incorrect:**
-
-```bash
-[14:30:15][DEBUG][SlaveEmulator] Frame ignored - wrong slave address { targetSlave: 2, thisSlave: 1 }
-null
-```
-
-**If CRC mismatch:**
-
-```bash
-[14:30:15][WARN][SlaveEmulator] CRC mismatch { received: '0x1234', calculated: '0xd5ca', frame: '010300000001ff' }
-null
-```
-
-## Full usage example
-
-### Example 1: Basic usage of SlaveEmulator
-
-```js
-const SlaveEmulator = require('modbus-connect/slave-emulator');
-
-async function basicEmulator() {
-  const emulator = new SlaveEmulator(1, { loggerEnabled: true });
-  await emulator.connect();
-
-  // Add registers
-  emulator.addRegisters({
-    holding: [
-      { start: 0, value: 123 },
-      { start: 1, value: 456 },
-    ],
-    coils: [{ start: 10, value: true }],
-  });
-
-  // Reading
-  const regs = emulator.readHoldingRegisters(0, 2);
-  console.log('Holding registers 0-1:', regs); // [123, 456]
-
-  // Writing
-  emulator.writeSingleRegister(0, 789);
-  console.log('Holding 0 after write:', emulator.getHoldingRegister(0)); // 789
-
-  // Exception
-  emulator.setException(3, 1, 1); // Illegal Function on addr 1
-  try {
-    emulator.readHoldingRegisters(1, 1);
-  } catch (err) {
-    console.log('Expected exception:', err.message); // Modbus exception: function 0x3, code 0x1 (Illegal Function)
-  }
-
-  // Infinity change
-  emulator.infinityChange({
-    typeRegister: 'Holding',
-    register: 0,
-    range: [0, 100],
-    interval: 1000,
-  });
-
-  // Statistics
-  console.log('Stats:', emulator.getRegisterStats()); // { holdingRegisters: 2, ... }
-  console.log('Dump:', JSON.stringify(emulator.getRegisterDump(), null, 2));
-
-  await emulator.destroy();
-}
-
-basicEmulator();
-```
-
-**Expected output (snippet):**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Registers added successfully { coils: 1, ..., holding: 2 }
-Holding registers 0-1: [ 123, 456 ]
-[14:30:15][INFO][SlaveEmulator] writeSingleRegister { address: 0, value: 789 }
-Holding 0 after write: 789
-[14:30:15][INFO][SlaveEmulator] Exception set: functionCode=0x3, address=1, exceptionCode=0x1
-[14:30:15][INFO][SlaveEmulator] readHoldingRegisters { startAddress: 1, quantity: 1 }
-[14:30:15][WARN][SlaveEmulator] Throwing exception for function 0x3 at address 1: code 0x1
-Expected exception: Modbus exception: function 0x3, code 0x1 (Illegal Function)
-[14:30:15][INFO][SlaveEmulator] Infinity change started { typeRegister: 'Holding', register: 0, interval: 1000 }
-[14:30:16][DEBUG][SlaveEmulator] Infinity change updated { typeRegister: 'Holding', register: 0, value: 42 }
-Stats: { coils: 1, discreteInputs: 0, holdingRegisters: 2, inputRegisters: 0, exceptions: 1, infinityTasks: 1 }
-Dump: { "coils": { "10": true }, "holdingRegisters": { "0": 42, "1": 456 } }
-...
-```
-
-### Example 2: Integrating SlaveEmulator with PollingManager (without ModbusClient)
-
-PollingManager can be used to periodically poll the emulator directly (custom functions that call emulator methods).
-
-```js
-const PollingManager = require('modbus-connect/polling-manager');
-const SlaveEmulator = require('modbus-connect/slave-emulator');
-
-async function pollingWithEmulator() {
-  const poll = new PollingManager({ logLevel: 'info' });
-  poll.enableAllLoggers('debug'); // Enable logging
-
-  const emulator = new SlaveEmulator(1, { loggerEnabled: true });
-  await emulator.connect();
-
-  // Initialize the emulator
-  emulator.addRegisters({
-    holding: Array.from({ length: 10 }, (_, i) => ({ start: i, value: i * 100 })),
-  });
-
-  // Custom polling function: Reads registers from the emulator
-  const pollFn = async () => {
-    const regs = emulator.readHoldingRegisters(0, 5);
-    console.log('Polled registers:', regs); // [0, 100, 200, 300, 400]
-    return regs; // Returns for onData
+    fn: async () => {
+      return await client.readHoldingRegisters(0, 2);
+    },
+    onData: data => {
+      console.log(data);
+    },
+    onError: err => {
+      console.error(err.message);
+    },
   };
 
-  // Add task to PollingManager
-  poll.addTask({
-    id: 'emulator-poll',
-    interval: 2000,
-    fn: pollFn,
-    onData: data => console.log('Received from emulator:', data),
-    onError: err => console.error('Polling error:', err.message),
-    immediate: true,
-    maxRetries: 3,
-  });
-
-  // Launch
-  poll.startAllTasks();
-
-  // Stop after 10 seconds
-  setTimeout(async () => {
-    pm.stopAllTasks();
-    await emulator.destroy();
-    pm.clearAll();
-  }, 10000);
+  controller.addPollingTask(TRANSPORT_ID, pollingTask);
 }
-
-pollingWithEmulator();
 ```
 
-**Expected output (snippet):**
+**Expected result**:
 
 ```bash
-[14:30:15][INFO][SlaveEmulator] Registers added successfully { coils: 0, ..., holding: 10 }
-[14:30:15][INFO][PollingManager] Task added successfully { id: 'emulator-poll', resourceId: undefined, immediate: true }
-[14:30:15][INFO][TaskController] Task started
-[14:30:15][INFO][TaskController] Task execution completed { success: true, resultsCount: 1 }
-Received from emulator: [ 0, 100, 200, 300, 400 ]
-Polled registers: [ 0, 100, 200, 300, 400 ]
-[14:30:17][INFO][TaskController] Task execution completed { success: true, resultsCount: 1 }
-... (each 2 seconds)
-[14:30:25][INFO][PollingManager] Stopping all tasks
-[14:30:25][INFO][TaskController] Task stopped
-[14:30:25][INFO][SlaveEmulator] Destroying SlaveEmulator
+phk_mvn@MacBook-Air-Danila modbus-connect % node test-rtu.js
+[14:20:01] INFO: [Transport Controller] Transport "TEST_RTU" added with PollingManager
+[14:20:01] DEBUG: [Node RTU] Opening serial port /dev/tty.usbserial-01AB5F6D...
+[14:20:01] INFO: [Transport Controller] Transport "TEST_RTU" connected
+[14:20:01] INFO: [Polling Manager] Task added -> task-read-holding-registers
+[ [ 1024, 2048 ] ]
+[14:20:02] INFO: [ModbusClient][ID:92] Response received 45ms
+[ [ 1024, 2048 ] ]
+[14:20:03] INFO: [ModbusClient][ID:92] Response received 42ms
 ...
 ```
 
-### Example 3: Simulating RTU communication with an emulator (without an external client)
+## Node TCP/IP connection
 
 ```js
-const SlaveEmulator = require('modbus-connect/slave-emulator');
-
-async function rtuSimulation() {
-  const emulator = new SlaveEmulator(1, { loggerEnabled: true });
-  await emulator.connect();
-
-  // Set data
-  emulator.setHoldingRegister(40001, 1234); // Addr 1 (Modbus offset)
-
-  // Simulate a full RTU request: Read Holding Registers addr 1, qty 1
-  // Frame: [slave=1, func=3, addrHi=0, addrLo=1, qtyHi=0, qtyLo=1, CRC-low, CRC-high]
-  // CRC for [01 03 00 01 00 01] = 0xE4 0x0C (example; calculate manually or use a utility)
-  const requestFrame = new Uint8Array([1, 3, 0, 1, 0, 1, 0xe4, 0x0c]); // Insert the real CRC
-  const responseFrame = emulator.handleRequest(requestFrame);
-
-  if (responseFrame) {
-    console.log(
-      'Response frame hex:',
-      Array.from(responseFrame)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join(' ')
-    ); // 01 03 02 04 d2 e4 0c (example: byteCount=2, value=1234=0x04D2)
-  } else {
-    console.log('No response (e.g., CRC mismatch or wrong slave)');
-  }
-
-  await emulator.destroy();
-}
-
-rtuSimulation();
-```
-
-**Expected output (snippet):**
-
-```bash
-[14:30:15][INFO][SlaveEmulator] Modbus request received { slaveAddress: 1, functionCode: '0x3', data: '010001', dataLength: 4 }
-[14:30:15][INFO][SlaveEmulator] Modbus response created { response: '01030204d2e40c', length: 8 }
-Response frame hex: 01 03 02 04 d2 e4 0c
-```
-
-<br>
-
-# <span id="logger">Logger</span>
-
-The Logger class is an advanced logger for Node.js, designed for logging messages with various levels of detail, context support (e.g., for Modbus devices with slaveId, funcCode, etc.), formatting, filtering, highlighting, buffering, and statistics. It uses ANSI colors for console output (if enabled) and supports asynchronous output.
-
-**Logging levels (in order of increasing criticality):**
-
-- `trace` — Detailed debugging
-- `debug` — debugging
-- `info` — information messages
-- `warn` — warning messages
-- `error` — error messages
-
-> By default, the level is `info`, colors are on, buffering is disabled.
-
-## Initialization
-
-Connect the module to your project:
-
-```js
-const Logger = require('modbus-connect/logger');
-const logger = new Logger();
-```
-
-> The logger is ready to use. All methods are asynchronous (except for configuration ones), so use **await** or **.then()** as needed.
-
-## Basic logging methods
-
-The logger provides methods for each level: `trace()`, `debug()`, `info()`, `warn()`, `error()`. Each method takes a variable number of arguments (...args), where
-
-- The last argument (if it is an object) is interpreted as **context** (e.g. **{ slaveId: 1, funcCode: 3, exceptionCode: 1 }**).
-- The remaining arguments are messages (strings, objects, errors, etc.).
-
-**Example of basic logging:**
-
-```js
-await logger.info('Connecting to a device');
-await logger.error('Error reading', new Error('Timeout'));
-```
-
-**Example with context:**
-
-```js
-const context = { slaveId: 1, funcCode: 3, address: 100, quantity: 10, responseTime: 50 };
-await logger.debug('Reading registers', context);
-```
-
-Output (with colors if enabled):
-
-```bash
-[14:30:15][INFO][S:1][F:03/ReadHoldingRegisters][A:100][Q:10][RT:50ms] Reading registers {"slaveId":1,"funcCode":3,"address":100,"quantity":10,"responseTime":50}
-```
-
-- `slaveId` — ID device (Modbus Slave ID).
-- `funcCode` — Function code (displayed as hex, named from FUNCTION_CODES).
-- `exceptionCode` — Exception code (named from EXCEPTION_CODES).
-- Other fields: **address**, **quantity**, **responseTime**.
-
-> For errors (Error), a stack trace is automatically added.
-
-## Formatting logs
-
-The log format is configured using the array of fields in `setLogFormat()`. Available fields:
-
-- `timestamp` — time (HH:MM:SS)
-- `level` — level [LEVEL]
-- `logger` — name logger (if specified)
-- `slaveId` — [S:ID]
-- `funcCode` — [F:0xXX/Name]
-- `exceptionCode` — [E:XX/Name] (only if present)
-- `address` — [A:XXX]
-- `quantity` — [Q:XX]
-- `responseTime` — [RT:XXms]
-
-**Format setting example:**
-
-```js
-logger.setLogFormat(['timestamp', 'level', 'slaveId', 'funcCode', 'message']);
-```
-
-**Custom Formatters:** Specify a function to format the field.
-
-```js
-logger.setCustomFormatter('slaveId', id => `[Device-${id}]`);
-logger.setCustomFormatter('responseTime', time => `[Latency: ${time}ms]`);
-
-// Now slaveId will be displayed as [Device-1]
-```
-
-## Managing logging levels
-
-- `setLevel(level) `— Set the global level (e.g. 'debug' to show trace/debug/info).
-- `getLevel()` — Get current level.
-- `setLevelFor(category, level)` — Set the level for the category (logger).
-- `pauseCategory(category)` / `resumeCategory(category) `— Temporarily disable/enable a category.
-
-**Example:**
-
-```js
-logger.setLevel('debug'); // Show debug and above
-logger.setLevelFor('modbus-reader', 'warn'); // For the 'modbus-reader' category - only warn/error
-
-const modbusLogger = logger.createLogger('modbus-reader');
-await modbusLogger.info('This won't work'); // Level info < warn
-await modbusLogger.warn('Warning!'); // Will be displayed
-```
-
-## Log grouping
-
-- `group()` / `groupCollapsed()` — Start group (collapsed).
-- `groupEnd()` — Finish group.
-
-> Adds indentation for nesting.
-
-**Example:**
-
-```js
-logger.group();
-await logger.info('Step 1');
-logger.group();
-await logger.debug('Substep 1.1');
-logger.groupEnd();
-await logger.info('Step 2');
-logger.groupEnd();
-```
-
-Output with indents:
-
-```bash
-[INFO] Step 1
-  [DEBUG] Substep 1.1
-[INFO] Step 2
-```
-
-## Filters and Muting
-
-- `mute({ slaveId, funcCode, exceptionCode })` — Exclude logs with the specified values.
-- `unmute({ slaveId, funcCode, exceptionCode })` — Unmute.
-- `highlight({ slaveId, funcCode, exceptionCode })` — Highlight (red background for exceptionCode).
-- `clearHighlights()` — Clear the backlight.
-
-**Example:**
-
-```js
-logger.mute({ slaveId: 2 }); // Do not log slaveId=2
-logger.highlight({ exceptionCode: 1 }); // Highlight IllegalFunction exceptions
-
-await logger.error('Error', { slaveId: 1, exceptionCode: 1 }); // It will be displayed with backlighting.
-await logger.info('OK', { slaveId: 2 }); // Will not be displayed
-logger.unmute({ slaveId: 2 });
-```
-
-## Global context and transport
-
-- `setGlobalContext(ctx)` — Set the global object (added to all logs).
-- `addGlobalContext(ctx)` — Add to the global.
-- `setTransportType(type)` — Set the transport type (added to the global transport).
-
-**Example:**
-
-```js
-logger.setGlobalContext({ env: 'production' });
-logger.setTransportType('tcp');
-await logger.info('Messages'); // You are logging {"env":"production","transport":"tcp"}
-```
-
-## Buffering and Limits
-
-- `setBuffering(true)` — Enable buffering (at least in the code, the output is asynchronous, a buffer for checking).
-- `setFlushInterval(ms)` — Flush interval (default 300ms).
-- `setRateLimit(ms)` — Rate limit (default 100 ms, to avoid errors/warnings).
-- `flush()` — Flush the buffer (empty, since output is immediate).
-- `InspectBuffer()` — Display the buffer's buffer.
-
-**Example:**
-
-```js
-logger.setBuffering(true);
-await logger.info('Buffer');
-logger.inspectBuffer(); // Displays the buffer
-```
-
-## Watching and statistics
-
-- `watch(callback)` — Set a callback for each log: callback({ level, args, context }).
-- `clearWatch()` — Clear.
-- `summary()` — Display statistics (counters, by subordinate Id/funcCode/ExceptionCode).
-
-**Example:**
-
-```js
-let count = 0;
-logger.watch(({ level }) => {
-  if (level === 'error') count++;
-});
-await logger.error('Test');
-console.log(count); // 1
-
-logger.summary(); // Print full statistics
-```
-
-## Creating child loggers
-
-`createLogger(name)` — Create a logger with the category name (watches all settings).
-
-**Example:**
-
-```js
-const appLogger = logger.createLogger('app');
-const dbLogger = logger.createLogger('database');
-
-await appLogger.info('Application startup');
-await dbLogger.error('DB error', { slaveId: 5 });
-logger.setLevelFor('database', 'error'); // Only DB errors
-```
-
-> The child logger has the same methods: tracing, debugging, etc., plus setLevel, pause, and resume.
-
-## Enabling/Disabling
-
-- `enable()`/`disable()` — Global.
-- `isEnabled()` — View status.
-- `disableColors()` — Disable color.
-
-**Example:**
-
-```js
-logger.disable(); // Disable all
-await logger.info('Will not be output');
-logger.enable();
-```
-
-## Full usage example
-
-```js
-const ModbusClient = require('modbus-connect/client');
-const TransportController = require('modbus-connect/transport');
-const Logger = require('modbus-connect/logger');
-const PollingManager = require('modbus-connect/polling-manager');
-
-const logger = new Logger();
-
-// Setting global logger settings
-logger.setLevel('info');
-logger.setLogFormat(['timestamp', 'level', 'logger']);
-logger.setCustomFormatter('logger', value => {
-  return value ? `[${value}]` : '';
-});
-
-const testLogger = logger.createLogger('test-node.js');
-const poll = new PollingManager({ logLevel: 'info' });
+import TransportController from 'modbus-connect/transport';
+import ModbusClient from 'modbus-connect/client';
+
+const SLAVE_ID = 92;
+const TRANSPORT_ID = 'TEST_TCP';
 
 async function main() {
   const controller = new TransportController();
-  await controller.addTransport('com3', 'node', {
-    port: 'COM3',
-    baudRate: 9600,
-    parity: 'none',
-    dataBits: 8,
-    stopBits: 1,
+
+  await controller.addTransport(TRANSPORT_ID, 'node-tcp', {
+    host: '10.59.43.96',
+    port: 502,
+    readTimeout: 2000,
+    writeTimeout: 1000,
+    maxBufferSize: 4096,
+    reconnectInterval: 5000,
+    maxReconnectAttempts: Infinity,
+    slaveIds: [SLAVE_ID],
   });
 
-  const client = new ModbusClient(controller, 13, {
-    timeout: 1000,
-    crcAlgorithm: 'crc16Modbus',
-    retryCount: 3,
-    retryDelay: 300,
+  await controller.connectTransport(TRANSPORT_ID);
+
+  const client = new ModbusClient(controller, SLAVE_ID, {
+    framing: 'tcp',
+    timeout: 3000,
   });
 
-  await client.connect();
+  await new Promise(r => setTimeout(r, 250));
 
-  poll.addTask({
-    id: 'modbus-loop',
-    resourceId: 'asd',
+  const pollingTask = {
+    id: 'task-read-holding-registers',
     interval: 1000,
-    immediate: true,
-    fn: [
-      () => client.readHoldingRegisters(0, 2, { type: 'uint16' }),
-      () => client.readInputRegisters(0, 4, { type: 'uint16' }),
-    ],
-    onData: results => {
-      testLogger.info('Data received:', results);
+    fn: async () => {
+      return await client.readHoldingRegisters(0, 4);
     },
-    onError: (error, index, attempt) => {
-      testLogger.error(`Error in fn[${index}], attempt ${attempt}`, { error: error.message });
+    onData: data => {
+      console.log(data);
     },
-    onStart: () => testLogger.info('Polling started'),
-    onStop: () => testLogger.info('Polling stopped'),
-    maxRetries: 3,
-    backoffDelay: 300,
-    taskTimeout: 2000,
-  });
+    onError: err => {
+      console.error(err.message);
+    },
+  };
 
-  poll.startTask('modbus-loop');
+  controller.addPollingTask(TRANSPORT_ID, pollingTask);
 }
-
-main().catch(err => {
-  testLogger.error('Fatal error in main', { error: err.message });
-});
 ```
 
-**Output (logs):**
+**Expected result**:
 
 ```bash
-[10:18:37][INFO][NodeSerialTransport] Serial port COM3 opened
-[10:18:37][INFO][test-node.js] Polling started
-[10:18:38][INFO][test-node.js] Data received: {"0":[4866,25629],"1":[4866,25629,1986,0]}
-[10:18:39][INFO][test-node.js] Data received: {"0":[4866,25629],"1":[4866,25629,1986,0]}
-... etc.
+phk_mvn@MacBook-Air-Danila modbus-connect % node test.js
+[04:04:57] INFO: [Transport Controller] Transport "TEST_TCP" added with PollingManager
+[04:04:57] INFO: [Node TCP] Connecting to 10.59.43.96:502...
+[04:04:57] INFO: [Transport Controller] Transport "TEST_TCP" connected
+[04:04:57] INFO: [Node TCP] SUCCESS: Connected to 10.59.43.96:502
+[04:04:57] INFO: [Polling Manager] Task added -> task-read-holding-registers
+[ [ 4114, 35714, 1986, 0 ] ]
+[04:04:57] INFO: [ModbusClient][ID:92] Response received 13ms
+[ [ 4114, 35714, 1986, 0 ] ]
+[04:04:58] INFO: [ModbusClient][ID:92] Response received 11ms
+[ [ 4114, 35714, 1986, 0 ] ]
+[04:04:59] INFO: [ModbusClient][ID:92] Response received 12ms
+...
 ```
 
-<br>
+## Web RTU connection (Browser)
 
-# <span id="utils">Utuls</span>
-
-The `utils/utils.js` module provides a set of helper utilities for working with Uint8Array and number/byte conversions in the context of Modbus (or other protocols). Functions include array concatenation, Uint16 conversion (Big/Little Endian), slicing, type checking, allocation, hex representation, and simple byte conversions. The utilities are optimized for low-level buffer management (e.g., in **_packet-builder.js_** or **_ModbusClient_**).
-
-**Key Features:**
-
-- **Uint8Array Focus:** All functions work with Uint8Array for efficiency (Typed Arrays).
-- **Endianness:** Supports Big Endian (BE, the Modbus standard) and Little Endian (LE).
-- **Validation:** Simple checks (isUint8Array) with errors.
-- **Performance:** Uses native methods (subarray, set, fill) without copies where possible.
-- **Errors:** Error for invalid arguments (e.g., in toHex).
-
-The module exports functions. No initialization required—just import.
-
-<br>
-
-# <span id="utils-crc">Utils CRC</span>
-
-**All types of CRC calculations**
-
-| Name              | Polynomial                | Initial Value (init)       | Reflection (RefIn/RefOut)  | Final XOR          | CRC Size    | Result Byte Order       | Notes                              |
-| ----------------- | ------------------------- | -------------------------- | -------------------------- | ------------------ | ----------- | ----------------------- | ---------------------------------- |
-| `crc16Modbus`     | 0x8005 (reflected 0xA001) | 0xFFFF                     | Yes (reflected)            | None               | 16 bits     | Little-endian           | Standard Modbus RTU CRC16          |
-| `crc16CcittFalse` | 0x1021                    | 0xFFFF                     | No                         | None               | 16 bits     | Big-endian              | CRC-16-CCITT-FALSE                 |
-|                   |                           |                            |                            |                    |             |                         |                                    |
-| crc32             | 0x04C11DB7                | 0xFFFFFFFF                 | Yes (reflected)            | XOR 0xFFFFFFFF     | 32 bits     | Little-endian           | Standard CRC32                     |
-| crc8              | 0x07                      | 0x00                       | No                         | None               | 8 bits      | 1 byte                  | CRC-8 without reflection           |
-| crc1              | 0x01                      | 0x00                       | No                         | None               | 1 bit       | 1 bit                   | Simple CRC-1                       |
-| crc8_1wire        | 0x31 (reflected 0x8C)     | 0x00                       | Yes (reflected)            | None               | 8 bits      | 1 byte                  | CRC-8 for 1-Wire protocol          |
-| crc8_dvbs2        | 0xD5                      | 0x00                       | No                         | None               | 8 bits      | 1 byte                  | CRC-8 DVB-S2                       |
-| crc16_kermit      | 0x1021 (reflected 0x8408) | 0x0000                     | Yes (reflected)            | None               | 16 bits     | Little-endian           | CRC-16 Kermit                      |
-| crc16_xmodem      | 0x1021                    | 0x0000                     | No                         | None               | 16 bits     | Big-endian              | CRC-16 XModem                      |
-| crc24             | 0x864CFB                  | 0xB704CE                   | No                         | None               | 24 bits     | Big-endian (3 bytes)    | CRC-24 (Bluetooth, OpenPGP)        |
-| crc32mpeg         | 0x04C11DB7                | 0xFFFFFFFF                 | No                         | None               | 32 bits     | Big-endian              | CRC-32 MPEG-2                      |
-| crcjam            | 0x04C11DB7                | 0xFFFFFFFF                 | Yes (reflected)            | None               | 32 bits     | Little-endian           | CRC-32 JAM (no final XOR)          |
-
-The `utils/crc.js` module provides a set of functions for calculating various Cyclic Redundancy Check (CRC) algorithms—checksums for detecting data errors. These functions work with Uint8Arrays (byte arrays) and return a Uint8Array with CRC bytes (big-endian or little-endian, depending on the algorithm). Popular options are supported: **_CRC-16 (Modbus, CCITT)_**, **_CRC-32_**, **_CRC-8_**, **_CRC-1_**, **_CRC-24_**, and specialized ones (**_1-Wire_**, **_DVB-S2_**, **_Kermit_**, **_XModem_**, **_MPEG-2_**, **_JAM_**).
-
-**Key Features:**
-
-- **Precomputed Table:** For Modbus CRC-16, a table (CRC16_TABLE) is used for speed.
-- **Endianness:** Most are big-endian (most significant byte first), CRC-32 are little-endian.
-- **Parameters:** All functions accept a Uint8Array; init, polynomial, reflection/XOR are built-in (see JSDoc).
-- **Performance:** Loops on bits (8 iterations per byte); the Modbus table speeds things up.
-- **Usage:** In packet-builder.js for Modbus RTU; extensible for other protocols.
-
-The module exports functions. No initialization required—just import. No dependencies (self-contained).
-
-<br>
-
-# <span id="plugin-system">Plugin System</span>
-
-The plugin system allows you to extend the functionality of `ModbusClient` without altering the library's core code. You can add support for proprietary commands, specific data types, and custom CRC algorithms by creating plugins directly in your project.
-
-### How It Works
-
-You create a class that implements the `IModbusPlugin` interface and pass its constructor to the `ModbusClient` options. The client will automatically instantiate and register it.
-
-### Step 1: Creating a Plugin
-
-First, create a plugin file in your project (e.g., `plugins/my-plugin.js`). Your plugin class must implement the `IModbusPlugin` interface.
+To use Modbus in the browser, you must first obtain a port using the `Web Serial API`. Note that this code must be triggered by a user gesture (e.g., a button click).
 
 ```js
-// my-project/plugins/my-plugin.js
+import TransportController from 'modbus-connect/transport';
+import ModbusClient from 'modbus-connect/client';
 
-/**
- * A plugin to handle proprietary functions for Energia-9 devices.
- * @implements {import('modbus-connect').IModbusPlugin}
- */
-class MyPlugin {
-  // 1. A unique name for your plugin
-  name = 'my-archive-plugin';
+const SLAVE_ID = 1;
+const TRANSPORT_ID = 'WEB_SERIAL_RTU';
 
-  // 2. Define custom functions
-  customFunctionCodes = {
+async function startModbus() {
+  // 1. Request port from user
+  const port = await navigator.serial.requestPort();
+
+  const controller = new TransportController();
+
+  // 2. Add transport with 'web-rtu' type
+  await controller.addTransport(TRANSPORT_ID, 'web-rtu', {
+    port, // Pass the native WebSerial port object
+    baudRate: 9600,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'none',
+    slaveIds: [SLAVE_ID],
+  });
+
+  await controller.connectTransport(TRANSPORT_ID);
+
+  const client = new ModbusClient(controller, SLAVE_ID, {
+    framing: 'rtu',
+    timeout: 2000,
+  });
+
+  // 3. Setup Polling
+  controller.addPollingTask(TRANSPORT_ID, {
+    id: 'web-task-coils',
+    interval: 2000,
+    fn: async () => {
+      return await client.readCoils(0, 8);
+    },
+    onData: data => {
+      console.log('Coils status:', data[0]);
+    },
+    onError: err => {
+      console.error('Web Serial Error:', err.message);
+    },
+  });
+}
+```
+
+**Expected result**:
+
+```bash
+[14:25:10] INFO: [Transport Controller] Transport "WEB_SERIAL_RTU" added with PollingManager
+[14:25:10] INFO: [Web RTU] Port opened successfully
+[14:25:10] INFO: [Transport Controller] Transport "WEB_SERIAL_RTU" connected
+[14:25:10] INFO: [Polling Manager] Task added -> web-task-coils
+Coils status: [true, false, true, true, false, false, false, true]
+[14:25:11] INFO: [ModbusClient][ID:1] Response received 85ms
+```
+
+## Emulator Node RTU / TCP connection
+
+```js
+import TransportController from 'modbus-connect/transport';
+import ModbusClient from 'modbus-connect/client';
+
+const SLAVE_ID = 92;
+const TRANSPORT_ID = 'TEST_TCP';
+
+async function main() {
+  const controller = new TransportController();
+  await controller.addTransport('emulator-1', 'rtu-emulator', {
+    slaveId: 1,
+    responseLatencyMs: 30,
+    initialRegisters: {
+      holding: [
+        { start: 100, value: 1234 },
+        { start: 101, value: 5678 },
+      ],
+      coils: [{ start: 0, value: true }],
+    },
+  });
+
+  await controller.connectTransport('emulator-1');
+
+  // Client configuration depending on the type of emulator
+  const client = new ModbusClient(controller, 1, {
+    framing: 'rtu', // or 'tcp'
+    timeout: 3000,
+    retryCount: 1,
+  });
+
+  // Polling task (will work with any emulator)
+  controller.addPollingTask('emulator-1', {
+    id: 'task1',
+    interval: 1000,
+    fn: async () => {
+      return await client.readHoldingRegisters(100, 2);
+    },
+    onData: data => {
+      console.log(data);
+    },
+    onError: err => {
+      console.error('Polling error:', err.message);
+    },
+  });
+}
+```
+
+**Expected result**:
+
+```bash
+phk_mvn@MacBook-Air-Danila modbus-connect % node test.js
+[04:04:52] INFO: [Polling Manager] Task added -> task1
+[04:04:52] INFO: [Transport Controller] Transport "emulator-1" added with PollingManager
+[04:04:52] INFO: [ModbusSlaveCore] ModbusSlaveCore initialized successfully (Slave ID: 1)
+[04:04:52] INFO: [RTU Emulator] RTU Emulator connected
+[04:04:52] INFO: [ModbusSlaveCore] Registers added successfully: {"coils":1,"discrete":0,"holding":2,"input":0}
+[04:04:52] INFO: [Transport Controller] Transport "emulator-1" connected
+[ [ 1234, 5678 ] ]
+[04:04:52] INFO: [ModbusClient][ID:1] Response received 32ms
+[ [ 1234, 5678 ] ]
+[04:04:53] INFO: [ModbusClient][ID:1] Response received 32ms
+[ [ 1234, 5678 ] ]
+[04:04:54] INFO: [ModbusClient][ID:1] Response received 32ms
+```
+
+---
+
+# Transport Controller method's
+
+The `TransportController` coordinates the operation of transports, distributes the load between them, and provides an interface for managing the tasks of cyclic device polling.
+
+### 1. Lifecycle & Configuration Management
+
+#### `addTransport(id, type, options, reconnectOptions?, pollingConfig?)`
+
+Initializes and registers a new communication transport.
+
+- **id**: string — Unique identifier for the transport.
+- **type**: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator' — The underlying transport technology.
+- **options**: INodeSerialTransportOptions | (IWebSerialTransportOptions & { port: IWebSerialPort }) — Configuration object (baudRate, parity, slaveIds, RSMode, host, IP port, etc.).
+- **reconnectOptions** (optional): { maxReconnectAttempts?: number; reconnectInterval?: number; } — Auto-reconnection settings.
+- **pollingConfig** (optional): IPollingManagerConfig — Configuration for the internal Polling Manager.
+
+#### `removeTransport(id)`
+
+Stops all tasks, closes the connection, and removes the transport from the registry.
+
+- **id**: string — The ID of the transport to remove.
+
+#### `reloadTransport(id, options)`
+
+Re-creates a transport instance with new settings without changing its ID or removing it from the registry.
+
+- **id**: string — The ID of the transport to reload.
+- **options**: INodeSerialTransportOptions | (IWebSerialTransportOptions & { port: IWebSerialPort }) — The new configuration options.
+
+### 2. Connection Control
+
+#### `connectTransport(id)`
+
+Manually initiates a connection for a specific transport.
+
+- **id**: string — The transport ID.
+
+#### `disconnectTransport(id)`
+
+Manually closes the connection for a specific transport.
+
+- **id**: string — The transport ID.
+
+#### `connectAll()`
+
+Attempts to connect all registered transports simultaneously. (No parameters).
+
+#### `disconnectAll()`
+
+Disconnects all registered transports. (No parameters).
+
+### 3. Polling Management (Proxy Methods)
+
+#### `addPollingTask(transportId, options)`
+
+Registers a new recurring polling task to the transport's queue.
+
+- **transportId**: string — The target transport ID.
+- **options**: IPollingTaskOptions — Task parameters (interval, functionCode, address, quantity, slaveId, callback, etc.).
+
+#### `removePollingTask(transportId, taskId)`
+
+Removes a specific polling task.
+
+- **transportId**: string — The transport ID.
+- **taskId**: string — The unique ID of the task to remove.
+
+#### `updatePollingTask(transportId, taskId, newOptions)`
+
+Updates the configuration of an existing task.
+
+- **transportId**: string — The transport ID.
+- **taskId**: string — The ID of the task to update.
+- **newOptions**: IPollingTaskOptions — The new task configuration object.
+
+#### `controlTask(transportId, taskId, action)`
+
+Changes the state of a specific task.
+
+- **transportId**: string — The transport ID.
+- **taskId**: string — The task ID.
+- **action**: 'start' | 'stop' | 'pause' | 'resume' — The action to perform.
+
+#### `controlPolling(transportId, action)`
+
+Performs bulk actions on all tasks assigned to a transport.
+
+- **transportId**: string — The transport ID.
+- **action**: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll' — The bulk action to perform.
+
+### 4. Direct Execution & I/O
+
+#### `executeImmediate(transportId, fn)`
+
+Executes an asynchronous function with exclusive access to the transport, ensuring no collision with background polling.
+
+- **transportId**: string — The transport ID.
+- **fn**: () => Promise<_T_> — The async function to execute (e.g., a Modbus Write command).
+
+#### `writeToPort(transportId, data, readLength?, timeout?)`
+
+Writes raw bytes directly to the port and optionally waits for a response.
+
+- **transportId**: string — The transport ID.
+- **data**: Uint8Array — The raw data buffer to send.
+- **readLength**: number (default: 0) — Number of bytes to read immediately after writing.
+- **timeout**: number (default: 3000) — Response timeout in milliseconds.
+
+### 5. Routing & Slave Management
+
+#### `assignSlaveIdToTransport(transportId, slaveId)`
+
+Maps a new Slave ID (Device ID) to an existing transport.
+
+- **transportId**: string — The target transport.
+- **slaveId**: number — The Modbus unit identifier (1-247).
+
+#### `removeSlaveIdFromTransport(transportId, slaveId)`
+
+Unbinds a Slave ID from a transport and cleans up its tracking state.
+
+- **transportId**: string — The transport ID.
+- **slaveId**: number — The Modbus unit identifier.
+
+#### `getTransportForSlave(slaveId, requiredRSMode)`
+
+Finds the most suitable transport for a specific device based on the load balancing strategy.
+
+- **slaveId**: number — The device address.
+- **requiredRSMode**: TRSMode ('RS485' | 'RS232' | 'TCP/IP') — The required protocol mode.
+
+#### `setLoadBalancer(strategy)`
+
+Updates the global logic used to select a transport when multiple are available.
+
+- **strategy**: TLoadBalancerStrategy ('first-available' | 'round-robin' | 'sticky').
+
+### 6. Event Handlers
+
+#### `setDeviceStateHandler(handler)`
+
+Sets a global callback for device connection/disconnection events across all transports.
+
+- **handler**: TDeviceStateHandler — Function: (slaveId: number, connected: boolean, error?: any) => void.
+
+#### `setPortStateHandler(handler)`
+
+Sets a global callback for physical port/socket state changes.
+
+- **handler**: TPortStateHandler — Function: (connected: boolean, slaveIds?: number[], error?: any) => void.
+
+#### `setDeviceStateHandlerForTransport(transportId, handler)`
+
+Attaches a device state handler specifically to one transport.
+
+- **transportId**: string — The transport ID.
+- **handler**: TDeviceStateHandler — The callback function.
+
+#### `setPortStateHandlerForTransport(transportId, handler)`
+
+Attaches a port state handler specifically to one transport.
+
+- **transportId**: string — The transport ID.
+- **handler**: TPortStateHandler — The callback function.
+
+### 7. Diagnostics & Info
+
+#### `getTransport(id)`
+
+Returns the raw transport instance.
+
+- **id**: string — The transport ID.
+
+#### `listTransports()`
+
+Returns an array of ITransportInfo objects containing metadata for all registered transports. (No parameters).
+
+#### `getStatus(id?)`
+
+Retrieves the health status of transports.
+
+- **id** (optional): string — If provided, returns ITransportStatus for that ID. If omitted, returns a Record<string, ITransportStatus> for all transports.
+
+#### `getPollingQueueInfo(transportId)`
+
+Returns statistics for the polling queue (tasks count, execution state).
+
+- **transportId**: string — The transport ID.
+
+#### `getActiveTransportCount()`
+
+Returns the number of currently connected transports. (No parameters).
+
+---
+
+# Modbus client method's
+
+The `ModbusClient` class is the primary high-level interface for interacting with Modbus devices. It handles protocol framing, retry logic, timeouts, and error management.
+
+## 1. Constructor & Core Lifecycle
+
+#### `constructor(transportController, slaveId?, options?)`
+
+Initializes a new instance of the Modbus Client.
+
+- **transportController**: ITransportController — The controller managing physical connections.
+- **slaveId**: number (default: 1) — The Modbus unit address (0-255).
+- **options**: IModbusClientOptions (optional) — Configuration object:
+  - timeout: number (default: 1000) — Response timeout in ms.
+  - retryCount: number (default: 0) — Number of retry attempts on failure.
+  - retryDelay: number (default: 100) — Delay between retries in ms.
+  - framing: 'rtu' | 'tcp' — Framing protocol to use.
+  - RSMode: TRSMode — Physical mode (RS485, RS232, TCP/IP).
+  - plugins: Constructor[] — List of plugin classes to initialize.
+
+#### `connect()`
+
+Performs a logical connection check. It verifies that a valid transport exists for the current Slave ID and that the port is open. (No parameters).
+
+#### `disconnect()`
+
+Performs a logical disconnection. This stops client operations but does **not** close the physical transport (which is managed by the TransportController). (No parameters).
+
+#### `use(plugin)`
+
+Registers a plugin to extend client functionality (e.g., adding custom function codes).
+
+- **plugin**: IModbusPlugin — An instance of the plugin to register.
+
+## 2. Slave ID Management
+
+#### `currentSlaveId (Getter)`
+
+Returns the current Modbus address (Slave ID) assigned to this client.
+
+- **Returns**: number (1-255).
+
+#### `setSlaveId(newSlaveId)`
+
+Dynamically changes the Slave ID for all subsequent requests made by this client instance.
+
+- **newSlaveId**: number — The new address (integer between 1 and 255).
+
+## 3. Standard Read Operations
+
+#### `readCoils(startAddress, quantity, timeout?)`
+
+Reads the ON/OFF status of discrete coils (Function Code 0x01).
+
+- **startAddress**: number — Starting address (0-65535).
+- **quantity**: number — Number of coils to read (1-2000).
+- **timeout**: number (optional) — Custom timeout for this specific request.
+- **Returns**: Promise<boolean[]> — Array of boolean values.
+
+#### `readDiscreteInputs(startAddress, quantity, timeout?)`
+
+Reads the ON/OFF status of discrete inputs (Function Code 0x02).
+
+- **startAddress**: number — Starting address (0-65535).
+- **quantity**: number — Number of inputs to read (1-2000).
+- **timeout**: number (optional) — Custom timeout for this specific request.
+- **Returns**: Promise<boolean[]> — Array of boolean values.
+
+#### `readHoldingRegisters(startAddress, quantity)`
+
+Reads the binary contents of holding registers (Function Code 0x03).
+
+- **startAddress**: number — Starting address (0-65535).
+- **quantity**: number — Number of registers to read (1-125).
+- **Returns**: Promise<number[]> — Array of 16-bit register values.
+
+#### `readInputRegisters(startAddress, quantity)`
+
+Reads the binary contents of input registers (Function Code 0x04).
+
+- **startAddress**: number — Starting address (0-65535).
+- **quantity**: number — Number of registers to read (1-125).
+- **Returns**: Promise<number[]> — Array of 16-bit register values.
+
+## 4. Standard Write Operations
+
+#### `writeSingleCoil(address, value, timeout?)`
+
+Writes a single ON/OFF status to a coil (Function Code 0x05).
+
+- **address**: number — Coil address (0-65535).
+- **value**: boolean — Value to write (true = ON, false = OFF).
+- **timeout**: number (optional) — Custom timeout for this specific request.
+- **Returns**: Promise<{ startAddress: number; value: boolean }> — Confirmation of the write operation.
+
+#### `writeSingleRegister(address, value, timeout?)`
+
+Writes a single holding register (Function Code 0x06).
+
+- **address**: number — Register address (0-65535).
+- **value**: number — 16-bit value to write (0-65535).
+- **timeout**: number (optional) — Custom timeout for this specific request.
+- **Returns**: Promise<{ startAddress: number; value: number }> — Confirmation of the write operation.
+
+#### `writeMultipleCoils(address, values, timeout?)`
+
+Writes multiple ON/OFF statuses to a sequence of coils (Function Code 0x0F).
+
+- **address**: number — Starting address (0-65535).
+- **values**: boolean[] — Array of boolean values to write (1-1968 items).
+- **timeout**: number (optional) — Custom timeout for this specific request.
+- **Returns**: Promise<{ startAddress: number; quantity: number }> — Confirmation of address and count written.
+
+#### `writeMultipleRegisters(address, values, timeout?)`
+
+Writes a block of holding registers (Function Code 0x10).
+
+- **address**: number — Starting address (0-65535).
+- **values**: number[] — Array of 16-bit values (0-65535) to write (1-123 items).
+- **timeout**: number (optional) — Custom timeout for this specific request.
+- **Returns**: Promise<{ startAddress: number; quantity: number }> — Confirmation of address and count written.
+
+## 5. Advanced & Diagnostic Operations
+
+#### `executeCustomFunction(functionName, ...args)`
+
+Executes a custom Modbus function registered via a plugin.
+
+- **functionName**: string — The name defined in the plugin's customFunctionCodes.
+- **...args**: any[] — Arguments required by the plugin's request builder.
+- **Returns**: Promise<_any_> — Parsed response from the plugin's response parser.
+
+#### `reportSlaveId(timeout?)`
+
+Reads the description of the controller, the current status of the device, and other information (Function Code 0x11).
+
+- **timeout**: number (optional) — Custom timeout for this request.
+- **Returns**: Promise<{ slaveId: number; isRunning: boolean; data: Uint8Array }> — Detailed device report.
+
+#### `readDeviceIdentification(timeout?)`
+
+Reads identification and additional information relevant to the physical and functional description of the device (Function Code 0x2B / 0x0E).
+
+- **timeout**: number (optional) — Custom timeout for this request.
+- **Returns**: Promise<_Object_> — An object containing device properties (e.g., VendorName, ProductCode, Revision) decoded as strings.
+
+---
+
+# Error type's
+
+## 1. Core & Protocol Errors
+
+| Error class                      | Description                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Modbus Error**                 | The base class for all errors in the library                                                                              |
+| **ModbusTimeoutError**           | Thrown when a request exceeds the allocated timeout period                                                                |
+| **ModbusCRCError**               | Thrown when the CRC check fails (usually due to noise in RTU mode)                                                        |
+| **ModbusResponseError**          | Base class for errors related to invalid or unexpected responses                                                          |
+| **ModbusExceptionError**         | Thrown when the slave returns a standart Modbus exception (e.g., 0x01, 0x02). Includes `functionCode` and `exceptionCode` |
+| **ModbusFlushError**             | Occurs when an operation is interrupted by a transport buffer flush                                                       |
+| **ModbusTooManyEmptyReadsError** | Thrown after multiple consecutive reads return no data                                                                    |
+
+## 2. Standart Modbus Exception Mappings
+
+| Error Class                             | Description                                                                 |
+| :-------------------------------------- | :-------------------------------------------------------------------------- |
+|  **ModbusIllegalDataAddressError**      | Exception Code 0x02: The data address is not allowed by the slave.          |
+|  **ModbusIllegalDataValueError**        | Exception Code 0x03: The value being written is outside the allowed range.  |
+| **ModbusSlaveDeviceFailureError**       | Exception Code 0x04: An unrecoverable error occurred in the slave.          |
+| **ModbusAcknowledgeError**              | Exception Code 0x05: Slave accepted the request but needs time to process.  |
+|  **ModbusSlaveBusyError**               | Exception Code 0x06: Slave is currently processing a long-duration command. |
+|  **ModbusMemoryParityError**            | Exception Code 0x08: Memory parity error detected in the slave.             |
+|  **ModbusGatewayPathUnavailableError**  | Exception Code 0x0A: Gateway is misconfigured or overloaded.                |
+| **ModbusGatewayTargetDeviceError**      | Exception Code 0x0B: Gateway target device failed to respond.               |
+
+## 3. Data Validation & Parsing
+
+| Error Class                           | Description                                                                      |
+| ------------------------------------- | -------------------------------------------------------------------------------- |
+| **ModbusInvalidAddressError**         | Thrown when a Slave ID or Register address is outside the range 1-255 / 0-65535. |
+| **ModbusInvalidFunctionCodeError**    | Thrown when an unsupported Modbus function code is requested.                    |
+| **ModbusInvalidQuantityError**        | Thrown when the number of registers/coils requested exceeds protocol limits.     |
+| **ModbusMalformedFrameError**         | Received data does not follow the Modbus frame structure.                        |
+| **ModbusInvalidFrameLengthError**     | The length of the received frame does not match the expected length.             |
+| **ModbusInvalidTransactionIdError**   | (TCP only) The received Transaction ID does not match the sent ID.               |
+| **ModbusUnexpectedFunctionCodeError** | The response function code does not match the request.                           |
+| **ModbusInsufficientDataError**       | Received fewer bytes than required to parse the PDU.                             |
+
+## 4. Connection & Transport State
+
+| Error Class                      | Description                                                       |
+| -------------------------------- | ----------------------------------------------------------------- |
+| **ModbusNotConnectedError**      | Attempting an I/O operation while the transport is disconnected.  |
+| **ModbusAlreadyConnectedError**  | Attempting to connect when a connection is already active.        |
+| **ModbusConnectionRefusedError** | The remote host (TCP) actively refused the connection.            |
+| **ModbusConnectionTimeoutError** | The handshake/connection attempt timed out.                       |
+| **TransportError**               | Base class for all transport-specific (Web/Node) errors.          |
+| **RSModeConstraintError**        | Violation of mode rules (e.g., trying to add 2 devices to RS232). |
+
+## 5. Physical Layer & Serial Errors
+
+| Error Class                   | Description                                                     |
+| ----------------------------- | --------------------------------------------------------------- |
+| **ModbusParityError**         | Serial line parity check failed.                                |
+| **ModbusFramingError**        | Serial line framing error (start/stop bits).                    |
+| **ModbusLRCError**            | Checksum failure for ASCII mode.                                |
+| **ModbusOverrunError**        | Hardware buffer overrun (data arriving too fast).               |
+| **ModbusNoiseError**          | Communication integrity compromised by electrical noise.        |
+| **ModbusBaudRateError**       | Mismatch between configured and actual baud rate.               |
+| **ModbusSilentIntervalError** | Violation of the 3.5-character silent interval required by RTU. |
+
+## 6. Platform-Specific Transport Errors
+
+| Platform           | Error Classes                                                        |
+| ------------------ | -------------------------------------------------------------------- |
+| **Web Serial**     | WebSerialConnectionError, WebSerialReadError, WebSerialWriteError    |
+| **Node.js Serial** | NodeSerialConnectionError, NodeSerialReadError, NodeSerialWriteError |
+
+## 7. Polling Manager Errors
+
+| Error Class                       | Description                                                  |
+| --------------------------------- | ------------------------------------------------------------ |
+| **PollingTaskAlreadyExistsError** | Thrown when adding a task with a non-unique ID.              |
+| **PollingTaskNotFoundError**      | Thrown when trying to control or remove a non-existent task. |
+| **PollingTaskValidationError**    | Thrown when task options (interval, slaveId) are invalid.    |
+
+---
+
+# Polling Manager method's
+
+The `PollingManager` handles the scheduling, prioritization, and execution of recurring Modbus tasks. It ensures that multiple polling requests are queued and executed without colliding.
+
+## 1. Manager Configuration & Lifecycle
+
+#### `constructor(config?)`
+
+Initializes the Polling Manager with optional default settings.
+
+- **config**: IPollingManagerConfig (optional):
+  - defaultMaxRetries: number (default: 3) — Retries per task function.
+  - defaultBackoffDelay: number (default: 1000) — Wait time between retries.
+  - defaultTaskTimeout: number (default: 5000) — Timeout for each task function.
+  - logLevel: string (default: 'info') — Initial logging level.
+
+#### `addTask(options)`
+
+Registers and (by default) starts a new recurring task.
+
+- **options**: IPollingTaskOptions:
+  - id: string (**Required**) — Unique task identifier.
+  - interval: number (**Required**) — Time between executions in ms.
+  - fn: Function | Function[] (**Required**) — The async function(s) to execute.
+  - priority: number (default: 0) — Higher numbers execute first in the queue.
+  - immediate: boolean (default: true) — If false, task waits one interval before the first run.
+  - maxRetries / backoffDelay / taskTimeout: number — Overrides manager defaults.
+  - **Callbacks**: onData, onError, onStart, onStop, onFinish, onBeforeEach, onRetry, onSuccess, onFailure.
+
+#### `updateTask(id, newOptions)`
+
+Updates an existing task. It replaces the old task with new configuration while preserving the running/paused state.
+
+- **id**: string — The task ID.
+- **newOptions**: IPollingTaskOptions — New parameters to apply.
+
+#### `removeTask(id)`
+
+Completely removes a task from the manager and stops it if it was running.
+
+- **id**: string — The task ID.
+
+#### `clearAll()`
+
+Stops and deletes every single task registered in the manager. (No parameters).
+
+## 2. Individual Task Control (via Manager)
+
+#### `startTask(id) / stopTask(id)`
+
+Starts or completely stops a specific task. A stopped task is removed from the execution queue.
+
+- **id**: string — The task ID.
+
+#### `pauseTask(id) / resumeTask(id)`
+
+Pauses or resumes a specific task. A paused task stays in the manager but skips scheduling until resumed.
+
+- **id**: string — The task ID.
+
+#### `restartTask(id)`
+
+Stops and then immediately starts a task again.
+
+- **id**: string — The task ID.
+
+#### `setTaskInterval(id, interval)`
+
+Changes the repetition rate of a specific task.
+
+- **id**: string — The task ID.
+- **interval**: number — New interval in milliseconds.
+
+## 3. Bulk Operations
+
+#### `startAllTasks() / stopAllTasks()`
+
+Starts or stops every registered task simultaneously. (No parameters).
+
+#### `pauseAllTasks() / resumeAllTasks()`
+
+Pauses or resumes every registered task. Useful during global connection drops. (No parameters).
+
+#### `restartAllTasks()`
+
+Stops and restarts every registered task. (No parameters).
+
+## 4. Status & Diagnostics
+
+#### `hasTask(id)`
+
+Returns true if a task with the given ID exists.
+
+- **id**: string.
+
+#### `isTaskRunning(id) / isTaskPaused(id)`
+
+Returns the current state of a specific task.
+
+- **id**: string.
+
+#### `getTaskState(id)`
+
+Returns a detailed state object for a task.
+
+- **id**: string.
+- **Returns**: IPollingTaskState | null ({ stopped, paused, running, inProgress }).
+
+#### `getTaskIds()`
+
+Returns an array of all registered task IDs. (No parameters).
+
+#### `getQueueInfo()`
+
+Returns information about the tasks currently waiting in the execution queue. (No parameters).
+
+- **Returns**: IPollingQueueInfo ({ queueLength, tasks: [...] }).
+
+#### `getSystemStats()`
+
+Returns basic metrics about the manager. (No parameters).
+
+- **Returns**: IPollingSystemStats ({ totalTasks, totalQueues, queuedTasks }).
+
+## 5. Advanced Execution & Logging
+
+#### `executeImmediate(fn)`
+
+Executes a function immediately using the manager's internal mutex. This is used to perform one-off requests (like a Modbus Write) without colliding with the background polling cycle.
+
+- **fn**: () => Promise<_T_> — The async logic to execute.
+- **Returns**: Promise<_T_> — The result of the function.
+
+#### `setLogLevel(level)`
+
+Changes the logging level for the manager and all associated tasks.
+
+- **level**: string (e.g., 'debug', 'info', 'warn', 'error').
+
+#### `disableAllLoggers()`
+
+Sets the log level to 'error' for everything, effectively silencing non-critical output. (No parameters).
+
+---
+
+# Extending ModbusClient with Plugins
+
+The `ModbusClient` includes a flexible plugin system that allows you to extend its functionality with manufacturer-specific or custom Modbus function codes. This is particularly useful when dealing with industrial devices that implement non-standard features.
+
+## 1. How the Plugin System Works
+
+A plugin is essentially a bridge between your high-level code and the Modbus Protocol Data Unit (PDU). To create a plugin, you must implement the `IModbusPlugin` interface, which requires:
+
+1. **`name`**: A unique string identifier for the plugin.
+2. **`customFunctionCodes`**: An object where keys are the names of your methods and values are handlers containing:
+   - `buildRequest(...args)`: Logic to convert arguments into a `Uint8Array` (PDU: Function Code + Data).
+   - `parseResponse(pdu)`: Logic to convert the returned `Uint8Array` back into a readable JavaScript object or value.
+
+## 2. Example: Creating a Custom Plugin
+
+Let's imagine a device that has a custom **Function Code `0x42`** to retrieve "Advanced Device Diagnostics" (Uptime and Internal Temperature).
+
+```ts
+// AdvancedDiagnosticsPlugin.ts
+import { IModbusPlugin, ICustomFunctionHandler } from './types/modbus-types';
+
+export class AdvancedDiagnosticsPlugin implements IModbusPlugin {
+  public name = 'AdvancedDiagnostics';
+
+  // Define custom handlers
+  public customFunctionCodes: Record<string, ICustomFunctionHandler> = {
     /**
-     * A friendly name to call this function by.
+     * Retrieves uptime and temperature using custom code 0x42
      */
-    readDailyArchive: {
-      /**
-       * Builds the request PDU.
-       * @param {Date} date - The date for which to request the archive.
-       * @returns {Uint8Array} The request PDU.
-       */
-      buildRequest: date => {
-        const pdu = new Uint8Array(4);
-        pdu = 0x6a; // Proprietary function code
-        pdu = date.getFullYear() - 2000;
-        pdu = date.getMonth() + 1;
-        pdu = date.getDate();
+    getAdvancedStats: {
+      // Step 1: Build the Request PDU
+      buildRequest: (requestType: number): Uint8Array => {
+        const pdu = new Uint8Array(2);
+        pdu[0] = 0x42; // The custom Function Code
+        pdu[1] = requestType; // A sub-command or parameter
         return pdu;
       },
-      /**
-       * Parses the response PDU from the device.
-       * @param {Uint8Array} responsePdu - The response PDU.
-       * @returns {object[]} An array of parsed archive records.
-       */
-      parseResponse: responsePdu => {
-        if (responsePdu !== 0x6a) {
-          throw new Error('Plugin Error: Invalid function code in response');
-        }
-        const recordCount = responsePdu;
-        // ... add your detailed binary data parsing logic here ...
-        console.log(`Parsing ${recordCount} records...`);
-        return [{ hour: 0, minute: 0, consumption: 12.34 }]; // Placeholder
+
+      // Step 2: Parse the Response PDU
+      parseResponse: (pdu: Uint8Array) => {
+        // The device returns: [0x42, UptimeHigh, UptimeLow, TempHigh, TempLow]
+        const view = new DataView(pdu.buffer, pdu.byteOffset, pdu.byteLength);
+
+        return {
+          functionCode: pdu[0],
+          uptimeSeconds: view.getUint16(1), // Bytes 1 & 2
+          temperature: view.getUint16(3) / 10, // Bytes 3 & 4 (fixed point)
+        };
       },
     },
   };
-
-  // 3. (Optional) Define custom register types
-  customRegisterTypes = {
-    'special-string': registers => {
-      // Custom logic to convert an array of numbers (registers) into a special string format
-      let str = '';
-      for (const reg of registers) {
-        const high = (reg >> 8) & 0xff;
-        const low = reg & 0xff;
-        if (low !== 0) str += String.fromCharCode(low);
-        if (high !== 0) str += String.fromCharCode(high);
-      }
-      return [str];
-    },
-  };
 }
-
-module.exports = { MyPlugin };
 ```
 
-### Step 2: Using the Plugin
+## 3. Registering and Using the Plugin
 
-In your main application file, import your plugin and pass it to the `ModbusClient` constructor.
+You can register plugins during client initialization or dynamically at runtime using the .use() method.
 
-```js
-const ModbusClient = require('modbus-connect/client');
-const TransportController = require('modbus-connect/transport');
-const { MyPlugin } = require('./plugins/my-plugin.js'); // Import your plugin
+```ts
+import TransportController from './modbus/transport/transport-controller';
+import ModbusClient from './modbus/client';
+import { AdvancedDiagnosticsPlugin } from './AdvancedDiagnosticsPlugin';
 
-async function main() {
+async function run() {
   const controller = new TransportController();
-  await controller.addTransport('com3', 'node', { port: 'COM3', baudRate: 9600 });
-  await controller.connectAll();
 
-  // Pass the plugin class in the options
+  // Method A: Register via Constructor
   const client = new ModbusClient(controller, 1, {
-    plugins: [MyPlugin],
+    plugins: [AdvancedDiagnosticsPlugin],
+    framing: 'rtu',
   });
 
-  try {
-    // Now you can call your custom function by its friendly name
-    const records = await client.executeCustomFunction('readDailyArchive', new Date());
-    console.log('Archive records:', records);
+  // OR Method B: Register dynamically
+  // const plugin = new AdvancedDiagnosticsPlugin();
+  // client.use(plugin);
 
-    // And use your custom data type
-    const specialString = await client.readHoldingRegisters(100, 5, { type: 'special-string' });
-    console.log('Special string:', specialString);
-  } catch (err) {
-    console.error('Failed to execute custom function:', err);
-  } finally {
-    await controller.disconnectAll();
+  try {
+    console.log('Executing custom function...');
+
+    // Execute using the name defined in the plugin's customFunctionCodes
+    const stats = await client.executeCustomFunction('getAdvancedStats', 0x01);
+
+    console.log('Result received:', stats);
+  } catch (error) {
+    console.error('Failed to execute custom function:', error);
   }
 }
-
-main();
 ```
 
-### Plugin Capabilities
+## 4. Expected Results
 
-A plugin can provide three types of extensions:
+### Communication Flow:
 
-- `customFunctionCodes`: Adds new methods callable via `client.executeCustomFunction()`.
-- `customRegisterTypes`: Adds new string identifiers for the `type` option in `readHoldingRegisters` and `readInputRegisters`.
-- `customCrcAlgorithms`: Adds new CRC calculation functions, which can be selected via the `crcAlgorithm` option in the client constructor.
+1. **Request Generation**: client.executeCustomFunction('getAdvancedStats', 0x01) calls the plugin's buildRequest(0x01).
+2. **PDU Created**: The PDU [0x42, 0x01] is generated.
+3. **Transport**: The client wraps this PDU in an ADU (adding Slave ID and CRC/Checksum) and sends it.
+4. **Device Response**: The device returns bytes (e.g., [0x01, 0x42, 0x0E, 0x10, 0x00, 0xFA, CRC...]).
+5. **Parsing**: The client extracts the response PDU [0x42, 0x0E, 0x10, 0x00, 0xFA] and passes it to the plugin's parseResponse.
 
-> Note: Custom functions now automatically work over both RTU and TCP. The ModbusProtocol layer ensures your proprietary PDU is wrapped in the correct ADU (CRC or MBAP) depending on the transport.
+### Final Output (Example):
 
-<br>
+If the device responded with the bytes above, the stats variable in your code would look like this:
 
-# <span id="tips-for-use">Tips for use</span>
+```JSON
+{
+  "functionCode": 66,
+  "uptimeSeconds": 3600,
+  "temperature": 25.0
+}
+```
 
-- For Node.js, the `serialport` package is required (`npm install serialport`).
-- For browser usage, HTTPS and Web Serial API support are required (**Google Chrome** or **Edge** or **Opera**).
+## 5. Summary of Best Practices
 
-<br>
+- **Unique Names**: Ensure your plugin name is unique. If you register two plugins with the same name, the client will skip the second one.
+- **Error Handling**: If buildRequest or parseResponse fails, the client will catch the error and throw it as a standard ModbusError.
+- **PDU Only**: Remember that the plugin only deals with the **PDU** (Function Code + Data). You do **not** need to handle Slave IDs, TCP headers, or CRC/LRC manually; the ModbusClient and Transport layers handle that automatically.
 
-# <span id="expansion">Expansion</span>
+---
 
-The recommended way to add proprietary or non-standard functionality is by creating a plugin. See the [Plugin System](#plugin-system) section for a detailed guide.
+# Modbus-Connect Type Definitions Reference
 
-<br>
+This library provides a comprehensive set of TypeScript types and interfaces to ensure type safety across Client, Transport, and Polling operations.
 
-# <span id="changelog">CHANGELOG</span>
+## 1. Importing Types
+
+You can import types directly from the package subpath:
+
+```ts
+import {
+  IModbusCLient,
+  ITransportController,
+  IPollingTaskOptions,
+  TRSMode,
+} from 'modbus-connect/types';
+```
+
+## 2. Core Client Types
+
+#### `IModbusClientOptions`
+
+Configuration used when instantiating a `ModbusClient`.
+
+- **`framing`**: `'rtu'`| `'tcp'` — The protocol framing method.
+- **`RSMode`**: `TRSMode` — Physical layer (RS485, RS232, TCP/IP).
+- **`timeout`**: `number` — Response timeout in milliseconds.
+- **`retryCount`**: `number` — Number of attempts per request.
+- **`retryDelay`**: `number` — Delay between retries in ms.
+- **`plugins`**: `TPluginConstructor[]` — List of plugin classes to load.
+
+## 3. Transport & Connection Types
+
+#### `TRSMode (Type)`
+
+Defines the physical communication standard:
+
+- `'RS485'` | `'RS232'` | `'TCP/IP'`
+
+#### `EConnectionErrorType (Enum)`
+
+Standardized error codes for connection state tracking:
+
+- `UnknownError`, `PortClosed`, `Timeout`, `CRCError`, `ConnectionLost`, `DeviceOffline`, `MaxReconnect`, `ManualDisconnect`, `Destroyed`.
+
+#### `INodeSerialTransportOptions`
+
+Options for Node.js serialport transport:
+
+- **`baudRate`**: `number` (e.g., 9600, 115200).
+- **`dataBits`**: `5 | 6 | 7 | 8`.
+- **`stopBits`**: `1 | 2`.
+- **`parity`**: `'none' | 'even' | 'mark' | 'odd' | 'space'`.
+- **`reconnectInterval`**: `number` — Delay between reconnect attempts.
+- **`maxReconnectAttempts`**: `number`.
+
+## 4. Polling Manager Types
+
+#### `IPollingTaskOptions`
+
+The most critical interface for setting up automated polling.
+
+- **`id`**: `string` (**Required**) — Unique task ID.
+- **`interval`**: `number` (**Required**) — Polling frequency in ms.
+- **`fn`**: `Function | Function[]` (**Required**) — The Modbus operation(s).
+- **`priority`**: `number` — Higher priority tasks move to the front of the queue.
+- **`immediate`**: `boolean` — Start immediately upon adding.
+- **`shouldRun`**: `() => boolean` — Conditional check before execution.
+- **Callbacks**:
+  - `onData`: `(data: any[]) => void` — Called on successful read.
+  - `onError`: `(error: Error, fnIndex: number, retry: number) => void`.
+  - `onFinish`: `(success: boolean, results: any[]) => void`.
+
+#### `IPollingTaskState`
+
+- **`stopped`**: `boolean` — Task is manually stopped.
+- **`paused`**: `boolean` — Task is temporarily paused.
+- **`running`**: `boolean` — Task is active (not stopped).
+- **`inProgress`**: `boolean` — Task is currently executing an I/O operation.
+
+## 5. Transport Controller & Routing
+
+#### `ITransportInfo`
+
+Metadata stored in the controller for each transport:
+
+- **`status`**: `'disconnected' | 'connecting' | 'connected' | 'error'`.
+- **`slaveIds`**: `number[]` — Array of Modbus IDs routed to this transport.
+- **`reconnectAttempts`**: `number` — Current count of retry attempts.
+
+#### `TLoadBalancerStrategy`
+
+Strategy for selecting a transport when multiple paths exist for a Slave ID:
+
+- `'round-robin'`, `'sticky'`, `'first-available'`.
+
+## 6. Trackers & Callbacks
+
+#### `TDeviceStateHandler`
+
+Callback for monitoring individual device (Slave ID) availability.
+
+- **Signature**: `(slaveId: number, connected: boolean, error?: { type: EConnectionErrorType, message: string }) => void`
+
+#### `TPortStateHandler`
+
+Callback for monitoring the physical port/socket status.
+
+- **Signature**: `(connected: boolean, slaveIds?: number[], error?: { type: EConnectionErrorType, message: string }) => void`
+
+## 7. Emulator Types (For Testing)
+
+#### `IRegisterDefinitions`
+
+Initial data structure for the Modbus Emulator:
+
+- **`coils`**, **`discrete`**, **`holding`**, **`input`**: `IRegisterDefinition[]`
+  - `{ start: number, value: number | boolean }`
+
+#### `IInfinityChangeParams`
+
+Simulates a sensor by changing register values over time:
+
+- **`typeRegister`**: Register type.
+- **`range`**: `[min, max]`.
+- **`interval`**: Frequency of value changes in ms.
+
+## Summary of Main Interfaces
+
+| Interface                      | Purpose                                              |
+| ------------------------------ | ---------------------------------------------------- |
+| **`IModbusCLient`**            | High-level API (Read/Write/Plugins).                 |
+| **`ITransportController`**     | Orchestrates multiple connections and routing.       |
+| **`IPollingManager`**          | Manages the queue and execution of background tasks. |
+| **`ITransport`**               | Low-level interface for physical data exchange.      |
+| **`IDeviceConnectionTracker`** | Monitors the "Health" of individual Slave IDs.       |
+
+# Changelog
+
+### 4.0.0 (2026-04-06)
+
+- Improved TCP/IP transport - `'node-tcp'`
+- The frame logic has been redesigned. Now the type of frame for processing and constructing requests is initialized in the constructor of the `ModbusCliet` class, and not at the time of sending the request.
+- The emulator of the slave device has been redesigned. Now it consists of 2 new transports - `'rtu-emulator'` and ``tcp-emulator'`. All their requests go through ModbusClient and TransportController, which simplifies their development by simply creating a certain type of transport and its options.
+- File compilation has been redesigned, now `.d.ts` and `.js.map` files are compiled for each library file, which affect convenient debugging and development
+- The types and interfaces in the `modbus/types/modbus-types.ts` file have been improved
+- Modules such as have been removed from the import (require):
+  - `modbus-connect/logger`, use the `pino` logger yourself
+  - `modbus-connect/slave-emulator`, use special transports instead
+- **ECHO** functionality has been sent for revision
+  > The overall result of the update:
+  > Requests have become faster. For example, previously reading 2 Holding registers took 46-51ms, now it takes 29-31ms ~60% faster. The emulator now runs ~40% faster
 
 ### 3.2.0 (2026-03-05)
 

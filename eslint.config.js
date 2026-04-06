@@ -7,7 +7,7 @@ import prettierPlugin from 'eslint-plugin-prettier'; // Prettier plugin для r
 
 export default tseslint.config(
   // Global ignores (проект-wide)
-  { ignores: ['dist/**', 'node_modules/**', '**/*.config.*'] },
+  { ignores: ['dist/', 'node_modules/', '/*.config.*'] },
 
   // Base JS recommended (applies to all)
   { ...js.configs.recommended },
@@ -38,7 +38,7 @@ export default tseslint.config(
     rules: {
       // Strict TS rules (error на типах/unused)
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-      '@typescript-eslint/no-explicit-any': 'warn', // Пока warn (пофиксим типами)
+      '@typescript-eslint/no-explicit-any': 'warn', // фикс типами
       '@typescript-eslint/require-await': 'off', // Async без await — ок
       'no-console': 'off', // Console warn в Node
       'prettier/prettier': 'error', // Prettier violations as errors
@@ -50,19 +50,14 @@ export default tseslint.config(
     files: ['**/*.js'], // Паттерн для JS файлов (включая test-node.js)
     languageOptions: {
       // Убираем parserOptions.project, т.к. JS не требует tsconfig для type-checking
-      // или добавь отдельную конфигурацию с project: null, если нужно
       ecmaVersion: 2022,
-      sourceType: 'script', // или 'module', в зависимости от твоих JS файлов
+      sourceType: 'script', // или 'module', в зависимости от JS файлов
       globals: { ...globals.node }, // Включаем Node.js глобальные переменные
     },
     rules: {
       // Отключаем правило, запрещающее require
       '@typescript-eslint/no-require-imports': 'off',
-      // Можешь также отключить другие строгие правила, если они мешают
-      // '@typescript-eslint/no-unused-vars': 'off', // Например, если в тестах много неиспользуемых переменных
     },
-    // Плагины не обязательно указывать снова, если они уже в предыдущих конфигах
-    // и не переопределяются.
   },
 
   // Отключение type-checked linting для .d.ts файлов

@@ -1,741 +1,774 @@
 "use strict";
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-var import_async_mutex = require("async-mutex");
-var import_logger = __toESM(require("./logger.js"));
-var import_errors = require("./errors.js");
+// modbus/polling-manager.ts
+const async_mutex_1 = require("async-mutex");
+const pino_1 = require("pino");
+const errors_js_1 = require("./errors.js");
+/**
+ * TaskController manages the full lifecycle of a single polling task.
+ * It is tightly coupled with a PollingManager instance and handles scheduling,
+ * execution with retries, timeouts, backoff logic, and all lifecycle callbacks.
+ */
 class TaskController {
-  id;
-  priority;
-  name;
-  fn;
-  interval;
-  onData;
-  onError;
-  onStart;
-  onStop;
-  onFinish;
-  onBeforeEach;
-  onRetry;
-  shouldRun;
-  onSuccess;
-  onFailure;
-  maxRetries;
-  backoffDelay;
-  taskTimeout;
-  stopped;
-  paused;
-  executionInProgress;
-  stats;
-  logger;
-  manager;
-  timerId = null;
-  constructor(options, manager) {
-    const {
-      id,
-      priority = 0,
-      interval,
-      fn,
-      onData,
-      onError,
-      onStart,
-      onStop,
-      onFinish,
-      onBeforeEach,
-      onRetry,
-      shouldRun,
-      onSuccess,
-      onFailure,
-      name = null,
-      maxRetries = 3,
-      backoffDelay = 1e3,
-      taskTimeout = 5e3
-    } = options;
-    this.id = id;
-    this.priority = priority;
-    this.name = name;
-    this.fn = Array.isArray(fn) ? fn : [fn];
-    this.interval = interval;
-    this.onData = onData;
-    this.onError = onError;
-    this.onStart = onStart;
-    this.onStop = onStop;
-    this.onFinish = onFinish;
-    this.onBeforeEach = onBeforeEach;
-    this.onRetry = onRetry;
-    this.shouldRun = shouldRun;
-    this.onSuccess = onSuccess;
-    this.onFailure = onFailure;
-    this.maxRetries = maxRetries;
-    this.backoffDelay = backoffDelay;
-    this.taskTimeout = taskTimeout;
-    this.stopped = true;
-    this.paused = false;
-    this.executionInProgress = false;
-    this.manager = manager;
-    this.stats = {
-      totalRuns: 0,
-      totalErrors: 0,
-      lastError: null,
-      lastResult: null,
-      lastRunTime: null,
-      retries: 0,
-      successes: 0,
-      failures: 0
-    };
-    this.logger = manager.loggerInstance.createLogger(`Task:${id}`);
-    this.logger.setLevel("error");
-    this.logger.debug("TaskController created", {
-      id,
-      priority,
-      interval,
-      maxRetries,
-      backoffDelay,
-      taskTimeout
-    });
-  }
-  start() {
-    if (!this.stopped) {
-      this.logger.debug("Task already running");
-      return;
+    id;
+    priority;
+    name;
+    fn;
+    interval;
+    onData;
+    onError;
+    onStart;
+    onStop;
+    onFinish;
+    onBeforeEach;
+    onRetry;
+    shouldRun;
+    onSuccess;
+    onFailure;
+    maxRetries;
+    backoffDelay;
+    taskTimeout;
+    stopped;
+    paused;
+    executionInProgress;
+    logger;
+    manager;
+    timerId = null;
+    /**
+     * Creates a new TaskController instance.
+     * @param options - Configuration options for this polling task
+     * @param manager - Reference to the parent PollingManager (used for queue operations)
+     */
+    constructor(options, manager) {
+        const { id, priority = 0, interval, fn, onData, onError, onStart, onStop, onFinish, onBeforeEach, onRetry, shouldRun, onSuccess, onFailure, name = null, maxRetries = 3, backoffDelay = 1000, taskTimeout = 5000, } = options;
+        this.id = id;
+        this.priority = priority;
+        this.name = name;
+        this.fn = Array.isArray(fn) ? fn : [fn];
+        this.interval = interval;
+        this.onData = onData;
+        this.onError = onError;
+        this.onStart = onStart;
+        this.onStop = onStop;
+        this.onFinish = onFinish;
+        this.onBeforeEach = onBeforeEach;
+        this.onRetry = onRetry;
+        this.shouldRun = shouldRun;
+        this.onSuccess = onSuccess;
+        this.onFailure = onFailure;
+        this.maxRetries = maxRetries;
+        this.backoffDelay = backoffDelay;
+        this.taskTimeout = taskTimeout;
+        this.stopped = true;
+        this.paused = false;
+        this.executionInProgress = false;
+        this.manager = manager;
+        this.logger = manager.logger.child({ component: 'Task', taskId: id });
+        this.logger.debug({
+            id,
+            priority,
+            interval,
+            maxRetries,
+            backoffDelay,
+            taskTimeout,
+        }, 'TaskController created');
     }
-    this.stopped = false;
-    this.logger.info("Task started", { id: this.id });
-    this.onStart?.();
-    this._scheduleNextRun(true);
-  }
-  stop() {
-    if (this.stopped) {
-      this.logger.debug("Task already stopped", { id: this.id });
-      return;
-    }
-    this.stopped = true;
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
-    }
-    this.manager.removeFromQueue(this.id);
-    this.logger.info("Task stopped", { id: this.id });
-    this.onStop?.();
-  }
-  pause() {
-    if (this.paused) {
-      this.logger.debug("Task already paused", { id: this.id });
-      return;
-    }
-    this.paused = true;
-    this.logger.info("Task paused", { id: this.id });
-  }
-  resume() {
-    if (!this.stopped && this.paused) {
-      this.paused = false;
-      this.logger.info("Task resumed", { id: this.id });
-      if (!this.timerId && !this.executionInProgress) {
+    /**
+     * Starts the task.
+     * If the task is already running, does nothing.
+     * Sets the stopped flag to false, calls the `onStart` callback,
+     * and schedules the first execution immediately.
+     */
+    start() {
+        if (!this.stopped) {
+            this.logger.debug('Task already running');
+            return;
+        }
+        this.stopped = false;
+        this.logger.debug('Task started');
+        this.onStart?.();
         this._scheduleNextRun(true);
-      }
-    } else {
-      this.logger.debug("Cannot resume task - not paused or stopped", {
-        id: this.id
-      });
     }
-  }
-  _scheduleNextRun(immediate = false) {
-    if (this.stopped) return;
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
-    }
-    const delay = immediate ? 0 : this.interval;
-    this.timerId = setTimeout(() => {
-      this.timerId = null;
-      if (this.stopped) return;
-      this.manager.enqueueTask(this);
-    }, delay);
-  }
-  async execute() {
-    if (this.stopped || this.paused) {
-      this.logger.debug("Cannot execute - task is stopped or paused", {
-        id: this.id
-      });
-      this._scheduleNextRun();
-      return;
-    }
-    if (this.shouldRun && !this.shouldRun()) {
-      this.logger.debug("Task should not run according to shouldRun function", {
-        id: this.id
-      });
-      this._scheduleNextRun();
-      return;
-    }
-    this.onBeforeEach?.();
-    this.executionInProgress = true;
-    this.stats.totalRuns++;
-    this.logger.debug("Executing task", { id: this.id });
-    try {
-      let overallSuccess = false;
-      const results = [];
-      for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
-        if (this.stopped) break;
-        if (this.paused) break;
-        let retryCount = 0;
-        let result = null;
-        let fnSuccess = false;
-        while (!this.stopped && retryCount <= this.maxRetries) {
-          if (this.paused) break;
-          try {
-            const fnToExecute = this.fn[fnIndex];
-            if (typeof fnToExecute !== "function") {
-              throw new import_errors.PollingManagerError(
-                `Task ${this.id} fn at index ${fnIndex} is not a function`
-              );
-            }
-            const executionResult = fnToExecute();
-            result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
-            fnSuccess = true;
-            this.stats.successes++;
-            this.stats.lastError = null;
-            break;
-          } catch (err) {
-            const error = err instanceof Error ? err : new import_errors.PollingManagerError(String(err));
-            this._logSpecificError(error);
-            retryCount++;
-            this.stats.totalErrors++;
-            this.stats.retries++;
-            this.stats.lastError = error;
-            this.onRetry?.(error, fnIndex, retryCount);
-            if (retryCount > this.maxRetries) {
-              this.stats.failures++;
-              this.onFailure?.(error);
-              this.onError?.(error, fnIndex, retryCount);
-              this.logger.warn("Max retries exhausted for fn[" + fnIndex + "]", {
-                id: this.id,
-                fnIndex,
-                retryCount,
-                error: error.message
-              });
-            } else {
-              const isFlushedError = error instanceof import_errors.ModbusFlushError;
-              const baseDelay = isFlushedError ? 50 : this.backoffDelay * Math.pow(2, retryCount - 1);
-              const jitter = Math.random() * baseDelay * 0.5;
-              const delay = baseDelay + jitter;
-              this.logger.debug("Retrying fn[" + fnIndex + "] with delay", {
-                id: this.id,
-                delay,
-                retryCount
-              });
-              await this._sleep(delay);
-            }
-          }
+    /**
+     * Completely stops the task.
+     * - Sets the `stopped` flag to true
+     * - Clears any pending timeout
+     * - Removes the task from the execution queue
+     * - Calls the `onStop` callback
+     * After calling `stop()`, the task will no longer be executed automatically.
+     */
+    stop() {
+        if (this.stopped) {
+            this.logger.debug('Task already stopped');
+            return;
         }
-        results.push(result);
-        overallSuccess = overallSuccess || fnSuccess;
-      }
-      this.stats.lastResult = results;
-      this.stats.lastRunTime = Date.now();
-      if (results.length > 0 && results.some((r) => r !== null && r !== void 0)) {
-        this.onData?.(results);
-      }
-      if (overallSuccess) {
-        this.onSuccess?.(results);
-      }
-      this.onFinish?.(overallSuccess, results);
-      this.logger.info("Task execution completed", {
-        id: this.id,
-        success: overallSuccess,
-        resultsCount: results.length
-      });
-    } catch (err) {
-      this.logger.error("Fatal error during task execution cycle", {
-        id: this.id,
-        error: err instanceof Error ? err.message : String(err)
-      });
-    } finally {
-      this.executionInProgress = false;
-      this._scheduleNextRun();
+        this.stopped = true;
+        if (this.timerId) {
+            clearTimeout(this.timerId);
+            this.timerId = null;
+        }
+        this.manager.removeFromQueue(this.id);
+        this.logger.info('Task stopped');
+        this.onStop?.();
     }
-  }
-  isRunning() {
-    return !this.stopped;
-  }
-  isPaused() {
-    return this.paused;
-  }
-  setInterval(ms) {
-    this.interval = ms;
-    this.logger.info("Interval updated", { id: this.id, interval: ms });
-  }
-  getState() {
-    return {
-      stopped: this.stopped,
-      paused: this.paused,
-      running: !this.stopped,
-      inProgress: this.executionInProgress
-    };
-  }
-  getStats() {
-    return { ...this.stats };
-  }
-  _logSpecificError(error) {
-    const logContext = { id: this.id, error: error.message };
-    if (error instanceof import_errors.ModbusTimeoutError) this.logger.error("Modbus timeout error", logContext);
-    else if (error instanceof import_errors.ModbusCRCError) this.logger.error("Modbus CRC error", logContext);
-    else if (error instanceof import_errors.ModbusParityError)
-      this.logger.error("Modbus parity error", logContext);
-    else if (error instanceof import_errors.ModbusNoiseError) this.logger.error("Modbus noise error", logContext);
-    else if (error instanceof import_errors.ModbusFramingError)
-      this.logger.error("Modbus framing error", logContext);
-    else if (error instanceof import_errors.ModbusOverrunError)
-      this.logger.error("Modbus overrun error", logContext);
-    else if (error instanceof import_errors.ModbusCollisionError)
-      this.logger.error("Modbus collision error", logContext);
-    else if (error instanceof import_errors.ModbusConfigError)
-      this.logger.error("Modbus config error", logContext);
-    else if (error instanceof import_errors.ModbusBaudRateError)
-      this.logger.error("Modbus baud rate error", logContext);
-    else if (error instanceof import_errors.ModbusSyncError) this.logger.error("Modbus sync error", logContext);
-    else if (error instanceof import_errors.ModbusFrameBoundaryError)
-      this.logger.error("Modbus frame boundary error", logContext);
-    else if (error instanceof import_errors.ModbusLRCError) this.logger.error("Modbus LRC error", logContext);
-    else if (error instanceof import_errors.ModbusChecksumError)
-      this.logger.error("Modbus checksum error", logContext);
-    else if (error instanceof import_errors.ModbusDataConversionError)
-      this.logger.error("Modbus data conversion error", logContext);
-    else if (error instanceof import_errors.ModbusBufferOverflowError)
-      this.logger.error("Modbus buffer overflow error", logContext);
-    else if (error instanceof import_errors.ModbusBufferUnderrunError)
-      this.logger.error("Modbus buffer underrun error", logContext);
-    else if (error instanceof import_errors.ModbusMemoryError)
-      this.logger.error("Modbus memory error", logContext);
-    else if (error instanceof import_errors.ModbusStackOverflowError)
-      this.logger.error("Modbus stack overflow error", logContext);
-    else if (error instanceof import_errors.ModbusResponseError)
-      this.logger.error("Modbus response error", logContext);
-    else if (error instanceof import_errors.ModbusInvalidAddressError)
-      this.logger.error("Modbus invalid address error", logContext);
-    else if (error instanceof import_errors.ModbusInvalidFunctionCodeError)
-      this.logger.error("Modbus invalid function code error", logContext);
-    else if (error instanceof import_errors.ModbusInvalidQuantityError)
-      this.logger.error("Modbus invalid quantity error", logContext);
-    else if (error instanceof import_errors.ModbusIllegalDataAddressError)
-      this.logger.error("Modbus illegal data address error", logContext);
-    else if (error instanceof import_errors.ModbusIllegalDataValueError)
-      this.logger.error("Modbus illegal data value error", logContext);
-    else if (error instanceof import_errors.ModbusSlaveBusyError)
-      this.logger.error("Modbus slave busy error", logContext);
-    else if (error instanceof import_errors.ModbusAcknowledgeError)
-      this.logger.error("Modbus acknowledge error", logContext);
-    else if (error instanceof import_errors.ModbusSlaveDeviceFailureError)
-      this.logger.error("Modbus slave device failure error", logContext);
-    else if (error instanceof import_errors.ModbusMalformedFrameError)
-      this.logger.error("Modbus malformed frame error", logContext);
-    else if (error instanceof import_errors.ModbusInvalidFrameLengthError)
-      this.logger.error("Modbus invalid frame length error", logContext);
-    else if (error instanceof import_errors.ModbusInvalidTransactionIdError)
-      this.logger.error("Modbus invalid transaction ID error", logContext);
-    else if (error instanceof import_errors.ModbusUnexpectedFunctionCodeError)
-      this.logger.error("Modbus unexpected function code error", logContext);
-    else if (error instanceof import_errors.ModbusConnectionRefusedError)
-      this.logger.error("Modbus connection refused error", logContext);
-    else if (error instanceof import_errors.ModbusConnectionTimeoutError)
-      this.logger.error("Modbus connection timeout error", logContext);
-    else if (error instanceof import_errors.ModbusNotConnectedError)
-      this.logger.error("Modbus not connected error", logContext);
-    else if (error instanceof import_errors.ModbusAlreadyConnectedError)
-      this.logger.error("Modbus already connected error", logContext);
-    else if (error instanceof import_errors.ModbusInsufficientDataError)
-      this.logger.error("Modbus insufficient data error", logContext);
-    else if (error instanceof import_errors.ModbusGatewayPathUnavailableError)
-      this.logger.error("Modbus gateway path unavailable error", logContext);
-    else if (error instanceof import_errors.ModbusGatewayTargetDeviceError)
-      this.logger.error("Modbus gateway target device error", logContext);
-    else if (error instanceof import_errors.ModbusInvalidStartingAddressError)
-      this.logger.error("Modbus invalid starting address error", logContext);
-    else if (error instanceof import_errors.ModbusMemoryParityError)
-      this.logger.error("Modbus memory parity error", logContext);
-    else if (error instanceof import_errors.ModbusBroadcastError)
-      this.logger.error("Modbus broadcast error", logContext);
-    else if (error instanceof import_errors.ModbusGatewayBusyError)
-      this.logger.error("Modbus gateway busy error", logContext);
-    else if (error instanceof import_errors.ModbusDataOverrunError)
-      this.logger.error("Modbus data overrun error", logContext);
-    else if (error instanceof import_errors.ModbusTooManyEmptyReadsError)
-      this.logger.error("Modbus too many empty reads error", logContext);
-    else if (error instanceof import_errors.ModbusInterFrameTimeoutError)
-      this.logger.error("Modbus inter-frame timeout error", logContext);
-    else if (error instanceof import_errors.ModbusSilentIntervalError)
-      this.logger.error("Modbus silent interval error", logContext);
-    else this.logger.error("Polling error", logContext);
-  }
-  _sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-  _withTimeout(promise, timeout) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new import_errors.ModbusTimeoutError("Task timed out")), timeout);
-      promise.then((result) => {
-        clearTimeout(timer);
-        resolve(result);
-      }).catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    });
-  }
+    /**
+     * Pauses the task temporarily.
+     * The task remains in the manager's task list but will not execute
+     * until `resume()` is called. Any currently running execution will finish,
+     * but the next scheduled run will be skipped while paused.
+     */
+    pause() {
+        if (this.paused) {
+            this.logger.debug('Task already paused');
+            return;
+        }
+        this.paused = true;
+        this.logger.info('Task paused');
+    }
+    /**
+     * Resumes a previously paused task.
+     * If the task is not stopped and is currently paused, it clears the pause flag
+     * and schedules the next execution if no timer is active and execution is not in progress.
+     */
+    resume() {
+        if (!this.stopped && this.paused) {
+            this.paused = false;
+            this.logger.info('Task resumed');
+            if (!this.timerId && !this.executionInProgress) {
+                this._scheduleNextRun(true);
+            }
+        }
+        else {
+            this.logger.debug({ id: this.id }, 'Cannot resume task - not paused or stopped');
+        }
+    }
+    /**
+     * Schedules the next execution of this task.
+     * @param immediate - If true, the task will run immediately (delay = 0). Otherwise, it waits for the configured `interval`.
+     * Clears any existing timer before setting a new one.
+     * The task is enqueued through the manager when the timer fires.
+     */
+    _scheduleNextRun(immediate = false) {
+        if (this.stopped)
+            return;
+        if (this.timerId) {
+            clearTimeout(this.timerId);
+            this.timerId = null;
+        }
+        const delay = immediate ? 0 : this.interval;
+        this.timerId = setTimeout(() => {
+            this.timerId = null;
+            if (this.stopped)
+                return;
+            this.manager.enqueueTask(this);
+        }, delay);
+    }
+    /**
+     * Executes the task's functions with full retry logic, timeouts, and callbacks.
+     * This is the core execution method called by the queue processor.
+     * It handles:
+     * - Checking stopped/paused state and `shouldRun` condition
+     * - Executing each function in sequence
+     * - Retrying failed functions with exponential backoff + jitter
+     * - Special handling for ModbusFlushError (faster retry)
+     * - Timeout protection for each function
+     * - Calling all lifecycle callbacks (`onBeforeEach`, `onData`, `onSuccess`, `onFailure`, `onFinish`, etc.)
+     * After execution completes (success or failure), it always schedules the next run.
+     */
+    async execute() {
+        if (this.stopped || this.paused) {
+            this.logger.debug({ id: this.id }, 'Cannot execute - task is stopped or paused');
+            this._scheduleNextRun();
+            return;
+        }
+        if (this.shouldRun && !this.shouldRun()) {
+            this.logger.debug({ id: this.id }, 'Task should not run according to shouldRun function');
+            this._scheduleNextRun();
+            return;
+        }
+        this.onBeforeEach?.();
+        this.executionInProgress = true;
+        this.logger.debug('Executing task');
+        try {
+            let overallSuccess = false;
+            const results = [];
+            for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
+                if (this.stopped)
+                    break;
+                if (this.paused)
+                    break;
+                let retryCount = 0;
+                let result = null;
+                let fnSuccess = false;
+                while (!this.stopped && retryCount <= this.maxRetries) {
+                    if (this.paused)
+                        break;
+                    try {
+                        const fnToExecute = this.fn[fnIndex];
+                        if (typeof fnToExecute !== 'function') {
+                            throw new errors_js_1.PollingManagerError(`Task ${this.id} fn at index ${fnIndex} is not a function`);
+                        }
+                        const executionResult = fnToExecute();
+                        result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
+                        fnSuccess = true;
+                        break;
+                    }
+                    catch (err) {
+                        const error = err instanceof Error ? err : new errors_js_1.PollingManagerError(String(err));
+                        this._logSpecificError(error, fnIndex, retryCount);
+                        retryCount++;
+                        this.onRetry?.(error, fnIndex, retryCount);
+                        if (retryCount > this.maxRetries) {
+                            this.onFailure?.(error);
+                            this.onError?.(error, fnIndex, retryCount);
+                            this.logger.warn({
+                                id: this.id,
+                                fnIndex,
+                                retryCount,
+                                error: error.message,
+                            }, 'Max retries exhausted for fn[' + fnIndex + ']');
+                        }
+                        else {
+                            const isFlushedError = error instanceof errors_js_1.ModbusFlushError;
+                            const baseDelay = isFlushedError
+                                ? 50
+                                : this.backoffDelay * Math.pow(2, retryCount - 1);
+                            const jitter = Math.random() * baseDelay * 0.5;
+                            const delay = baseDelay + jitter;
+                            this.logger.debug({
+                                id: this.id,
+                                delay,
+                                retryCount,
+                            }, 'Retrying fn[' + fnIndex + '] with delay');
+                            await this._sleep(delay);
+                        }
+                    }
+                }
+                results.push(result);
+                overallSuccess = overallSuccess || fnSuccess;
+            }
+            if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
+                this.onData?.(results);
+            }
+            if (overallSuccess) {
+                this.logger.debug(`Done`);
+                this.onSuccess?.(results);
+            }
+            this.onFinish?.(overallSuccess, results);
+            this.logger.debug({
+                id: this.id,
+                success: overallSuccess,
+                resultsCount: results.length,
+            }, 'Task execution completed');
+        }
+        catch (err) {
+            this.logger.error({
+                id: this.id,
+                error: err instanceof Error ? err.message : String(err),
+            }, 'Fatal error during task execution cycle');
+        }
+        finally {
+            this.executionInProgress = false;
+            this._scheduleNextRun();
+        }
+    }
+    /**
+     * Returns whether the task is currently running (not stopped).
+     */
+    isRunning() {
+        return !this.stopped;
+    }
+    /**
+     * Returns whether the task is currently paused.
+     */
+    isPaused() {
+        return this.paused;
+    }
+    /**
+     * Updates the interval for this task.
+     * Note: The new interval will take effect on the next scheduling cycle.
+     * @param ms - New interval in milliseconds
+     */
+    setInterval(ms) {
+        this.interval = ms;
+        this.logger.info('Interval updated');
+    }
+    /**
+     * Returns the current state of the task.
+     */
+    getState() {
+        return {
+            stopped: this.stopped,
+            paused: this.paused,
+            running: !this.stopped,
+            inProgress: this.executionInProgress,
+        };
+    }
+    /**
+     * Logs a specific error that occurred during function execution.
+     * @param error - The error that occurred
+     * @param fnIdx - Index of the function in the fn array
+     * @param retry - Current retry count
+     */
+    _logSpecificError(error, fnIdx, retry) {
+        const errorName = error.constructor.name;
+        this.logger.error(`Fail (fn:${fnIdx}, retry:${retry}) -> ${errorName}: ${error.message}`);
+    }
+    /**
+     * Helper method that returns a promise which resolves after the specified delay.
+     * @param ms - Delay in milliseconds
+     */
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    /**
+     * Wraps a promise with a timeout.
+     * If the promise does not settle within the timeout period, it rejects with a `ModbusTimeoutError`.
+     * @param promise - Promise to execute with timeout
+     * @param timeout - Timeout in milliseconds
+     */
+    _withTimeout(promise, timeout) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new errors_js_1.ModbusTimeoutError('Task timed out')), timeout);
+            promise
+                .then(result => {
+                clearTimeout(timer);
+                resolve(result);
+            })
+                .catch(err => {
+                clearTimeout(timer);
+                reject(err);
+            });
+        });
+    }
 }
+/**
+ * PollingManager is the main class responsible for managing multiple polling tasks.
+ * It handles task registration, lifecycle control (start/stop/pause), priority-based queuing,
+ * concurrent execution safety via mutex, and comprehensive logging.
+ */
 class PollingManager {
-  config;
-  tasks;
-  executionQueue;
-  mutex;
-  isProcessing;
-  paused;
-  loggerInstance;
-  logger;
-  constructor(config = {}, loggerInstance) {
-    this.config = {
-      defaultMaxRetries: 3,
-      defaultBackoffDelay: 1e3,
-      defaultTaskTimeout: 5e3,
-      logLevel: "trace",
-      ...config
-    };
-    this.tasks = /* @__PURE__ */ new Map();
-    this.executionQueue = [];
-    this.mutex = new import_async_mutex.Mutex();
-    this.isProcessing = false;
-    this.paused = false;
-    this.loggerInstance = loggerInstance || new import_logger.default();
-    if (!loggerInstance) {
-      this.loggerInstance.setLogFormat(["timestamp", "level", "logger"]);
-      this.loggerInstance.setCustomFormatter("logger", (value) => {
-        return value ? `[${value}]` : "";
-      });
+    config;
+    tasks;
+    executionQueue;
+    mutex;
+    isProcessing;
+    paused;
+    logger;
+    /**
+     * Creates a new PollingManager instance.
+     * @param config - Optional configuration for the manager (defaults, log level, etc.)
+     */
+    constructor(config = {}) {
+        this.logger = (0, pino_1.pino)({
+            level: config.logLevel || 'info',
+            base: { component: 'Polling Manager' },
+            transport: process.env.NODE_ENV !== 'production'
+                ? {
+                    target: 'pino-pretty',
+                    options: {
+                        colorize: true,
+                        translateTime: 'HH:mm:ss',
+                        ignore: 'pid,hostname,component,taskId',
+                        messageFormat: '[{component}] {msg}',
+                    },
+                }
+                : undefined,
+        });
+        this.config = {
+            defaultMaxRetries: 3,
+            defaultBackoffDelay: 1000,
+            defaultTaskTimeout: 5000,
+            logLevel: 'info',
+            ...config,
+        };
+        this.tasks = new Map();
+        this.executionQueue = [];
+        this.mutex = new async_mutex_1.Mutex();
+        this.isProcessing = false;
+        this.paused = false;
+        this.logger.debug('PollingManager initialized');
     }
-    this.logger = this.loggerInstance.createLogger("PollingManager");
-    this.logger.setLevel(this.config.logLevel);
-    this.logger.info("PollingManager initialized", {
-      config: JSON.stringify(this.config)
-    });
-  }
-  _validateTaskOptions(options) {
-    if (!options || typeof options !== "object") {
-      throw new import_errors.PollingTaskValidationError("Task options must be an object");
-    }
-    if (!options.id) {
-      throw new import_errors.PollingTaskValidationError('Task must have an "id"');
-    }
-    if (typeof options.interval !== "number" || options.interval <= 0) {
-      throw new import_errors.PollingTaskValidationError("Interval must be a positive number");
-    }
-    const { fn } = options;
-    if (Array.isArray(fn)) {
-      if (fn.length === 0) {
-        throw new import_errors.PollingTaskValidationError("fn array cannot be empty");
-      }
-      if (fn.some((f) => typeof f !== "function")) {
-        throw new import_errors.PollingTaskValidationError("All elements in fn array must be functions");
-      }
-    } else if (typeof fn !== "function") {
-      throw new import_errors.PollingTaskValidationError("fn must be a function or an array of functions");
-    }
-  }
-  addTask(options) {
-    try {
-      this._validateTaskOptions(options);
-      if (this.tasks.has(options.id)) throw new import_errors.PollingTaskAlreadyExistsError(options.id);
-      const task = new TaskController(
-        {
-          ...options,
-          maxRetries: options.maxRetries ?? this.config.defaultMaxRetries,
-          backoffDelay: options.backoffDelay ?? this.config.defaultBackoffDelay,
-          taskTimeout: options.taskTimeout ?? this.config.defaultTaskTimeout
-        },
-        this
-      );
-      this.tasks.set(options.id, task);
-      if (options.immediate !== false) {
-        task.start();
-      }
-      this.logger.info("Task added successfully", { id: options.id });
-    } catch (error) {
-      const err = error instanceof Error ? error : new import_errors.PollingManagerError(String(error));
-      this.logger.error("Failed to add task", { error: err.message });
-      throw err;
-    }
-  }
-  updateTask(id, newOptions) {
-    const oldTask = this.tasks.get(id);
-    if (!oldTask) throw new import_errors.PollingTaskNotFoundError(id);
-    const oldOptions = {
-      id: oldTask.id,
-      priority: oldTask.priority,
-      interval: oldTask.interval,
-      fn: oldTask.fn,
-      onData: oldTask.onData,
-      onError: oldTask.onError,
-      onStart: oldTask.onStart,
-      onStop: oldTask.onStop,
-      onFinish: oldTask.onFinish,
-      onBeforeEach: oldTask.onBeforeEach,
-      onRetry: oldTask.onRetry,
-      shouldRun: oldTask.shouldRun,
-      onSuccess: oldTask.onSuccess,
-      onFailure: oldTask.onFailure,
-      name: oldTask.name ?? void 0,
-      maxRetries: oldTask.maxRetries,
-      backoffDelay: oldTask.backoffDelay,
-      taskTimeout: oldTask.taskTimeout
-    };
-    const mergedOptions = { ...oldOptions, ...newOptions };
-    const wasRunning = oldTask.isRunning();
-    this.removeTask(id);
-    this.addTask(mergedOptions);
-    if (wasRunning) this.startTask(id);
-  }
-  removeTask(id) {
-    const task = this.tasks.get(id);
-    if (task) {
-      task.stop();
-      this.tasks.delete(id);
-      this.removeFromQueue(id);
-      this.logger.info("Task removed", { id });
-    } else {
-      this.logger.warn("Attempt to remove non-existent task", { id });
-    }
-  }
-  restartTask(id) {
-    const task = this.tasks.get(id);
-    if (task) {
-      task.stop();
-      setTimeout(() => {
-        const freshTask = this.tasks.get(id);
-        if (freshTask) freshTask.start();
-      }, 0);
-    }
-  }
-  startTask(id) {
-    const task = this.tasks.get(id);
-    if (task) task.start();
-    else throw new import_errors.PollingTaskNotFoundError(id);
-  }
-  stopTask(id) {
-    const task = this.tasks.get(id);
-    if (task) task.stop();
-  }
-  pauseTask(id) {
-    const task = this.tasks.get(id);
-    if (task) task.pause();
-  }
-  resumeTask(id) {
-    const task = this.tasks.get(id);
-    if (task) task.resume();
-  }
-  setTaskInterval(id, interval) {
-    const task = this.tasks.get(id);
-    if (task) task.setInterval(interval);
-  }
-  isTaskRunning(id) {
-    const task = this.tasks.get(id);
-    return task ? task.isRunning() : false;
-  }
-  isTaskPaused(id) {
-    const task = this.tasks.get(id);
-    return task ? task.isPaused() : false;
-  }
-  getTaskState(id) {
-    const task = this.tasks.get(id);
-    return task ? task.getState() : null;
-  }
-  getTaskStats(id) {
-    const task = this.tasks.get(id);
-    return task ? task.getStats() : null;
-  }
-  hasTask(id) {
-    return this.tasks.has(id);
-  }
-  getTaskIds() {
-    return Array.from(this.tasks.keys());
-  }
-  clearAll() {
-    this.logger.info("Clearing all tasks");
-    this.paused = true;
-    for (const task of this.tasks.values()) {
-      task.stop();
-    }
-    this.tasks.clear();
-    this.executionQueue = [];
-    this.logger.info("All tasks cleared");
-  }
-  restartAllTasks() {
-    for (const id of this.tasks.keys()) {
-      this.restartTask(id);
-    }
-  }
-  pauseAllTasks() {
-    this.paused = true;
-    for (const task of this.tasks.values()) {
-      task.pause();
-    }
-  }
-  resumeAllTasks() {
-    this.paused = false;
-    for (const task of this.tasks.values()) {
-      task.resume();
-    }
-    this._processQueue();
-  }
-  startAllTasks() {
-    this.paused = false;
-    for (const task of this.tasks.values()) {
-      task.start();
-    }
-  }
-  stopAllTasks() {
-    this.paused = true;
-    for (const task of this.tasks.values()) {
-      task.stop();
-    }
-    this.executionQueue = [];
-  }
-  getAllTaskStats() {
-    const stats = {};
-    for (const [id, task] of this.tasks.entries()) {
-      stats[id] = task.getStats();
-    }
-    return stats;
-  }
-  getQueueInfo() {
-    return {
-      queueLength: this.executionQueue.length,
-      tasks: this.executionQueue.map((task) => ({
-        id: task.id,
-        state: task.getState()
-      }))
-    };
-  }
-  getSystemStats() {
-    return {
-      totalTasks: this.tasks.size,
-      totalQueues: 1,
-      queuedTasks: this.executionQueue.length,
-      tasks: this.getAllTaskStats()
-    };
-  }
-  enqueueTask(task) {
-    if (!this.executionQueue.includes(task)) {
-      this.executionQueue.push(task);
-      this.executionQueue.sort((a, b) => b.priority - a.priority);
-      this.logger.debug("Task enqueued", {
-        id: task.id,
-        queueLen: this.executionQueue.length
-      });
-      this._processQueue();
-    }
-  }
-  removeFromQueue(taskId) {
-    this.executionQueue = this.executionQueue.filter((t) => t.id !== taskId);
-  }
-  _sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-  /**
-   * Основной цикл обработки очереди.
-   */
-  async _processQueue() {
-    if (this.isProcessing || this.paused || this.executionQueue.length === 0) {
-      return;
-    }
-    this.isProcessing = true;
-    try {
-      while (this.executionQueue.length > 0 && !this.paused) {
-        const task = this.executionQueue[0];
-        if (task) {
-          this.executionQueue.shift();
-          this.logger.debug("Processing task from queue", { id: task.id });
-          await this._sleep(30);
-          await task.execute();
+    /**
+     * Validates the options object passed when adding a task.
+     * @throws PollingTaskValidationError if validation fails
+     */
+    _validateTaskOptions(options) {
+        if (!options || typeof options !== 'object') {
+            throw new errors_js_1.PollingTaskValidationError('Task options must be an object');
         }
-        await this._sleep(10);
-      }
-    } catch (error) {
-      this.logger.error("Critical error in processQueue loop", {
-        error: error instanceof Error ? error.message : String(error)
-      });
-    } finally {
-      this.isProcessing = false;
-      if (this.executionQueue.length > 0 && !this.paused) {
-        setTimeout(() => this._processQueue(), 0);
-      }
+        if (!options.id) {
+            throw new errors_js_1.PollingTaskValidationError('Task must have an "id"');
+        }
+        if (typeof options.interval !== 'number' || options.interval <= 0) {
+            throw new errors_js_1.PollingTaskValidationError('Interval must be a positive number');
+        }
+        const { fn } = options;
+        if (Array.isArray(fn)) {
+            if (fn.length === 0) {
+                throw new errors_js_1.PollingTaskValidationError('fn array cannot be empty');
+            }
+            if (fn.some(f => typeof f !== 'function')) {
+                throw new errors_js_1.PollingTaskValidationError('All elements in fn array must be functions');
+            }
+        }
+        else if (typeof fn !== 'function') {
+            throw new errors_js_1.PollingTaskValidationError('fn must be a function or an array of functions');
+        }
     }
-  }
-  /**
-   * Выполняет функцию с захватом мьютекса.
-   * Используется ModbusClient для обеспечения атомарности операций чтения/записи.
-   */
-  async executeImmediate(fn) {
-    const release = await this.mutex.acquire();
-    try {
-      return await fn();
-    } finally {
-      release();
+    /**
+     * Adds a new polling task to the manager.
+     * @param options - Configuration for the new task
+     * @throws PollingTaskAlreadyExistsError if a task with the same id already exists
+     * @throws PollingTaskValidationError if options are invalid
+     */
+    addTask(options) {
+        try {
+            this._validateTaskOptions(options);
+            if (this.tasks.has(options.id))
+                throw new errors_js_1.PollingTaskAlreadyExistsError(options.id);
+            const task = new TaskController({
+                ...options,
+                maxRetries: options.maxRetries ?? this.config.defaultMaxRetries,
+                backoffDelay: options.backoffDelay ?? this.config.defaultBackoffDelay,
+                taskTimeout: options.taskTimeout ?? this.config['defaultTaskTimout'],
+            }, this);
+            this.tasks.set(options.id, task);
+            this.logger.info(`Task added -> ${options.id}`);
+            if (options.immediate !== false)
+                task.start();
+        }
+        catch (error) {
+            const err = error instanceof Error ? error : new errors_js_1.PollingManagerError(String(error));
+            this.logger.error({ error: err.message }, 'Failed to add task');
+            throw err;
+        }
     }
-  }
-  // === Логгеры ===
-  enablePollingManagerLogger(level = "info") {
-    this.logger.setLevel(level);
-  }
-  disablePollingManagerLogger() {
-    this.logger.setLevel("error");
-  }
-  enableTaskControllerLoggers(level = "info") {
-    for (const task of this.tasks.values()) {
-      task.logger.setLevel(level);
+    /**
+     * Updates an existing task by replacing it with new options.
+     * Preserves the previous running state: if the task was running before update, it will be restarted after the update.
+     * @param id - ID of the task to update
+     * @param newOptions - New options to merge with existing ones
+     * @throws PollingTaskNotFoundError if task with given id does not exist
+     */
+    updateTask(id, newOptions) {
+        const oldTask = this.tasks.get(id);
+        if (!oldTask)
+            throw new errors_js_1.PollingTaskNotFoundError(id);
+        const oldOptions = {
+            id: oldTask.id,
+            priority: oldTask.priority,
+            interval: oldTask.interval,
+            fn: oldTask.fn,
+            onData: oldTask.onData,
+            onError: oldTask.onError,
+            onStart: oldTask.onStart,
+            onStop: oldTask.onStop,
+            onFinish: oldTask.onFinish,
+            onBeforeEach: oldTask.onBeforeEach,
+            onRetry: oldTask.onRetry,
+            shouldRun: oldTask.shouldRun,
+            onSuccess: oldTask.onSuccess,
+            onFailure: oldTask.onFailure,
+            name: oldTask.name ?? undefined,
+            maxRetries: oldTask.maxRetries,
+            backoffDelay: oldTask.backoffDelay,
+            taskTimeout: oldTask.taskTimeout,
+        };
+        const mergedOptions = { ...oldOptions, ...newOptions };
+        const wasRunning = oldTask.isRunning();
+        this.removeTask(id);
+        this.addTask(mergedOptions);
+        if (wasRunning)
+            this.startTask(id);
     }
-  }
-  disableTaskControllerLoggers() {
-    for (const task of this.tasks.values()) {
-      task.logger.setLevel("error");
+    /**
+     * Removes a task completely from the manager.
+     * Stops the task first, then deletes it from the tasks map and removes it from the queue.
+     * @param id - ID of the task to remove
+     */
+    removeTask(id) {
+        const task = this.tasks.get(id);
+        if (task) {
+            task.stop();
+            this.tasks.delete(id);
+            this.removeFromQueue(id);
+            this.logger.info({ id }, 'Task removed');
+        }
+        else {
+            this.logger.warn({ id }, 'Attempt to remove non-existent task');
+        }
     }
-  }
-  enableTaskControllerLogger(taskId, level = "info") {
-    this.tasks.get(taskId)?.logger.setLevel(level);
-  }
-  disableTaskControllerLogger(taskId) {
-    this.tasks.get(taskId)?.logger.setLevel("error");
-  }
-  enableAllLoggers(level = "info") {
-    this.enablePollingManagerLogger(level);
-    this.enableTaskControllerLoggers(level);
-  }
-  disableAllLoggers() {
-    this.disablePollingManagerLogger();
-    this.disableTaskControllerLoggers();
-  }
-  setLogLevelForAll(level) {
-    this.logger.setLevel(level);
-    for (const task of this.tasks.values()) {
-      task.logger.setLevel(level);
+    /**
+     * Restarts a task (stops it and starts it again with a small delay).
+     * @param id - ID of the task to restart
+     */
+    restartTask(id) {
+        const task = this.tasks.get(id);
+        if (task) {
+            task.stop();
+            setTimeout(() => {
+                const freshTask = this.tasks.get(id);
+                if (freshTask)
+                    freshTask.start();
+            }, 0);
+        }
     }
-  }
+    /**
+     * Starts a specific task by its ID.
+     * @param id - ID of the task to start
+     * @throws PollingTaskNotFoundError if task does not exist
+     */
+    startTask(id) {
+        const task = this.tasks.get(id);
+        if (task)
+            task.start();
+        else
+            throw new errors_js_1.PollingTaskNotFoundError(id);
+    }
+    /**
+     * Stops a specific task by its ID.
+     * @param id - ID of the task to stop
+     */
+    stopTask(id) {
+        const task = this.tasks.get(id);
+        if (task)
+            task.stop();
+    }
+    /**
+     * Pauses a specific task by its ID.
+     * @param id - ID of the task to pause
+     */
+    pauseTask(id) {
+        const task = this.tasks.get(id);
+        if (task)
+            task.pause();
+    }
+    /**
+     * Resumes a specific task by its ID.
+     * @param id - ID of the task to resume
+     */
+    resumeTask(id) {
+        const task = this.tasks.get(id);
+        if (task)
+            task.resume();
+    }
+    /**
+     * Changes the polling interval for a specific task.
+     * @param id - ID of the task
+     * @param interval - New interval in milliseconds
+     */
+    setTaskInterval(id, interval) {
+        const task = this.tasks.get(id);
+        if (task)
+            task.setInterval(interval);
+    }
+    /**
+     * Checks if a task is currently running.
+     * @param id - ID of the task
+     * @returns true if the task exists and is running
+     */
+    isTaskRunning(id) {
+        const task = this.tasks.get(id);
+        return task ? task.isRunning() : false;
+    }
+    /**
+     * Checks if a task is currently paused.
+     * @param id - ID of the task
+     * @returns true if the task exists and is paused
+     */
+    isTaskPaused(id) {
+        const task = this.tasks.get(id);
+        return task ? task.isPaused() : false;
+    }
+    /**
+     * Returns the current state of a task.
+     * @param id - ID of the task
+     * @returns Task state object or null if task does not exist
+     */
+    getTaskState(id) {
+        const task = this.tasks.get(id);
+        return task ? task.getState() : null;
+    }
+    /**
+     * Checks if a task with the given ID exists.
+     * @param id - Task ID
+     */
+    hasTask(id) {
+        return this.tasks.has(id);
+    }
+    /**
+     * Returns an array of all task IDs currently registered.
+     */
+    getTaskIds() {
+        return Array.from(this.tasks.keys());
+    }
+    /**
+     * Removes all tasks from the manager.
+     * Stops every task, clears the task map and execution queue.
+     */
+    clearAll() {
+        this.logger.info('Clearing all tasks');
+        this.paused = true;
+        this.tasks.forEach(task => task.stop());
+        this.tasks.clear();
+        this.executionQueue = [];
+        this.logger.info('All tasks cleared');
+    }
+    /**
+     * Restarts all registered tasks.
+     */
+    restartAllTasks() {
+        Array.from(this.tasks.keys()).forEach(id => {
+            const task = this.tasks.get(id);
+            if (task) {
+                task.stop();
+                setTimeout(() => task.start(), 0);
+            }
+        });
+    }
+    /**
+     * Pauses all tasks.
+     */
+    pauseAllTasks() {
+        this.paused = true;
+        this.tasks.forEach(task => task.pause());
+    }
+    /**
+     * Resumes all paused tasks and restarts queue processing.
+     */
+    resumeAllTasks() {
+        this.paused = false;
+        this.tasks.forEach(task => task.resume());
+        this._processQueue();
+    }
+    /**
+     * Starts all tasks immediately.
+     */
+    startAllTasks() {
+        this.paused = false;
+        this.tasks.forEach(task => task.start());
+    }
+    /**
+     * Stops all tasks and clears the execution queue.
+     */
+    stopAllTasks() {
+        this.paused = true;
+        this.tasks.forEach(task => task.stop());
+        this.executionQueue = [];
+    }
+    /**
+     * Returns information about the current execution queue.
+     */
+    getQueueInfo() {
+        return {
+            queueLength: this.executionQueue.length,
+            tasks: this.executionQueue.map(task => ({
+                id: task.id,
+                state: task.getState(),
+            })),
+        };
+    }
+    /**
+     * Returns basic system statistics about the polling manager.
+     */
+    getSystemStats() {
+        return {
+            totalTasks: this.tasks.size,
+            totalQueues: 1,
+            queuedTasks: this.executionQueue.length,
+        };
+    }
+    /**
+     * Adds a task to the priority-based execution queue.
+     * If the task is not already in the queue, it is added and the queue is sorted by priority (higher first).
+     * Then triggers queue processing.
+     * @param task - TaskController instance to enqueue
+     */
+    enqueueTask(task) {
+        if (!this.executionQueue.includes(task)) {
+            this.executionQueue.push(task);
+            this.executionQueue.sort((a, b) => b.priority - a.priority);
+            this.logger.debug({ id: task.id, queueLen: this.executionQueue.length }, 'Enqueued');
+            this._processQueue();
+        }
+    }
+    /**
+     * Removes a task from the execution queue by its ID.
+     * @param taskId - ID of the task to remove from queue
+     */
+    removeFromQueue(taskId) {
+        this.executionQueue = this.executionQueue.filter(t => t.id !== taskId);
+    }
+    /**
+     * Helper method that returns a promise which resolves after the specified delay.
+     * @param ms - Delay in milliseconds
+     */
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    /**
+     * Main queue processing loop.
+     * Processes tasks from the queue one by one with small delays between executions
+     * to prevent overwhelming the system. Uses `isProcessing` flag to avoid concurrent processing loops.
+     * This method is called automatically whenever a task is enqueued.
+     */
+    async _processQueue() {
+        if (this.isProcessing || this.paused || this.executionQueue.length === 0) {
+            return;
+        }
+        this.isProcessing = true;
+        try {
+            while (this.executionQueue.length > 0 && !this.paused) {
+                const task = this.executionQueue[0];
+                if (task) {
+                    this.executionQueue.shift();
+                    this.logger.debug({ id: task.id }, 'Processing from queue');
+                    await new Promise(r => setTimeout(r, 30));
+                    await task.execute();
+                }
+                await this._sleep(10);
+            }
+        }
+        catch (error) {
+            this.logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Critical error in processQueue loop');
+        }
+        finally {
+            this.isProcessing = false;
+            if (this.executionQueue.length > 0 && !this.paused) {
+                setTimeout(() => this._processQueue(), 0);
+            }
+        }
+    }
+    /**
+     * Executes a function immediately with exclusive access using an internal mutex.
+     * This method is intended to be used by ModbusClient or other components
+     * that need to ensure atomicity of read/write operations while polling is active.
+     * @param fn - Async function to execute under mutex protection
+     * @returns Result of the executed function
+     */
+    async executeImmediate(fn) {
+        const release = await this.mutex.acquire();
+        try {
+            return await fn();
+        }
+        finally {
+            release();
+        }
+    }
+    /**
+     * Changes the log level for the manager and all its tasks.
+     * @param level - Winston log level
+     */
+    setLogLevel(level) {
+        this.logger.level = level;
+        this.tasks.forEach(task => (task.logger.level = level));
+    }
+    /**
+     * Disables all logging by setting the log level to 'error'.
+     */
+    disableAllLoggers() {
+        this.setLogLevel('error');
+    }
 }
 module.exports = PollingManager;
+//# sourceMappingURL=polling-manager.js.map
