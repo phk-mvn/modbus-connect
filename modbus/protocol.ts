@@ -56,7 +56,6 @@ export class ModbusProtocol implements IModbusProtocol {
     const startTime = Date.now();
     const aduRequest = this._framerClass.buildAdu(unitId, pduRequest);
 
-    // Пытаемся узнать длину из запроса
     const rawExpected = this._framerClass.getExpectedResponseLength(pduRequest);
     let expectedLen = rawExpected && rawExpected > 0 ? rawExpected : this.minLen;
 
@@ -71,8 +70,6 @@ export class ModbusProtocol implements IModbusProtocol {
         throw new Error(`Response timeout after ${elapsed}ms. Buffer: ${utils.toHex(buffer)}`);
       }
 
-      // РЕШЕНИЕ: Читаем строго по 1 байту, если пакет уже больше минимального,
-      // но еще не распарсился. Это медленнее, но 100% надежно.
       let bytesToRead = 1;
       if (buffer.length < this.minLen) {
         bytesToRead = this.minLen - buffer.length;
@@ -86,7 +83,6 @@ export class ModbusProtocol implements IModbusProtocol {
       }
 
       if (buffer.length >= this.minLen) {
-        // Если это TCP, мы можем обновить expectedLen прямо из буфера MBAP
         if (this.minLen === 7 && buffer.length >= 6) {
           const followingLen = (buffer[4] << 8) | buffer[5];
           expectedLen = 6 + followingLen;
@@ -106,7 +102,7 @@ export class ModbusProtocol implements IModbusProtocol {
           }
 
           if (errMsg.includes('CRC mismatch')) {
-            if (this.minLen === 4) continue; // RTU: ждем дочитывания
+            if (this.minLen === 4) continue;
           }
           throw err;
         }

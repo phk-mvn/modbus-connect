@@ -98,6 +98,39 @@ class TransportController {
         this.logger.debug('Transport Controller initialized');
     }
     /**
+     * Disables all logging output.
+     * Re-initializes the pino instance with the 'silent' level to stop any log emission.
+     */
+    disableLogger() {
+        this.logger = (0, pino_1.pino)({
+            level: 'silent',
+        });
+    }
+    /**
+     * Enables and configures the logger.
+     *
+     * Sets the default log level to 'info' and attaches metadata (component name and slave ID).
+     * If the environment is not 'production', it enables `pino-pretty` transport
+     * with custom message formatting for better developer experience.
+     */
+    enableLogger() {
+        this.logger = (0, pino_1.pino)({
+            level: 'info',
+            base: { component: 'Transport Controller' },
+            transport: process.env.NODE_ENV !== 'production'
+                ? {
+                    target: 'pino-pretty',
+                    options: {
+                        colorize: true,
+                        translateTime: 'HH:mm:ss',
+                        ignore: 'pid,hostname,component',
+                        messageFormat: '[{component}] {msg}',
+                    },
+                }
+                : undefined,
+        });
+    }
+    /**
      * Sets a global handler for device connection state changes.
      * Triggered when any device on any transport changes its connection status.
      * @param handler - The callback function.
@@ -132,13 +165,10 @@ class TransportController {
             }
             const rsMode = options.RSMode;
             const slaveIds = options.slaveIds || [];
-            // Validate RS232 constraint (only one device allowed)
             if (rsMode === 'RS232' && slaveIds.length > 1) {
                 throw new errors_js_1.RSModeConstraintError(`Transport "${id}" with RSMode 'RS232' cannot be assigned more than one device. Provided ${slaveIds.length} devices.`);
             }
-            // Create instance via factory
             const transport = await transport_factory_js_1.TransportFactory.create(type, options, this.logger);
-            // Check for duplicate Slave IDs within this transport
             const seenSlaveIds = new Set();
             for (const slaveId of slaveIds) {
                 if (seenSlaveIds.has(slaveId)) {
@@ -147,7 +177,6 @@ class TransportController {
                 seenSlaveIds.add(slaveId);
             }
             const fallbacks = options.fallbacks || [];
-            // Init Polling Manager
             const pollingManager = new polling_manager_js_1.default(pollingConfig);
             const info = {
                 id,
@@ -164,19 +193,16 @@ class TransportController {
                 reconnectInterval: reconnectOptions?.reconnectInterval ?? 2000,
             };
             this.transports.set(id, info);
-            // Init trackers
             const deviceTracker = new DeviceConnectionTracker_js_1.DeviceConnectionTracker();
             const portTracker = new PortConnectionTracker_js_1.PortConnectionTracker();
             this.transportToDeviceTrackerMap.set(id, deviceTracker);
             this.transportToPortTrackerMap.set(id, portTracker);
-            // Subscribe to transport events
             transport.setDeviceStateHandler((slaveId, connected, error) => {
                 this._onDeviceStateChange(id, slaveId, connected, error);
             });
             transport.setPortStateHandler((connected, slaveIds, error) => {
                 this._onPortStateChange(id, connected, slaveIds, error);
             });
-            // Update global routing map
             this._updateSlaveTransportMap(id, slaveIds);
             this.logger.info(`Transport "${id}" added with PollingManager`);
         });
@@ -187,29 +213,7 @@ class TransportController {
      */
     async removeTransport(id) {
         await this._registryMutex.runExclusive(async () => {
-            const info = this.transports.get(id);
-            if (!info)
-                return;
-            info.pollingManager.clearAll();
-            // Safe internal disconnect
-            await this._disconnectTransportInternal(id);
-            this.transports.delete(id);
-            // Cleanup trackers and maps
-            this.transportToDeviceTrackerMap.delete(id);
-            this.transportToPortTrackerMap.delete(id);
-            this.transportToDeviceHandlerMap.delete(id);
-            this.transportToPortHandlerMap.delete(id);
-            // Remove from routing map
-            for (const [slaveId, list] of this.slaveTransportMap.entries()) {
-                const updated = list.filter(tid => tid !== id);
-                if (updated.length === 0) {
-                    this.slaveTransportMap.delete(slaveId);
-                }
-                else {
-                    this.slaveTransportMap.set(slaveId, updated);
-                }
-            }
-            this.logger.info(`Transport "${id}" removed`);
+            await this._removeTransportInternal(id);
         });
     }
     // =========================================================
@@ -360,7 +364,6 @@ class TransportController {
             await info.transport.connect();
             info.status = 'connected';
             info.reconnectAttempts = 0;
-            // Resume polling
             info.pollingManager.resumeAllTasks();
             this.logger.info(`Transport "${id}" connected`);
         }
@@ -369,13 +372,15 @@ class TransportController {
             info.lastError = err instanceof Error ? err : new Error(String(err));
             this.logger.error({ transportId: id, err: info.lastError.message }, 'Failed to connect transport');
             // Internal auto-reconnect logic
-            if (info.reconnectAttempts < info.maxReconnectAttempts) {
-                info.reconnectAttempts++;
-                setTimeout(() => this.connectTransport(id), info.reconnectInterval * info.reconnectAttempts);
-            }
-            else {
-                this.logger.error(`Max reconnection attempts reached for "${id}"`);
-            }
+            // if (info.reconnectAttempts < info.maxReconnectAttempts) {
+            //   info.reconnectAttempts++;
+            //   setTimeout(
+            //     () => this.connectTransport(id),
+            //     info.reconnectInterval * info.reconnectAttempts
+            //   );
+            // } else {
+            //   this.logger.error(`Max reconnection attempts reached for "${id}"`);
+            // }
             throw err;
         }
     }
@@ -432,52 +437,47 @@ class TransportController {
      * @param transportId - Transport ID.
      * @param slaveId - Modbus unit identifier.
      */
-    removeSlaveIdFromTransport(transportId, slaveId) {
-        const info = this.transports.get(transportId);
-        if (!info) {
-            this.logger.warn(`Attempted to remove slaveId ${slaveId} from non-existent transport "${transportId}"`);
-            return;
-        }
-        const index = info.slaveIds.indexOf(slaveId);
-        if (index !== -1) {
-            info.slaveIds.splice(index, 1);
-        }
-        else {
-            this.logger.warn(`SlaveId ${slaveId} was not found in transport "${transportId}"`);
-            return;
-        }
-        // Update routing map
-        const transportList = this.slaveTransportMap.get(slaveId);
-        if (transportList) {
-            const updatedList = transportList.filter(tid => tid !== transportId);
-            if (updatedList.length === 0) {
-                this.slaveTransportMap.delete(slaveId);
+    async removeSlaveIdFromTransport(transportId, slaveId) {
+        await this._registryMutex.runExclusive(async () => {
+            const info = this.transports.get(transportId);
+            if (!info) {
+                this.logger.warn(`Attempted to remove slaveId ${slaveId} from non-existent transport "${transportId}"`);
+                return;
+            }
+            const index = info.slaveIds.indexOf(slaveId);
+            if (index !== -1) {
+                info.slaveIds.splice(index, 1);
             }
             else {
-                this.slaveTransportMap.set(slaveId, updatedList);
+                return;
             }
-        }
-        // Clear sticky sessions
-        const stickyTransport = this._stickyMap.get(slaveId);
-        if (stickyTransport === transportId) {
-            this._stickyMap.delete(slaveId);
-        }
-        // Remove from trackers
-        const tracker = this.transportToDeviceTrackerMap.get(transportId);
-        if (tracker) {
-            try {
+            const transportList = this.slaveTransportMap.get(slaveId);
+            if (transportList) {
+                const updatedList = transportList.filter(tid => tid !== transportId);
+                if (updatedList.length === 0) {
+                    this.slaveTransportMap.delete(slaveId);
+                }
+                else {
+                    this.slaveTransportMap.set(slaveId, updatedList);
+                }
+            }
+            if (this._stickyMap.get(slaveId) === transportId) {
+                this._stickyMap.delete(slaveId);
+            }
+            const tracker = this.transportToDeviceTrackerMap.get(transportId);
+            if (tracker) {
                 tracker.removeState(slaveId);
             }
-            catch (err) {
-                this.logger.warn(`Failed to remove state for slaveId ${slaveId} from tracker: ${err.message}`);
+            const transportAny = info.transport;
+            if (typeof transportAny.removeConnectedDevice === 'function') {
+                transportAny.removeConnectedDevice(slaveId);
             }
-        }
-        // Call optional removal method on the transport
-        const transportAny = info.transport;
-        if (typeof transportAny.removeConnectedDevice === 'function') {
-            transportAny.removeConnectedDevice(slaveId);
-        }
-        this.logger.info(`Removed slaveId ${slaveId} from transport "${transportId}"`);
+            this.logger.info(`Removed slaveId ${slaveId} from transport "${transportId}"`);
+            if (info.slaveIds.length === 0) {
+                this.logger.info(`Transport "${transportId}" is empty. Auto-removing...`);
+                await this._removeTransportInternal(transportId);
+            }
+        });
     }
     /**
      * Hot-reloads a transport with new configuration options.
@@ -493,21 +493,17 @@ class TransportController {
             const wasConnected = info.status === 'connected';
             info.pollingManager.clearAll();
             await this._disconnectTransportInternal(id);
-            // Recreate transport instance
             const newTransport = await transport_factory_js_1.TransportFactory.create(info.type, options, this.logger);
-            // Re-init trackers
             const deviceTracker = new DeviceConnectionTracker_js_1.DeviceConnectionTracker();
             const portTracker = new PortConnectionTracker_js_1.PortConnectionTracker();
             this.transportToDeviceTrackerMap.set(id, deviceTracker);
             this.transportToPortTrackerMap.set(id, portTracker);
-            // Restore event listeners
             newTransport.setDeviceStateHandler((slaveId, connected, error) => {
                 this._onDeviceStateChange(id, slaveId, connected, error);
             });
             newTransport.setPortStateHandler((connected, slaveIds, error) => {
                 this._onPortStateChange(id, connected, slaveIds, error);
             });
-            // Restore custom handlers
             const deviceHandler = this.transportToDeviceHandlerMap.get(id);
             if (deviceHandler) {
                 await deviceTracker.setHandler(deviceHandler);
@@ -792,6 +788,33 @@ class TransportController {
         if (this._externalPortStateHandler) {
             this._externalPortStateHandler(connected, slaveIds, error);
         }
+    }
+    async _removeTransportInternal(id) {
+        const info = this.transports.get(id);
+        if (!info)
+            return;
+        info.pollingManager.clearAll();
+        await this._disconnectTransportInternal(id);
+        this.transports.delete(id);
+        this.transportToDeviceTrackerMap.delete(id);
+        this.transportToPortTrackerMap.delete(id);
+        this.transportToDeviceHandlerMap.delete(id);
+        this.transportToPortHandlerMap.delete(id);
+        for (const [slaveId, list] of this.slaveTransportMap.entries()) {
+            const updated = list.filter(tid => tid !== id);
+            if (updated.length === 0) {
+                this.slaveTransportMap.delete(slaveId);
+            }
+            else {
+                this.slaveTransportMap.set(slaveId, updated);
+            }
+        }
+        for (const [slaveId, tid] of this._stickyMap.entries()) {
+            if (tid === id) {
+                this._stickyMap.delete(slaveId);
+            }
+        }
+        this.logger.info(`Transport "${id}" fully removed and cleaned up`);
     }
     /**
      * Fully shuts down the controller.

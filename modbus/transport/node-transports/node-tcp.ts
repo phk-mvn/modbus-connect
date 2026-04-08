@@ -179,6 +179,7 @@ export default class NodeTcpTransport implements ITransportTcp {
 
       this.socket = new net.Socket();
       this.socket.setNoDelay(true);
+      this.socket.setKeepAlive(true);
 
       const timeoutHandler = setTimeout(() => {
         this._isConnecting = false;
@@ -211,11 +212,6 @@ export default class NodeTcpTransport implements ITransportTcp {
    * @param data - Raw buffer received from the socket.
    */
   private _onData(data: Buffer): void {
-    // if (data.length > 5 && data[0] > 32 && data[0] < 127) {
-    //     console.log(`\x1b[33m[IGNORED TEXT] ${data.toString().trim()}\x1b[0m`);
-    //     return;
-    // }
-
     const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     if (this.readBuffer.length + chunk.length > this.options.maxBufferSize) {
       this.readBuffer = utils.allocUint8Array(0);
@@ -315,7 +311,7 @@ export default class NodeTcpTransport implements ITransportTcp {
    * @param buffer - Data to be sent.
    * @throws NodeSerialWriteError if the socket is closed or writing fails.
    */
-  async write(buffer: Uint8Array): Promise<void> {
+  public async write(buffer: Uint8Array): Promise<void> {
     if (!this.isOpen || !this.socket) throw new NodeSerialWriteError('Socket is closed');
 
     const release = await this._operationMutex.acquire();
@@ -339,7 +335,10 @@ export default class NodeTcpTransport implements ITransportTcp {
    * @returns A promise resolving to the Uint8Array data.
    * @throws ModbusTimeoutError if data is not received within the specified time.
    */
-  async read(length: number, timeout: number = this.options.readTimeout): Promise<Uint8Array> {
+  public async read(
+    length: number,
+    timeout: number = this.options.readTimeout
+  ): Promise<Uint8Array> {
     if (length <= 0) throw new ModbusDataConversionError(length, 'positive');
     const release = await this._operationMutex.acquire();
     const start = Date.now();
@@ -371,7 +370,7 @@ export default class NodeTcpTransport implements ITransportTcp {
   /**
    * Gracefully closes the TCP connection and stops reconnection attempts.
    */
-  async disconnect(): Promise<void> {
+  public async disconnect(): Promise<void> {
     this._shouldReconnect = false;
     this._isDisconnecting = true;
     if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);
@@ -380,17 +379,17 @@ export default class NodeTcpTransport implements ITransportTcp {
 
     return new Promise(resolve => {
       if (this.socket) {
-        this.socket.end(() => {
-          this.isOpen = false;
-          this._notifyPortDisconnected(
-            EConnectionErrorType.ManualDisconnect,
-            'Manual disconnect',
-            affectedSlaves
-          );
-          this.socket = null;
-          this._isDisconnecting = false;
-          resolve();
-        });
+        this.socket.removeAllListeners();
+        this.socket.destroy();
+        this.isOpen = false;
+        this._notifyPortDisconnected(
+          EConnectionErrorType.ManualDisconnect,
+          'Manual disconnect',
+          affectedSlaves
+        );
+        this.socket = null;
+        this._isDisconnecting = false;
+        resolve();
       } else {
         this._isDisconnecting = false;
         resolve();
@@ -401,7 +400,7 @@ export default class NodeTcpTransport implements ITransportTcp {
   /**
    * Clears the current read buffer.
    */
-  async flush(): Promise<void> {
+  public async flush(): Promise<void> {
     this.readBuffer = utils.allocUint8Array(0);
   }
 

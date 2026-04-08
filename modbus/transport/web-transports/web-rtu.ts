@@ -328,7 +328,7 @@ export default class WebSerialTransport implements ITransport {
    * Establishes a connection to the serial port.
    * Performs port configuration and initializes reading/writing streams.
    */
-  async connect(): Promise<void> {
+  public async connect(): Promise<void> {
     if (this._isConnecting) {
       this.logger.warn('Connection had already started, waiting...');
       return this._connectionPromise ?? Promise.resolve();
@@ -533,7 +533,7 @@ export default class WebSerialTransport implements ITransport {
    * Writes a buffer of data to the serial port.
    * @param buffer The Uint8Array to be sent.
    */
-  async write(buffer: Uint8Array): Promise<void> {
+  public async write(buffer: Uint8Array): Promise<void> {
     if (this._isFlushing) throw new ModbusFlushError();
     if (!this.isPortReady) throw new WebSerialWriteError('Port is not ready for writing');
     if (buffer.length === 0) throw new ModbusBufferUnderrunError(0, 1);
@@ -589,7 +589,10 @@ export default class WebSerialTransport implements ITransport {
    * @param timeout Maximum time to wait for the data in milliseconds.
    * @returns A Promise that resolves to the requested Uint8Array.
    */
-  async read(length: number, timeout: number = this.options.readTimeout): Promise<Uint8Array> {
+  public async read(
+    length: number,
+    timeout: number = this.options.readTimeout
+  ): Promise<Uint8Array> {
     if (!this.isPortReady()) {
       throw new WebSerialReadError('Port is not ready');
     }
@@ -639,7 +642,7 @@ export default class WebSerialTransport implements ITransport {
   /**
    * Disconnects the transport and stops all ongoing operations and reconnection attempts.
    */
-  async disconnect(): Promise<void> {
+  public async disconnect(): Promise<void> {
     this.logger.info('Disconnecting WebSerial transport...');
     this._shouldReconnect = false;
     this._isDisconnecting = true;
@@ -678,7 +681,7 @@ export default class WebSerialTransport implements ITransport {
   /**
    * Clears the current read buffer and resets the empty read counter.
    */
-  async flush(): Promise<void> {
+  public async flush(): Promise<void> {
     if (this._isFlushing) {
       await Promise.all(this._pendingFlushPromises);
       return;

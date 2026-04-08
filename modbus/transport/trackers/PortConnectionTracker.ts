@@ -161,6 +161,7 @@ export class PortConnectionTracker implements IPortConnectionTracker {
         slaveIds: [],
         timestamp: Date.now(),
       };
+      this._handler = undefined;
     } finally {
       release();
     }

@@ -89,6 +89,42 @@ class TransportController implements ITransportController {
   }
 
   /**
+   * Disables all logging output.
+   * Re-initializes the pino instance with the 'silent' level to stop any log emission.
+   */
+  public disableLogger(): void {
+    this.logger = pino({
+      level: 'silent',
+    });
+  }
+
+  /**
+   * Enables and configures the logger.
+   *
+   * Sets the default log level to 'info' and attaches metadata (component name and slave ID).
+   * If the environment is not 'production', it enables `pino-pretty` transport
+   * with custom message formatting for better developer experience.
+   */
+  public enableLogger(): void {
+    this.logger = pino({
+      level: 'info',
+      base: { component: 'Transport Controller' },
+      transport:
+        process.env.NODE_ENV !== 'production'
+          ? {
+              target: 'pino-pretty',
+              options: {
+                colorize: true,
+                translateTime: 'HH:mm:ss',
+                ignore: 'pid,hostname,component',
+                messageFormat: '[{component}] {msg}',
+              },
+            }
+          : undefined,
+    });
+  }
+
+  /**
    * Sets a global handler for device connection state changes.
    * Triggered when any device on any transport changes its connection status.
    * @param handler - The callback function.
@@ -118,7 +154,7 @@ class TransportController implements ITransportController {
    * @throws RSModeConstraintError If RS232 is assigned more than one device.
    * @throws Error If transport ID is already taken or duplicate Slave IDs are provided.
    */
-  async addTransport(
+  public async addTransport(
     id: string,
     type: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator',
     options: INodeSerialTransportOptions | (IWebSerialTransportOptions & { port: IWebSerialPort }),
@@ -136,17 +172,14 @@ class TransportController implements ITransportController {
       const rsMode = options.RSMode;
       const slaveIds = (options as any).slaveIds || [];
 
-      // Validate RS232 constraint (only one device allowed)
       if (rsMode === 'RS232' && slaveIds.length > 1) {
         throw new RSModeConstraintError(
           `Transport "${id}" with RSMode 'RS232' cannot be assigned more than one device. Provided ${slaveIds.length} devices.`
         );
       }
 
-      // Create instance via factory
       const transport = await TransportFactory.create(type, options, this.logger);
 
-      // Check for duplicate Slave IDs within this transport
       const seenSlaveIds = new Set<number>();
       for (const slaveId of slaveIds) {
         if (seenSlaveIds.has(slaveId)) {
@@ -159,7 +192,6 @@ class TransportController implements ITransportController {
 
       const fallbacks = (options as any).fallbacks || [];
 
-      // Init Polling Manager
       const pollingManager = new PollingManager(pollingConfig);
 
       const info: ITransportInfo = {
@@ -179,14 +211,12 @@ class TransportController implements ITransportController {
 
       this.transports.set(id, info);
 
-      // Init trackers
       const deviceTracker = new DeviceConnectionTracker();
       const portTracker = new PortConnectionTracker();
 
       this.transportToDeviceTrackerMap.set(id, deviceTracker);
       this.transportToPortTrackerMap.set(id, portTracker);
 
-      // Subscribe to transport events
       transport.setDeviceStateHandler((slaveId: number, connected: boolean, error: any) => {
         this._onDeviceStateChange(id, slaveId, connected, error);
       });
@@ -195,7 +225,6 @@ class TransportController implements ITransportController {
         this._onPortStateChange(id, connected, slaveIds, error);
       });
 
-      // Update global routing map
       this._updateSlaveTransportMap(id, slaveIds);
 
       this.logger.info(`Transport "${id}" added with PollingManager`);
@@ -206,35 +235,9 @@ class TransportController implements ITransportController {
    * Removes a transport, stops all its polling tasks, and closes the connection.
    * @param id - The ID of the transport to remove.
    */
-  async removeTransport(id: string): Promise<void> {
+  public async removeTransport(id: string): Promise<void> {
     await this._registryMutex.runExclusive(async () => {
-      const info = this.transports.get(id);
-      if (!info) return;
-
-      info.pollingManager.clearAll();
-
-      // Safe internal disconnect
-      await this._disconnectTransportInternal(id);
-
-      this.transports.delete(id);
-
-      // Cleanup trackers and maps
-      this.transportToDeviceTrackerMap.delete(id);
-      this.transportToPortTrackerMap.delete(id);
-      this.transportToDeviceHandlerMap.delete(id);
-      this.transportToPortHandlerMap.delete(id);
-
-      // Remove from routing map
-      for (const [slaveId, list] of this.slaveTransportMap.entries()) {
-        const updated = list.filter(tid => tid !== id);
-        if (updated.length === 0) {
-          this.slaveTransportMap.delete(slaveId);
-        } else {
-          this.slaveTransportMap.set(slaveId, updated);
-        }
-      }
-
-      this.logger.info(`Transport "${id}" removed`);
+      await this._removeTransportInternal(id);
     });
   }
 
@@ -365,7 +368,7 @@ class TransportController implements ITransportController {
    * Returns the transport instance for a given ID.
    * @param id - Transport ID.
    */
-  getTransport(id: string): ITransport | null {
+  public getTransport(id: string): ITransport | null {
     const info = this.transports.get(id);
     return info ? info.transport : null;
   }
@@ -373,14 +376,14 @@ class TransportController implements ITransportController {
   /**
    * Returns a list of all registered transports and their metadata.
    */
-  listTransports(): ITransportInfo[] {
+  public listTransports(): ITransportInfo[] {
     return Array.from(this.transports.values());
   }
 
   /**
    * Initiates connection for all registered transports.
    */
-  async connectAll(): Promise<void> {
+  public async connectAll(): Promise<void> {
     const promises = Array.from(this.transports.values()).map(info =>
       this.connectTransport(info.id)
     );
@@ -390,7 +393,7 @@ class TransportController implements ITransportController {
   /**
    * Disconnects all registered transports.
    */
-  async disconnectAll(): Promise<void> {
+  public async disconnectAll(): Promise<void> {
     const promises = Array.from(this.transports.values()).map(info =>
       this.disconnectTransport(info.id)
     );
@@ -402,7 +405,7 @@ class TransportController implements ITransportController {
    * Resumes polling upon successful connection.
    * @param id - Transport ID.
    */
-  async connectTransport(id: string): Promise<void> {
+  public async connectTransport(id: string): Promise<void> {
     const info = this.transports.get(id);
     if (!info) throw new Error(`Transport with id "${id}" not found`);
     if (info.status === 'connecting' || info.status === 'connected') return;
@@ -413,7 +416,6 @@ class TransportController implements ITransportController {
       info.status = 'connected';
       info.reconnectAttempts = 0;
 
-      // Resume polling
       info.pollingManager.resumeAllTasks();
 
       this.logger.info(`Transport "${id}" connected`);
@@ -426,15 +428,15 @@ class TransportController implements ITransportController {
       );
 
       // Internal auto-reconnect logic
-      if (info.reconnectAttempts < info.maxReconnectAttempts) {
-        info.reconnectAttempts++;
-        setTimeout(
-          () => this.connectTransport(id),
-          info.reconnectInterval * info.reconnectAttempts
-        );
-      } else {
-        this.logger.error(`Max reconnection attempts reached for "${id}"`);
-      }
+      // if (info.reconnectAttempts < info.maxReconnectAttempts) {
+      //   info.reconnectAttempts++;
+      //   setTimeout(
+      //     () => this.connectTransport(id),
+      //     info.reconnectInterval * info.reconnectAttempts
+      //   );
+      // } else {
+      //   this.logger.error(`Max reconnection attempts reached for "${id}"`);
+      // }
 
       throw err;
     }
@@ -444,7 +446,7 @@ class TransportController implements ITransportController {
    * Disconnects a specific transport.
    * @param id - Transport ID.
    */
-  async disconnectTransport(id: string): Promise<void> {
+  public async disconnectTransport(id: string): Promise<void> {
     await this._disconnectTransportInternal(id);
   }
 
@@ -477,7 +479,7 @@ class TransportController implements ITransportController {
    * @param slaveId - Modbus unit identifier.
    * @throws RSModeConstraintError if RS232 already has a device.
    */
-  assignSlaveIdToTransport(transportId: string, slaveId: number): void {
+  public assignSlaveIdToTransport(transportId: string, slaveId: number): void {
     const info = this.transports.get(transportId);
     if (!info) {
       throw new Error(`Transport with id "${transportId}" not found`);
@@ -506,59 +508,54 @@ class TransportController implements ITransportController {
    * @param transportId - Transport ID.
    * @param slaveId - Modbus unit identifier.
    */
-  removeSlaveIdFromTransport(transportId: string, slaveId: number): void {
-    const info = this.transports.get(transportId);
-    if (!info) {
-      this.logger.warn(
-        `Attempted to remove slaveId ${slaveId} from non-existent transport "${transportId}"`
-      );
-      return;
-    }
-
-    const index = info.slaveIds.indexOf(slaveId);
-    if (index !== -1) {
-      info.slaveIds.splice(index, 1);
-    } else {
-      this.logger.warn(`SlaveId ${slaveId} was not found in transport "${transportId}"`);
-      return;
-    }
-
-    // Update routing map
-    const transportList = this.slaveTransportMap.get(slaveId);
-    if (transportList) {
-      const updatedList = transportList.filter(tid => tid !== transportId);
-      if (updatedList.length === 0) {
-        this.slaveTransportMap.delete(slaveId);
-      } else {
-        this.slaveTransportMap.set(slaveId, updatedList);
-      }
-    }
-
-    // Clear sticky sessions
-    const stickyTransport = this._stickyMap.get(slaveId);
-    if (stickyTransport === transportId) {
-      this._stickyMap.delete(slaveId);
-    }
-
-    // Remove from trackers
-    const tracker = this.transportToDeviceTrackerMap.get(transportId);
-    if (tracker) {
-      try {
-        tracker.removeState(slaveId);
-      } catch (err: any) {
+  public async removeSlaveIdFromTransport(transportId: string, slaveId: number): Promise<void> {
+    await this._registryMutex.runExclusive(async () => {
+      const info = this.transports.get(transportId);
+      if (!info) {
         this.logger.warn(
-          `Failed to remove state for slaveId ${slaveId} from tracker: ${err.message}`
+          `Attempted to remove slaveId ${slaveId} from non-existent transport "${transportId}"`
         );
+        return;
       }
-    }
 
-    // Call optional removal method on the transport
-    const transportAny = info.transport as any;
-    if (typeof transportAny.removeConnectedDevice === 'function') {
-      transportAny.removeConnectedDevice(slaveId);
-    }
+      const index = info.slaveIds.indexOf(slaveId);
+      if (index !== -1) {
+        info.slaveIds.splice(index, 1);
+      } else {
+        return;
+      }
 
-    this.logger.info(`Removed slaveId ${slaveId} from transport "${transportId}"`);
+      const transportList = this.slaveTransportMap.get(slaveId);
+      if (transportList) {
+        const updatedList = transportList.filter(tid => tid !== transportId);
+        if (updatedList.length === 0) {
+          this.slaveTransportMap.delete(slaveId);
+        } else {
+          this.slaveTransportMap.set(slaveId, updatedList);
+        }
+      }
+
+      if (this._stickyMap.get(slaveId) === transportId) {
+        this._stickyMap.delete(slaveId);
+      }
+
+      const tracker = this.transportToDeviceTrackerMap.get(transportId);
+      if (tracker) {
+        tracker.removeState(slaveId);
+      }
+
+      const transportAny = info.transport as any;
+      if (typeof transportAny.removeConnectedDevice === 'function') {
+        transportAny.removeConnectedDevice(slaveId);
+      }
+
+      this.logger.info(`Removed slaveId ${slaveId} from transport "${transportId}"`);
+
+      if (info.slaveIds.length === 0) {
+        this.logger.info(`Transport "${transportId}" is empty. Auto-removing...`);
+        await this._removeTransportInternal(transportId);
+      }
+    });
   }
 
   /**
@@ -567,7 +564,7 @@ class TransportController implements ITransportController {
    * @param id - Transport ID.
    * @param options - New options.
    */
-  async reloadTransport(
+  public async reloadTransport(
     id: string,
     options: INodeSerialTransportOptions | (IWebSerialTransportOptions & { port: IWebSerialPort })
   ): Promise<void> {
@@ -581,17 +578,14 @@ class TransportController implements ITransportController {
 
       await this._disconnectTransportInternal(id);
 
-      // Recreate transport instance
       const newTransport = await TransportFactory.create(info.type, options, this.logger);
 
-      // Re-init trackers
       const deviceTracker = new DeviceConnectionTracker();
       const portTracker = new PortConnectionTracker();
 
       this.transportToDeviceTrackerMap.set(id, deviceTracker);
       this.transportToPortTrackerMap.set(id, portTracker);
 
-      // Restore event listeners
       newTransport.setDeviceStateHandler((slaveId: number, connected: boolean, error: any) => {
         this._onDeviceStateChange(id, slaveId, connected, error);
       });
@@ -600,7 +594,6 @@ class TransportController implements ITransportController {
         this._onPortStateChange(id, connected, slaveIds, error);
       });
 
-      // Restore custom handlers
       const deviceHandler = this.transportToDeviceHandlerMap.get(id);
       if (deviceHandler) {
         await deviceTracker.setHandler(deviceHandler);
@@ -677,7 +670,7 @@ class TransportController implements ITransportController {
    * @param requiredRSMode - Protocol mode (RS485, RS232, TCP/IP).
    * @returns Transport instance or null if none found.
    */
-  getTransportForSlave(slaveId: number, requiredRSMode: TRSMode): ITransport | null {
+  public getTransportForSlave(slaveId: number, requiredRSMode: TRSMode): ITransport | null {
     const transportIds = this.slaveTransportMap.get(slaveId);
 
     if (transportIds && transportIds.length > 0) {
@@ -798,7 +791,7 @@ class TransportController implements ITransportController {
    * Returns diagnostic status for a specific transport or all registered ones.
    * @param id - Optional Transport ID.
    */
-  getStatus(id?: string): ITransportStatus | Record<string, ITransportStatus> {
+  public getStatus(id?: string): ITransportStatus | Record<string, ITransportStatus> {
     if (id) {
       const info = this.transports.get(id);
       if (!info) return {} as ITransportStatus;
@@ -830,7 +823,7 @@ class TransportController implements ITransportController {
   /**
    * Returns the count of currently connected transports.
    */
-  getActiveTransportCount(): number {
+  public getActiveTransportCount(): number {
     let count = 0;
     for (const info of this.transports.values()) {
       if (info.status === 'connected') count++;
@@ -841,14 +834,14 @@ class TransportController implements ITransportController {
   /**
    * Updates the global load balancing strategy.
    */
-  setLoadBalancer(strategy: TLoadBalancerStrategy): void {
+  public setLoadBalancer(strategy: TLoadBalancerStrategy): void {
     this.loadBalancerStrategy = strategy;
   }
 
   /**
    * Attaches a device state handler to a specific transport tracker.
    */
-  async setDeviceStateHandlerForTransport(
+  public async setDeviceStateHandlerForTransport(
     transportId: string,
     handler: TDeviceStateHandler
   ): Promise<void> {
@@ -864,7 +857,7 @@ class TransportController implements ITransportController {
   /**
    * Attaches a port state handler to a specific transport tracker.
    */
-  async setPortStateHandlerForTransport(
+  public async setPortStateHandlerForTransport(
     transportId: string,
     handler: TPortStateHandler
   ): Promise<void> {
@@ -955,6 +948,39 @@ class TransportController implements ITransportController {
     if (this._externalPortStateHandler) {
       this._externalPortStateHandler(connected, slaveIds, error as any);
     }
+  }
+
+  private async _removeTransportInternal(id: string): Promise<void> {
+    const info = this.transports.get(id);
+    if (!info) return;
+
+    info.pollingManager.clearAll();
+
+    await this._disconnectTransportInternal(id);
+
+    this.transports.delete(id);
+
+    this.transportToDeviceTrackerMap.delete(id);
+    this.transportToPortTrackerMap.delete(id);
+    this.transportToDeviceHandlerMap.delete(id);
+    this.transportToPortHandlerMap.delete(id);
+
+    for (const [slaveId, list] of this.slaveTransportMap.entries()) {
+      const updated = list.filter(tid => tid !== id);
+      if (updated.length === 0) {
+        this.slaveTransportMap.delete(slaveId);
+      } else {
+        this.slaveTransportMap.set(slaveId, updated);
+      }
+    }
+
+    for (const [slaveId, tid] of this._stickyMap.entries()) {
+      if (tid === id) {
+        this._stickyMap.delete(slaveId);
+      }
+    }
+
+    this.logger.info(`Transport "${id}" fully removed and cleaned up`);
   }
 
   /**

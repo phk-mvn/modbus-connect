@@ -1113,6 +1113,15 @@ Simulates a sensor by changing register values over time:
 
 # Changelog
 
+### 4.0.2 (2026-04-07)
+
+- **Security**: Now the removal of the Slave ID cannot occur simultaneously with the addition of another transport or reboot
+- **Memory**: The `_stickyMap` card is now cleared as soon as the device is removed. Previously, there were accumulated "dead" bindings
+- **Logic**: A potential error has been removed when **removeTransport** could be called twice for the same ID from different asynchrounous calls
+- Added the `enableLogger()/disableLogger()` method's to the **ModbusClient** and **TransportController** modules. Sets the level to `info`, by default loggers are enabled in both modules
+- The implementation types of module classes have been finalized
+  > - **A logger in a WEB environment** functionality has been sent for revision
+
 ### 4.0.0 (2026-04-06)
 
 - Improved TCP/IP transport - `'node-tcp'`

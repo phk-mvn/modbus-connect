@@ -10,6 +10,8 @@ import type PollingManager from '../polling-manager';
 export interface IModbusCLient {
   use(plugin: IModbusPlugin): void;
   executeCustomFunction(functionName: string, ...args: any[]): Promise<any>;
+  disableLogger(): void;
+  enableLogger(): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   setSlaveId(newSlaveId: number): Promise<void>;
@@ -229,6 +231,8 @@ export type TLoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available'
 // ===================================================
 
 export interface ITransportController {
+  disableLogger(): void;
+  enableLogger(): void;
   addTransport(
     id: string,
     type: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator',
@@ -256,6 +260,7 @@ export interface ITransportController {
 
   getTransportForSlave(slaveId: number, requiredRSMode: TRSMode): ITransport | null;
   assignSlaveIdToTransport(transportId: string, slaveId: number): void;
+  removeSlaveIdFromTransport(transportId: string, slaveId: number): void;
 
   getStatus(id?: string): ITransportStatus | Record<string, ITransportStatus>;
   getActiveTransportCount(): number;

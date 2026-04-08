@@ -141,6 +141,39 @@ class ModbusClient {
         return this.transportController.getTransportForSlave(this.slaveId, this.RSMode);
     }
     /**
+     * Disables all logging output.
+     * Re-initializes the pino instance with the 'silent' level to stop any log emission.
+     */
+    disableLogger() {
+        this.logger = (0, pino_1.pino)({
+            level: 'silent',
+        });
+    }
+    /**
+     * Enables and configures the logger.
+     *
+     * Sets the default log level to 'info' and attaches metadata (component name and slave ID).
+     * If the environment is not 'production', it enables `pino-pretty` transport
+     * with custom message formatting for better developer experience.
+     */
+    enableLogger() {
+        this.logger = (0, pino_1.pino)({
+            level: 'info',
+            base: { component: 'ModbusClient', slaveId: this.slaveId },
+            transport: process.env.NODE_ENV !== 'production'
+                ? {
+                    target: 'pino-pretty',
+                    options: {
+                        colorize: true,
+                        translateTime: 'HH:mm:ss',
+                        ignore: 'pid,hostname,component,slaveId,funcCode,ms',
+                        messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
+                    },
+                }
+                : undefined,
+        });
+    }
+    /**
      * Registers a plugin with the Modbus client.
      * Plugins can extend functionality by adding custom function codes and handlers.
      * Duplicate plugins (by name) are skipped.
@@ -216,10 +249,13 @@ class ModbusClient {
         const release = await this._mutex.acquire();
         try {
             const transport = this._effectiveTransport;
-            this.logger.info({
-                slaveId: this.slaveId,
-                transport: transport ? transport.constructor.name : 'N/A',
-            }, 'Client logically disconnected. The physical transport connection is not affected');
+            const transportId = this.transportController
+                .listTransports()
+                .find(t => t.transport === transport)?.id;
+            if (transportId) {
+                this.transportController.removeSlaveIdFromTransport(transportId, this.slaveId);
+            }
+            this.logger.info('Client disconnected and unregistered from transport');
         }
         finally {
             release();

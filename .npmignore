@@ -6,5 +6,6 @@ node_modules/
 .prettierrc.json
 eslint.config.js
 test.js
+sgm130-plugins.js
 tsconfig.json
 tsconfig.tsbuildinfo

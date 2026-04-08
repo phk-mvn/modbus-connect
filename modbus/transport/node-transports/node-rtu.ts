@@ -346,7 +346,7 @@ export default class NodeSerialTransport implements ITransport {
    * Flushes the internal read buffer, discarding all pending data.
    * Useful before sending a new request in half-duplex (RS485) mode.
    */
-  async flush(): Promise<void> {
+  public async flush(): Promise<void> {
     if (this._isFlushing) {
       await Promise.all(this._pendingFlushPromises.map(p => p())).catch(() => {});
       return;
@@ -369,7 +369,7 @@ export default class NodeSerialTransport implements ITransport {
    * @param buffer - Data to send
    * @throws NodeSerialWriteError if write or drain fails
    */
-  async write(buffer: Uint8Array): Promise<void> {
+  public async write(buffer: Uint8Array): Promise<void> {
     if (!this.isOpen || !this.port || !this.port?.isOpen)
       throw new NodeSerialWriteError('Port Closed');
     if (buffer.length === 0) throw new ModbusBufferUnderrunError(0, 1);
@@ -409,7 +409,10 @@ export default class NodeSerialTransport implements ITransport {
    * @returns Uint8Array containing the requested data
    * @throws ModbusTimeoutError, NodeSerialReadError, ModbusFlushError, etc.
    */
-  async read(length: number, timeout: number = this.options.readTimeout): Promise<Uint8Array> {
+  public async read(
+    length: number,
+    timeout: number = this.options.readTimeout
+  ): Promise<Uint8Array> {
     if (length <= 0) throw new ModbusDataConversionError(length, 'positive');
     const release = await this._operationMutex.acquire();
     const start = Date.now();
@@ -449,7 +452,7 @@ export default class NodeSerialTransport implements ITransport {
   /**
    * Gracefully disconnects the serial port and stops reconnection attempts.
    */
-  async disconnect(): Promise<void> {
+  public async disconnect(): Promise<void> {
     this._shouldReconnect = false;
     this._isDisconnecting = true;
     if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);

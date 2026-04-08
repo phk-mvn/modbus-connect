@@ -24,7 +24,7 @@ export class TransportFactory {
    * @returns Promise that resolves to an ITransport implementation
    * @throws Error if required options are missing or transport type is unknown
    */
-  static async create(
+  public static async create(
     type: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator',
     options: any,
     logger: Logger

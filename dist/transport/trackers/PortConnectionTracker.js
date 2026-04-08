@@ -140,6 +140,7 @@ class PortConnectionTracker {
                 slaveIds: [],
                 timestamp: Date.now(),
             };
+            this._handler = undefined;
         }
         finally {
             release();

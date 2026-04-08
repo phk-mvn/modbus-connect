@@ -125,7 +125,7 @@ class TaskController implements ITaskController {
    * Sets the stopped flag to false, calls the `onStart` callback,
    * and schedules the first execution immediately.
    */
-  start(): void {
+  public start(): void {
     if (!this.stopped) {
       this.logger.debug('Task already running');
       return;
@@ -144,7 +144,7 @@ class TaskController implements ITaskController {
    * - Calls the `onStop` callback
    * After calling `stop()`, the task will no longer be executed automatically.
    */
-  stop(): void {
+  public stop(): void {
     if (this.stopped) {
       this.logger.debug('Task already stopped');
       return;
@@ -167,7 +167,7 @@ class TaskController implements ITaskController {
    * until `resume()` is called. Any currently running execution will finish,
    * but the next scheduled run will be skipped while paused.
    */
-  pause(): void {
+  public pause(): void {
     if (this.paused) {
       this.logger.debug('Task already paused');
       return;
@@ -181,7 +181,7 @@ class TaskController implements ITaskController {
    * If the task is not stopped and is currently paused, it clears the pause flag
    * and schedules the next execution if no timer is active and execution is not in progress.
    */
-  resume(): void {
+  public resume(): void {
     if (!this.stopped && this.paused) {
       this.paused = false;
       this.logger.info('Task resumed');
@@ -229,7 +229,7 @@ class TaskController implements ITaskController {
    * - Calling all lifecycle callbacks (`onBeforeEach`, `onData`, `onSuccess`, `onFailure`, `onFinish`, etc.)
    * After execution completes (success or failure), it always schedules the next run.
    */
-  async execute(): Promise<void> {
+  public async execute(): Promise<void> {
     if (this.stopped || this.paused) {
       this.logger.debug({ id: this.id }, 'Cannot execute - task is stopped or paused');
       this._scheduleNextRun();

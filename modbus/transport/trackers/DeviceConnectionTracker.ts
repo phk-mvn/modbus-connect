@@ -227,9 +227,12 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
   public async clear(): Promise<void> {
     const release = await this._mutex.acquire();
     try {
-      this._states.clear();
-      this._debounceTimeouts.forEach(clearTimeout);
+      for (const timeout of this._debounceTimeouts.values()) {
+        clearTimeout(timeout);
+      }
       this._debounceTimeouts.clear();
+
+      this._states.clear();
       this._handler = undefined;
     } finally {
       release();
