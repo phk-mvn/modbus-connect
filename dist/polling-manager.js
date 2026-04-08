@@ -367,7 +367,7 @@ class PollingManager {
                     target: 'pino-pretty',
                     options: {
                         colorize: true,
-                        translateTime: 'HH:mm:ss',
+                        translateTime: 'SYS:HH:MM:ss',
                         ignore: 'pid,hostname,component,taskId',
                         messageFormat: '[{component}] {msg}',
                     },

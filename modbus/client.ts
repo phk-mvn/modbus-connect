@@ -100,7 +100,7 @@ class ModbusClient implements IModbusCLient {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component,slaveId,funcCode,ms',
                 messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
               },
@@ -171,7 +171,7 @@ class ModbusClient implements IModbusCLient {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component,slaveId,funcCode,ms',
                 messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
               },
@@ -416,7 +416,7 @@ class ModbusClient implements IModbusCLient {
    * @param startAddress - Starting register address (1-65535)
    * @param quantity - Number of registers to read (1-125)
    * @returns Array of register values (0-65535)
-   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusTimeoutError, etc.
+   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
   public async readHoldingRegisters(startAddress: number, quantity: number): Promise<number[]> {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
@@ -436,7 +436,7 @@ class ModbusClient implements IModbusCLient {
    * @param startAddress - Starting register address (1-65535)
    * @param quantity - Number of registers to read (1-125)
    * @returns Array of register values (0-65535)
-   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusTimeoutError, etc.
+   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
   public async readInputRegisters(startAddress: number, quantity: number): Promise<number[]> {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
@@ -457,7 +457,7 @@ class ModbusClient implements IModbusCLient {
    * @param value - Value to write (0-65535)
    * @param timeout - Optional custom timeout in ms
    * @returns Object containing written address and value
-   * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError, ModbusTimeoutError, etc.
+   * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError
    */
   public async writeSingleRegister(
     address: number,
@@ -482,7 +482,7 @@ class ModbusClient implements IModbusCLient {
    * @param values - Array of values to write (each 0-65535)
    * @param timeout - Optional custom timeout in ms
    * @returns Object containing written start address and quantity
-   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusIllegalDataValueError, etc.
+   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusIllegalDataValueError
    */
   public async writeMultipleRegisters(
     address: number,
@@ -511,7 +511,7 @@ class ModbusClient implements IModbusCLient {
    * @param quantity - Number of coils to read (1-2000)
    * @param timeout - Optional custom timeout in ms
    * @returns Array of boolean values (true = ON, false = OFF)
-   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, etc.
+   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
   public async readCoils(
     startAddress: number,
@@ -536,7 +536,7 @@ class ModbusClient implements IModbusCLient {
    * @param quantity - Number of inputs to read (1-2000)
    * @param timeout - Optional custom timeout in ms
    * @returns Array of boolean values
-   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, etc.
+   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
   public async readDiscreteInputs(
     startAddress: number,
@@ -561,7 +561,7 @@ class ModbusClient implements IModbusCLient {
    * @param value - Boolean value (true = ON, false = OFF)
    * @param timeout - Optional custom timeout in ms
    * @returns Object containing written address and value
-   * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError, etc.
+   * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError
    */
   public async writeSingleCoil(
     address: number,
@@ -586,7 +586,7 @@ class ModbusClient implements IModbusCLient {
    * @param values - Array of boolean values to write
    * @param timeout - Optional custom timeout in ms
    * @returns Object containing written start address and quantity
-   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, etc.
+   * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
   public async writeMultipleCoils(
     address: number,
@@ -623,7 +623,10 @@ class ModbusClient implements IModbusCLient {
    * @param timeout - Optional custom timeout in ms
    * @returns Detailed device identification object with object values as strings
    */
-  public async readDeviceIdentification(timeout?: number) {
+  public async readDeviceIdentification(
+    decoder: 'windows-1251' | 'utf-8' = 'utf-8',
+    timeout?: number
+  ) {
     const originalSlaveId = this.slaveId;
     try {
       const pdu = functions.buildReadDeviceIdentificationRequest(0x01, 0x00);
@@ -639,12 +642,12 @@ class ModbusClient implements IModbusCLient {
       const formattedObjects: Record<number, string> = {};
 
       if (rawResponse.objects) {
-        const decoder = new TextDecoder('windows-1251');
+        const decodeText = new TextDecoder(decoder);
 
         for (const [key, value] of Object.entries(rawResponse.objects)) {
           const id = parseInt(key, 10);
           const bytes = value instanceof Uint8Array ? value : new Uint8Array(value as any);
-          formattedObjects[id] = decoder.decode(bytes).replace(/\0/g, '').trim();
+          formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
         }
       }
 

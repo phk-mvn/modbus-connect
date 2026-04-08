@@ -83,7 +83,7 @@ export default class NodeTcpTransport implements ITransportTcp {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component,host,port',
                 messageFormat: '[{component}] {msg}',
               },

@@ -103,7 +103,7 @@ class ModbusClient {
                     target: 'pino-pretty',
                     options: {
                         colorize: true,
-                        translateTime: 'HH:mm:ss',
+                        translateTime: 'SYS:HH:MM:ss',
                         ignore: 'pid,hostname,component,slaveId,funcCode,ms',
                         messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
                     },
@@ -165,7 +165,7 @@ class ModbusClient {
                     target: 'pino-pretty',
                     options: {
                         colorize: true,
-                        translateTime: 'HH:mm:ss',
+                        translateTime: 'SYS:HH:MM:ss',
                         ignore: 'pid,hostname,component,slaveId,funcCode,ms',
                         messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
                     },
@@ -363,7 +363,7 @@ class ModbusClient {
      * @param startAddress - Starting register address (1-65535)
      * @param quantity - Number of registers to read (1-125)
      * @returns Array of register values (0-65535)
-     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusTimeoutError, etc.
+     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
      */
     async readHoldingRegisters(startAddress, quantity) {
         if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
@@ -381,7 +381,7 @@ class ModbusClient {
      * @param startAddress - Starting register address (1-65535)
      * @param quantity - Number of registers to read (1-125)
      * @returns Array of register values (0-65535)
-     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusTimeoutError, etc.
+     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
      */
     async readInputRegisters(startAddress, quantity) {
         if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
@@ -400,7 +400,7 @@ class ModbusClient {
      * @param value - Value to write (0-65535)
      * @param timeout - Optional custom timeout in ms
      * @returns Object containing written address and value
-     * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError, ModbusTimeoutError, etc.
+     * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError
      */
     async writeSingleRegister(address, value, timeout) {
         if (!Number.isInteger(address) || address < 0 || address > 65535) {
@@ -419,7 +419,7 @@ class ModbusClient {
      * @param values - Array of values to write (each 0-65535)
      * @param timeout - Optional custom timeout in ms
      * @returns Object containing written start address and quantity
-     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusIllegalDataValueError, etc.
+     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, ModbusIllegalDataValueError
      */
     async writeMultipleRegisters(address, values, timeout) {
         if (!Number.isInteger(address) || address < 0 || address > 65535) {
@@ -442,7 +442,7 @@ class ModbusClient {
      * @param quantity - Number of coils to read (1-2000)
      * @param timeout - Optional custom timeout in ms
      * @returns Array of boolean values (true = ON, false = OFF)
-     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, etc.
+     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
      */
     async readCoils(startAddress, quantity, timeout) {
         if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
@@ -461,7 +461,7 @@ class ModbusClient {
      * @param quantity - Number of inputs to read (1-2000)
      * @param timeout - Optional custom timeout in ms
      * @returns Array of boolean values
-     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, etc.
+     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
      */
     async readDiscreteInputs(startAddress, quantity, timeout) {
         if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
@@ -480,7 +480,7 @@ class ModbusClient {
      * @param value - Boolean value (true = ON, false = OFF)
      * @param timeout - Optional custom timeout in ms
      * @returns Object containing written address and value
-     * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError, etc.
+     * @throws ModbusInvalidAddressError, ModbusIllegalDataValueError
      */
     async writeSingleCoil(address, value, timeout) {
         if (!Number.isInteger(address) || address < 0 || address > 65535) {
@@ -499,7 +499,7 @@ class ModbusClient {
      * @param values - Array of boolean values to write
      * @param timeout - Optional custom timeout in ms
      * @returns Object containing written start address and quantity
-     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError, etc.
+     * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
      */
     async writeMultipleCoils(address, values, timeout) {
         if (!Number.isInteger(address) || address < 0 || address > 65535) {
@@ -527,7 +527,7 @@ class ModbusClient {
      * @param timeout - Optional custom timeout in ms
      * @returns Detailed device identification object with object values as strings
      */
-    async readDeviceIdentification(timeout) {
+    async readDeviceIdentification(decoder = 'utf-8', timeout) {
         const originalSlaveId = this.slaveId;
         try {
             const pdu = functions.buildReadDeviceIdentificationRequest(0x01, 0x00);
@@ -539,11 +539,11 @@ class ModbusClient {
             }
             const formattedObjects = {};
             if (rawResponse.objects) {
-                const decoder = new TextDecoder('windows-1251');
+                const decodeText = new TextDecoder(decoder);
                 for (const [key, value] of Object.entries(rawResponse.objects)) {
                     const id = parseInt(key, 10);
                     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-                    formattedObjects[id] = decoder.decode(bytes).replace(/\0/g, '').trim();
+                    formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
                 }
             }
             return {

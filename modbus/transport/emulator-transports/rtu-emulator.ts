@@ -45,7 +45,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component,path',
                 messageFormat: '[{component}] {msg}',
               },

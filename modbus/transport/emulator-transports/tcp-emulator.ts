@@ -7,6 +7,8 @@ import {
   TDeviceStateHandler,
   TPortStateHandler,
   ITcpEmulatorTransportOptions,
+  IRegisterDefinitions,
+  IInfinityChangeParams,
 } from '../../types/modbus-types';
 import ModbusSlaveCore from '../../emulator/modbus-slave-core';
 import { Logger, pino } from 'pino';
@@ -55,7 +57,7 @@ export default class NodeTcpEmulatorTransport implements ITransport {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component,slaveId',
                 messageFormat: '[{component}] {msg}',
               },
@@ -257,7 +259,7 @@ export default class NodeTcpEmulatorTransport implements ITransport {
    * @param defs - Register definitions
    * @see ModbusSlaveCore.addRegisters
    */
-  public addRegisters(defs: any) {
+  public addRegisters(defs: IRegisterDefinitions) {
     this.core.addRegisters(defs);
   }
 
@@ -266,7 +268,7 @@ export default class NodeTcpEmulatorTransport implements ITransport {
    * @param params - Infinity change parameters
    * @see ModbusSlaveCore.infinityChange
    */
-  public infinityChange(params: any) {
+  public infinityChange(params: IInfinityChangeParams) {
     this.core.infinityChange(params);
   }
 

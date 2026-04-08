@@ -88,7 +88,7 @@ class TransportController {
                     target: 'pino-pretty',
                     options: {
                         colorize: true,
-                        translateTime: 'HH:mm:ss',
+                        translateTime: 'SYS:HH:MM:ss',
                         ignore: 'pid,hostname,component',
                         messageFormat: '[{component}] {msg}',
                     },
@@ -122,7 +122,7 @@ class TransportController {
                     target: 'pino-pretty',
                     options: {
                         colorize: true,
-                        translateTime: 'HH:mm:ss',
+                        translateTime: 'SYS:HH:MM:ss',
                         ignore: 'pid,hostname,component',
                         messageFormat: '[{component}] {msg}',
                     },

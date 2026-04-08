@@ -77,7 +77,7 @@ class TransportController implements ITransportController {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component',
                 messageFormat: '[{component}] {msg}',
               },
@@ -115,7 +115,7 @@ class TransportController implements ITransportController {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname,component',
                 messageFormat: '[{component}] {msg}',
               },
@@ -221,7 +221,7 @@ class TransportController implements ITransportController {
         this._onDeviceStateChange(id, slaveId, connected, error);
       });
 
-      transport.setPortStateHandler((connected: any, slaveIds: any, error: any) => {
+      transport.setPortStateHandler((connected: boolean, slaveIds: number[], error: any) => {
         this._onPortStateChange(id, connected, slaveIds, error);
       });
 
@@ -639,13 +639,13 @@ class TransportController implements ITransportController {
     }
 
     return info.pollingManager.executeImmediate(async () => {
-      await (info.transport as any).write(data);
+      await info.transport.write(data);
 
       if (readLength > 0) {
-        return (info.transport as any).read(readLength, timeout);
+        return info.transport.read(readLength, timeout);
       }
 
-      await (info.transport as any).flush();
+      await info.transport.flush();
 
       return utils.allocUint8Array(0);
     });
@@ -911,7 +911,7 @@ class TransportController implements ITransportController {
   private _onPortStateChange(
     transportId: string,
     connected: boolean,
-    slaveIds?: number[],
+    slaveIds: number[],
     error?: { type: string; message: string }
   ): void {
     const tracker = this.transportToPortTrackerMap.get(transportId);

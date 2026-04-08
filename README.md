@@ -19,12 +19,6 @@ Modbus connect is a cross-platform library for Modbus RTU/TCP communication in b
 npm install modbus-connect
 ```
 
-or
-
-```bash
-yarn add modbus-connect
-```
-
 ## Node RTU connection
 
 ```js
@@ -622,7 +616,7 @@ Reads the description of the controller, the current status of the device, and o
 - **timeout**: number (optional) — Custom timeout for this request.
 - **Returns**: Promise<{ slaveId: number; isRunning: boolean; data: Uint8Array }> — Detailed device report.
 
-#### `readDeviceIdentification(timeout?)`
+#### `readDeviceIdentification(decoder: windows-1251 | utf-8 (default), timeout?)`
 
 Reads identification and additional information relevant to the physical and functional description of the device (Function Code 0x2B / 0x0E).
 
@@ -1113,6 +1107,14 @@ Simulates a sensor by changing register values over time:
 
 # Changelog
 
+### 4.0.3 (2026-04-08)
+
+- The module's internal clocks were constantly drifting. Now they're using the **system time**.
+- In ModbusClient, the `readDeviceIdentification (0x2B)` method was hardcoded to TextDecoder('windows-1251'). The encoding is now configurable, with options of `windows-1251` and `utf-8` available via the `decoder` parameter of the method.
+- Fixed static code typing in the `modbus/protocol.ts` file
+- Redundant `any` types are removed in the `TransportController` and `tcp-emulator.ts` module's.
+- Modified the types in the `modbus-types.ts` file
+
 ### 4.0.2 (2026-04-07)
 
 - **Security**: Now the removal of the Slave ID cannot occur simultaneously with the addition of another transport or reboot
@@ -1120,7 +1122,7 @@ Simulates a sensor by changing register values over time:
 - **Logic**: A potential error has been removed when **removeTransport** could be called twice for the same ID from different asynchrounous calls
 - Added the `enableLogger()/disableLogger()` method's to the **ModbusClient** and **TransportController** modules. Sets the level to `info`, by default loggers are enabled in both modules
 - The implementation types of module classes have been finalized
-  > - **A logger in a WEB environment** functionality has been sent for revision
+  > **A logger in a WEB environment** functionality has been sent for revision
 
 ### 4.0.0 (2026-04-06)
 

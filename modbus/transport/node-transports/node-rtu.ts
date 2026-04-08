@@ -104,7 +104,7 @@ export default class NodeSerialTransport implements ITransport {
               target: 'pino-pretty',
               options: {
                 colorize: true,
-                translateTime: 'HH:mm:ss',
+                translateTime: 'SYS:HH:MM:ss',
                 ignore: 'pid,hostname',
                 messageFormat: '[{component}] {msg}',
               },

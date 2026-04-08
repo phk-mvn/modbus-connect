@@ -20,7 +20,7 @@ export class ModbusProtocol implements IModbusProtocol {
    */
   constructor(
     private _transport: ITransport,
-    private _framerClass: any
+    private _framerClass: typeof framer.RtuFramer | typeof framer.TcpFramer
   ) {
     // Minimum ADU length required before attempting to parse:
     // - RTU: at least 4 bytes (slaveId + functionCode + CRC)
@@ -122,7 +122,7 @@ export class ModbusProtocol implements IModbusProtocol {
    * Returns the framer class (RtuFramer or TcpFramer) currently in use.
    * Can be used to inspect which framing protocol is active.
    */
-  public get framerClass(): any {
+  public get framerClass(): typeof framer.RtuFramer | typeof framer.TcpFramer {
     return this._framerClass;
   }
 }

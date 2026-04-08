@@ -42,7 +42,10 @@ export interface IModbusCLient {
   reportSlaveId(
     timeout?: number
   ): Promise<{ slaveId: number; isRunning: boolean; data: Uint8Array }>;
-  readDeviceIdentification(timeout?: number): Promise<{
+  readDeviceIdentification(
+    decoder: 'windows-1251' | 'utf-8',
+    timeout?: number
+  ): Promise<{
     functionCode: number;
     meiType: number;
     category: number;
@@ -88,7 +91,9 @@ export interface IModbusProtocol {
 // TRANSPORT
 // ===================================================
 
+export type TTransportType = 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator';
 export type TRSMode = 'RS485' | 'RS232' | 'TCP/IP';
+export type TParityType = 'none' | 'even' | 'mark' | 'odd' | 'space';
 
 export enum EConnectionErrorType {
   UnknownError = 'Unknown Error',
@@ -108,7 +113,7 @@ export interface ITransport {
   disconnect(): Promise<void>;
   write(buffer: Uint8Array): Promise<void>;
   read(length: number, timeout?: number): Promise<Uint8Array>;
-  flush?(): Promise<void>;
+  flush(): Promise<void>;
   getRSMode(): TRSMode;
 
   setDeviceStateHandler(handler: TDeviceStateHandler): void;
@@ -147,7 +152,7 @@ export interface INodeSerialTransportOptions {
   baudRate?: number;
   dataBits?: 5 | 6 | 7 | 8;
   stopBits?: 1 | 2;
-  parity?: 'none' | 'even' | 'mark' | 'odd' | 'space';
+  parity?: TParityType;
   readTimeout?: number;
   writeTimeout?: number;
   maxBufferSize?: number;
@@ -177,7 +182,7 @@ export interface IWebSerialPortOptions {
   baudRate: number;
   dataBits: number;
   stopBits: number;
-  parity: 'none' | 'even' | 'mark' | 'odd' | 'space';
+  parity: TParityType;
   flowControl: 'none';
 }
 
@@ -185,7 +190,7 @@ export interface IWebSerialTransportOptions {
   baudRate?: number;
   dataBits?: number;
   stopBits?: number;
-  parity?: 'none' | 'even' | 'mark' | 'odd' | 'space';
+  parity?: TParityType;
   readTimeout?: number;
   writeTimeout?: number;
   reconnectInterval?: number;
@@ -197,7 +202,7 @@ export interface IWebSerialTransportOptions {
 
 export interface ITransportInfo {
   id: string;
-  type: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator';
+  type: TTransportType;
   transport: ITransport;
   pollingManager: PollingManager;
   status: 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -235,7 +240,7 @@ export interface ITransportController {
   enableLogger(): void;
   addTransport(
     id: string,
-    type: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator',
+    type: TTransportType,
     options: INodeSerialTransportOptions | (IWebSerialTransportOptions & { port: IWebSerialPort }),
     reconnectOptions?: {
       maxReconnectAttempts?: number;
@@ -447,7 +452,7 @@ export type TDeviceStateHandler = (
 
 export type TPortStateHandler = (
   connected: boolean,
-  slaveIds?: number[],
+  slaveIds: number[],
   error?: { type: EConnectionErrorType; message: string }
 ) => void;
 
@@ -466,6 +471,8 @@ export interface IPortConnectionTrackerOptions {
 // ===================================================
 // EMULATOR'S
 // ===================================================
+
+export type TEmulatorTypeRegister = 'Holding' | 'Input' | 'Coil' | 'Discrete';
 
 export interface IModbusSlaveCoreEmulator {
   processRequest(unitId: number, pdu: Uint8Array): Promise<Uint8Array>;
@@ -497,14 +504,14 @@ export interface ITcpEmulatorTransportOptions {
 }
 
 export interface IInfinityChangeParams {
-  typeRegister: 'Holding' | 'Input' | 'Coil' | 'Discrete';
+  typeRegister: TEmulatorTypeRegister;
   register: number;
   range: [number, number];
   interval: number;
 }
 
 export interface IStopInfinityChangeParams {
-  typeRegister: 'Holding' | 'Input' | 'Coil' | 'Discrete';
+  typeRegister: TEmulatorTypeRegister;
   register: number;
 }
 
