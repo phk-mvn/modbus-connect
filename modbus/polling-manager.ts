@@ -52,6 +52,7 @@ class TaskController implements ITaskController {
 
   private manager: PollingManager;
   private timerId: NodeJS.Timeout | null = null;
+  private isEnqueued: boolean = false;
 
   /**
    * Creates a new TaskController instance.
@@ -150,6 +151,7 @@ class TaskController implements ITaskController {
       return;
     }
     this.stopped = true;
+    this.isEnqueued = false;
 
     if (this.timerId) {
       clearTimeout(this.timerId);
@@ -186,7 +188,7 @@ class TaskController implements ITaskController {
       this.paused = false;
       this.logger.info('Task resumed');
 
-      if (!this.timerId && !this.executionInProgress) {
+      if (!this.timerId && !this.executionInProgress && !this.isEnqueued) {
         this._scheduleNextRun(true);
       }
     } else {
@@ -213,6 +215,7 @@ class TaskController implements ITaskController {
     this.timerId = setTimeout(() => {
       this.timerId = null;
       if (this.stopped) return;
+      this.isEnqueued = true;
       this.manager.enqueueTask(this);
     }, delay);
   }
@@ -230,9 +233,9 @@ class TaskController implements ITaskController {
    * After execution completes (success or failure), it always schedules the next run.
    */
   public async execute(): Promise<void> {
+    this.isEnqueued = false;
+
     if (this.stopped || this.paused) {
-      this.logger.debug({ id: this.id }, 'Cannot execute - task is stopped or paused');
-      this._scheduleNextRun();
       return;
     }
 
@@ -244,111 +247,75 @@ class TaskController implements ITaskController {
 
     this.onBeforeEach?.();
     this.executionInProgress = true;
-    this.logger.debug('Executing task');
 
     try {
       let overallSuccess = false;
       const results: unknown[] = [];
 
       for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
-        if (this.stopped) break;
-        if (this.paused) break;
+        if (this.stopped || this.paused) break;
 
         let retryCount = 0;
         let result: unknown = null;
         let fnSuccess = false;
 
-        while (!this.stopped && retryCount <= this.maxRetries) {
-          if (this.paused) break;
-
+        while (!this.stopped && !this.paused && retryCount <= this.maxRetries) {
           try {
             const fnToExecute = this.fn[fnIndex];
-            if (typeof fnToExecute !== 'function') {
-              throw new PollingManagerError(
-                `Task ${this.id} fn at index ${fnIndex} is not a function`
-              );
-            }
+            if (typeof fnToExecute !== 'function') break;
 
             const executionResult = fnToExecute();
-
             result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
+
+            if (this.stopped || this.paused) return;
 
             fnSuccess = true;
             break;
           } catch (err: unknown) {
+            if (this.stopped || this.paused) return;
+
             const error = err instanceof Error ? err : new PollingManagerError(String(err));
             this._logSpecificError(error, fnIndex, retryCount);
             retryCount++;
-
             this.onRetry?.(error, fnIndex, retryCount);
 
             if (retryCount > this.maxRetries) {
               this.onFailure?.(error);
               this.onError?.(error, fnIndex, retryCount);
-              this.logger.warn(
-                {
-                  id: this.id,
-                  fnIndex,
-                  retryCount,
-                  error: error.message,
-                },
-                'Max retries exhausted for fn[' + fnIndex + ']'
-              );
             } else {
               const isFlushedError = error instanceof ModbusFlushError;
               const baseDelay = isFlushedError
                 ? 50
                 : this.backoffDelay * Math.pow(2, retryCount - 1);
-              const jitter = Math.random() * baseDelay * 0.5;
-              const delay = baseDelay + jitter;
+              const delay = baseDelay + Math.random() * baseDelay * 0.5;
 
-              this.logger.debug(
-                {
-                  id: this.id,
-                  delay,
-                  retryCount,
-                },
-                'Retrying fn[' + fnIndex + '] with delay'
-              );
               await this._sleep(delay);
             }
           }
         }
-
         results.push(result);
         overallSuccess = overallSuccess || fnSuccess;
       }
+
+      if (this.stopped || this.paused) return;
 
       if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
         this.onData?.(results);
       }
 
       if (overallSuccess) {
-        this.logger.debug(`Done`);
         this.onSuccess?.(results);
       }
-
       this.onFinish?.(overallSuccess, results);
-
-      this.logger.debug(
-        {
-          id: this.id,
-          success: overallSuccess,
-          resultsCount: results.length,
-        },
-        'Task execution completed'
-      );
     } catch (err: unknown) {
-      this.logger.error(
-        {
-          id: this.id,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        'Fatal error during task execution cycle'
-      );
+      if (!this.stopped && !this.paused) {
+        this.logger.error({ id: this.id, error: (err as any).message }, 'Fatal error in task');
+      }
     } finally {
       this.executionInProgress = false;
-      this._scheduleNextRun();
+      if (!this.stopped && !this.paused) {
+        this._scheduleNextRun();
+      }
     }
   }
 
@@ -470,6 +437,7 @@ class PollingManager implements IPollingManager {
       defaultMaxRetries: 3,
       defaultBackoffDelay: 1000,
       defaultTaskTimeout: 5000,
+      interTaskDelay: config.interTaskDelay ?? 0,
       logLevel: 'info',
       ...config,
     } as Required<IPollingManagerConfig>;
@@ -529,7 +497,7 @@ class PollingManager implements IPollingManager {
           maxRetries: options.maxRetries ?? this.config.defaultMaxRetries,
           backoffDelay: options.backoffDelay ?? this.config.defaultBackoffDelay,
           taskTimeout:
-            options.taskTimeout ?? (this.config['defaultTaskTimout'] as number | undefined),
+            options.taskTimeout ?? (this.config['defaultTaskTimeout'] as number | undefined),
         },
         this
       );
@@ -651,7 +619,10 @@ class PollingManager implements IPollingManager {
    */
   public resumeTask(id: string): void {
     const task = this.tasks.get(id);
-    if (task) task.resume();
+    if (task) {
+      task.resume();
+      this._processQueue();
+    }
   }
 
   /**
@@ -839,24 +810,38 @@ class PollingManager implements IPollingManager {
 
     try {
       while (this.executionQueue.length > 0 && !this.paused) {
-        const task = this.executionQueue[0];
+        const task = this.executionQueue.shift();
+        if (!task) continue;
 
-        if (task) {
-          this.executionQueue.shift();
-          this.logger.debug({ id: task.id }, 'Processing from queue');
-          await new Promise(r => setTimeout(r, 30));
-          await task.execute();
+        this.logger.debug({ id: task.id }, 'Processing task from queue');
+
+        try {
+          await this.mutex.runExclusive(async () => {
+            if (!task.stopped && !task.paused) {
+              await task.execute();
+            }
+          });
+        } catch (taskError: unknown) {
+          this.logger.error(
+            { id: task.id, error: (taskError as Error).message },
+            'Task execution failed in queue'
+          );
         }
 
-        await this._sleep(10);
+        if (this.config.interTaskDelay > 0 && this.executionQueue.length > 0) {
+          await this._sleep(this.config.interTaskDelay);
+        } else {
+          await new Promise(resolve => setImmediate?.(resolve) || setTimeout(resolve, 0));
+        }
       }
-    } catch (error: unknown) {
+    } catch (criticalError: unknown) {
       this.logger.error(
-        { error: error instanceof Error ? error.message : String(error) },
-        'Critical error in processQueue loop'
+        { error: (criticalError as Error).message },
+        'Critical error in _processQueue loop'
       );
     } finally {
       this.isProcessing = false;
+
       if (this.executionQueue.length > 0 && !this.paused) {
         setTimeout(() => this._processQueue(), 0);
       }

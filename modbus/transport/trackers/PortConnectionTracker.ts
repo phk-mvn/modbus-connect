@@ -1,5 +1,3 @@
-// modbus/transport/trackers/PortConnectionTracker.ts
-
 import { Mutex } from 'async-mutex';
 import {
   EConnectionErrorType,
@@ -46,18 +44,23 @@ export class PortConnectionTracker implements IPortConnectionTracker {
    * @param handler - Callback function `(isConnected: boolean, slaveIds: number[], error?) => void`
    */
   public async setHandler(handler: TPortStateHandler): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
+    let connected: boolean;
+    let slaves: number[];
+    let error: { type: EConnectionErrorType; message: string } | undefined;
+
+    await this._mutex.runExclusive(async () => {
       this._handler = handler;
-      handler(
-        this._state.isConnected,
-        this._state.slaveIds,
-        this._state.isConnected
-          ? undefined
-          : { type: this._state.errorType!, message: this._state.errorMessage! }
-      );
-    } finally {
-      release();
+      connected = this._state.isConnected;
+      slaves = [...this._state.slaveIds];
+      if (!connected && this._state.errorType) {
+        error = { type: this._state.errorType, message: this._state.errorMessage! };
+      }
+    });
+
+    try {
+      handler(connected!, slaves!, error as any);
+    } catch (e) {
+      console.error('[PortConnectionTracker] Error in initial handler:', e);
     }
   }
 
@@ -68,8 +71,10 @@ export class PortConnectionTracker implements IPortConnectionTracker {
    * @param slaveIds - List of slave IDs currently accessible through this port (default: [])
    */
   public async notifyConnected(slaveIds: number[] = []): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
+    let handlerToCall: TPortStateHandler | undefined;
+    let currentSlaves: number[] = [];
+
+    await this._mutex.runExclusive(async () => {
       if (this._debounceTimeout) {
         clearTimeout(this._debounceTimeout);
         this._debounceTimeout = null;
@@ -85,15 +90,22 @@ export class PortConnectionTracker implements IPortConnectionTracker {
         timestamp: Date.now(),
       };
 
-      this._handler?.(true, this._state.slaveIds);
-    } finally {
-      release();
+      handlerToCall = this._handler;
+      currentSlaves = [...this._state.slaveIds];
+    });
+
+    if (handlerToCall) {
+      try {
+        handlerToCall(true, currentSlaves);
+      } catch (e) {
+        console.error('[PortConnectionTracker] Error in handler (connected):', e);
+      }
     }
   }
 
   /**
    * Notifies that the port has disconnected with trailing debounce.
-   * The actual handler call is delayed by `debounceMs`. If another disconnection
+   * The actual notification is delayed by `debounceMs`. If another disconnection
    * notification arrives before the timer fires, the previous one is cancelled.
    * @param errorType - Type of disconnection error (default: UnknownError)
    * @param errorMessage - Detailed error message (default: 'Port disconnected')
@@ -108,50 +120,68 @@ export class PortConnectionTracker implements IPortConnectionTracker {
       clearTimeout(this._debounceTimeout);
     }
 
-    (async () => {
-      const release = await this._mutex.acquire();
+    this._debounceTimeout = setTimeout(() => {
+      this._debounceTimeout = null;
+      this._doNotifyDisconnected(errorType, errorMessage, slaveIds);
+    }, this._debounceMs);
+  }
+
+  /**
+   * Performs the actual disconnection state update and notification.
+   * Internal method called by the debounce timer.
+   * @private
+   */
+  private async _doNotifyDisconnected(
+    errorType: EConnectionErrorType,
+    errorMessage: string,
+    slaveIds: number[]
+  ): Promise<void> {
+    let handlerToCall: TPortStateHandler | undefined;
+    let currentSlaves: number[] = [];
+
+    await this._mutex.runExclusive(async () => {
+      if (this._debounceTimeout) return;
+      if (!this._state.isConnected) return;
+
+      this._state = {
+        isConnected: false,
+        errorType,
+        errorMessage,
+        slaveIds: [...slaveIds],
+        timestamp: Date.now(),
+      };
+
+      handlerToCall = this._handler;
+      currentSlaves = [...this._state.slaveIds];
+    });
+
+    if (handlerToCall) {
       try {
-        if (!this._state.isConnected) {
-          return;
-        }
-
-        this._state = {
-          isConnected: false,
-          errorType,
-          errorMessage,
-          slaveIds: [...slaveIds],
-          timestamp: Date.now(),
-        };
-
-        this._debounceTimeout = setTimeout(() => {
-          this._debounceTimeout = null;
-          this._handler?.(false, this._state.slaveIds, { type: errorType, message: errorMessage });
-        }, this._debounceMs);
-      } finally {
-        release();
+        handlerToCall(false, currentSlaves, { type: errorType, message: errorMessage });
+      } catch (e) {
+        console.error('[PortConnectionTracker] Error in handler (disconnected):', e);
       }
-    })();
+    }
   }
 
   /**
    * Returns a deep copy of the current port connection state.
+   * Thread-safe access via mutex.
+   * @returns Promise resolving to the current state object.
    */
   public async getState(): Promise<IPortConnectionState> {
-    const release = await this._mutex.acquire();
-    try {
+    return await this._mutex.runExclusive(async () => {
       return { ...this._state, slaveIds: [...this._state.slaveIds] };
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
    * Clears any pending debounce timer and resets the port state to disconnected.
    * Typically called during destroy or full reset operations.
+   * @returns Promise that resolves when the clear operation is complete.
    */
   public async clear(): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
+    await this._mutex.runExclusive(async () => {
       if (this._debounceTimeout) {
         clearTimeout(this._debounceTimeout);
         this._debounceTimeout = null;
@@ -162,21 +192,18 @@ export class PortConnectionTracker implements IPortConnectionTracker {
         timestamp: Date.now(),
       };
       this._handler = undefined;
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
    * Returns whether the port is currently marked as connected.
+   * Thread-safe access via mutex.
+   * @returns Promise resolving to true if connected, false otherwise.
    */
   public async isConnected(): Promise<boolean> {
-    const release = await this._mutex.acquire();
-    try {
+    return await this._mutex.runExclusive(async () => {
       return this._state.isConnected;
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
@@ -193,6 +220,9 @@ export class PortConnectionTracker implements IPortConnectionTracker {
 
 /**
  * Helper function to compare two number arrays for equality (order-independent).
+ * @param a - First array of numbers.
+ * @param b - Second array of numbers.
+ * @returns True if arrays contain the same elements, false otherwise.
  */
 function arraysEqual(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false;

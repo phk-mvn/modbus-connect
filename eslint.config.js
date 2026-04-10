@@ -1,30 +1,30 @@
 // eslint.config.js
 import js from '@eslint/js';
 import globals from 'globals';
-import tseslint from 'typescript-eslint'; // Helper для TS configs
-import prettierConfig from 'eslint-config-prettier'; // Prettier object для composition
-import prettierPlugin from 'eslint-plugin-prettier'; // Prettier plugin для rules/plugins
+import tseslint from 'typescript-eslint'; // Helper for TS configs
+import prettierConfig from 'eslint-config-prettier'; // Prettier object for composition
+import prettierPlugin from 'eslint-plugin-prettier'; // Prettier plugin for rules/plugins
 
 export default tseslint.config(
-  // Global ignores (проект-wide)
+  // Global ignores (project-wide)
   { ignores: ['dist/', 'node_modules/', '/*.config.*'] },
 
   // Base JS recommended (applies to all)
   { ...js.configs.recommended },
 
-  // TS recommended (spread array из helper, type-aware)
+  // TS recommended (spread array from helper, type-aware)
   ...tseslint.configs.recommended,
 
   // Prettier composition (spread object, disables conflicts)
   prettierConfig,
 
-  // Custom config для TS файлов (Node/strict mode)
+  // Custom config for TS files (Node/strict mode)
   {
     files: ['**/*.ts'],
     languageOptions: {
       parser: tseslint.parser, // TS parser
       parserOptions: {
-        project: './tsconfig.json', // Для type-checking rules
+        project: './tsconfig.json', // For type-checking rules
         tsconfigRootDir: import.meta.dirname, // ESM path resolver
         ecmaVersion: 2022,
         sourceType: 'module', // ESM support
@@ -33,34 +33,34 @@ export default tseslint.config(
     },
     plugins: {
       '@typescript-eslint': tseslint.plugin, // TS plugin
-      prettier: prettierPlugin, // Prettier plugin (явно импортирован)
+      prettier: prettierPlugin, // Prettier plugin (explicitly imported)
     },
     rules: {
-      // Strict TS rules (error на типах/unused)
+      // Strict TS rules (error on types/unused)
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-      '@typescript-eslint/no-explicit-any': 'warn', // фикс типами
-      '@typescript-eslint/require-await': 'off', // Async без await — ок
-      'no-console': 'off', // Console warn в Node
+      '@typescript-eslint/no-explicit-any': 'warn', // fix types
+      '@typescript-eslint/require-await': 'off', // Async without await is ok
+      'no-console': 'off', // Console warning in Node
       'prettier/prettier': 'error', // Prettier violations as errors
     },
   },
 
-  // Отдельная конфигурация для JS файлов, где разрешен require
+  // Separate configuration for JS files where require is allowed
   {
-    files: ['**/*.js'], // Паттерн для JS файлов (включая test-node.js)
+    files: ['**/*.js'], // Pattern for JS files (including test-node.js)
     languageOptions: {
-      // Убираем parserOptions.project, т.к. JS не требует tsconfig для type-checking
+      // Remove parserOptions.project, since JS doesn't require tsconfig for type-checking
       ecmaVersion: 2022,
-      sourceType: 'script', // или 'module', в зависимости от JS файлов
-      globals: { ...globals.node }, // Включаем Node.js глобальные переменные
+      sourceType: 'script', // or 'module', depending on the JS files
+      globals: { ...globals.node }, // Enable Node.js global variables
     },
     rules: {
-      // Отключаем правило, запрещающее require
+      // Disable the rule that prohibits require
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
 
-  // Отключение type-checked linting для .d.ts файлов
+  // Disable type-checked linting for .d.ts files
   {
     files: ['**/*.d.ts'],
     extends: [tseslint.configs.disableTypeChecked],

@@ -351,7 +351,8 @@ export interface IPollingManager {
 export interface IPollingManagerConfig {
   defaultMaxRetries?: number;
   defaultBackoffDelay?: number;
-  defaultTaskTimout?: number;
+  defaultTaskTimeout?: number;
+  interTaskDelay?: number;
   logLevel?: string;
   logger?: Logger;
   [key: string]: unknown;
@@ -413,8 +414,8 @@ export interface IDeviceConnectionTracker {
   getState(slaveId: number): Promise<IDeviceConnectionStateObject | undefined>;
   getAllStates(): Promise<IDeviceConnectionStateObject[]>;
   clear(): Promise<void>;
-  hasState(slaveId: number): boolean;
-  getConnectedSlaveIds(): number[];
+  hasState(slaveId: number): Promise<boolean>;
+  getConnectedSlaveIds(): Promise<number[]>;
   __resetDebounce(slaveId: number): void;
 }
 

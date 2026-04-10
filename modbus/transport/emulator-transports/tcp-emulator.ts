@@ -134,7 +134,7 @@ export default class NodeTcpEmulatorTransport implements ITransport {
 
     const responsePdu = await this.core.processRequest(unitId, pdu);
 
-    // Формируем полный Modbus TCP ADU
+    // Forming a complete Modbus TCP ADU
     const responseLength = 1 + responsePdu.length;
     const adu = new Uint8Array(6 + responseLength);
 

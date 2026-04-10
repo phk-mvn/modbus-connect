@@ -103,7 +103,7 @@ const fromBytesLE = (lo, hi) => {
     return ((hi << 8) | lo) >>> 0;
 };
 exports.fromBytesLE = fromBytesLE;
-// Для совместимости с Vite (исправляет ошибку "does not provide an export named default")
+// For compatibility with Vite (fixes the "does not provide an export named default" error)
 exports.default = {
     fromBytes: exports.fromBytes,
     concatUint8Arrays: exports.concatUint8Arrays,

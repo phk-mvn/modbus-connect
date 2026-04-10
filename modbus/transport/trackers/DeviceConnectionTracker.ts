@@ -45,23 +45,32 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * @param handler - Callback function `(slaveId: number, connected: boolean, error?) => void`
    */
   public async setHandler(handler: TDeviceStateHandler): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
+    const statesToNotify: IDeviceConnectionStateObject[] = [];
+
+    await this._mutex.runExclusive(async () => {
       this._handler = handler;
-      for (const state of this._states.values()) {
+      statesToNotify.push(...this._states.values());
+    });
+
+    for (const state of statesToNotify) {
+      try {
         handler(
           state.slaveId,
           state.hasConnectionDevice,
           state.hasConnectionDevice
             ? undefined
             : {
-                type: state.errorType as EConnectionErrorType, // Приведение к типу
+                type:
+                  (state.errorType as EConnectionErrorType) || EConnectionErrorType.UnknownError,
                 message: state.errorMessage || 'Unknown error',
               }
         );
+      } catch (err) {
+        console.error(
+          `[DeviceConnectionTracker] Error in handler for slave ${state.slaveId}:`,
+          err
+        );
       }
-    } finally {
-      release();
     }
   }
 
@@ -70,12 +79,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * After calling this method, no further notifications will be sent.
    */
   public async removeHandler(): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
+    await this._mutex.runExclusive(async () => {
       this._handler = undefined;
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
@@ -87,9 +93,10 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
   public async notifyConnected(slaveId: number): Promise<void> {
     if (this._validateSlaveId && (slaveId < 1 || slaveId > 255)) return;
 
-    const release = await this._mutex.acquire();
-    try {
-      // Cancel any pending disconnection debounce
+    let handlerToCall: TDeviceStateHandler | undefined;
+    let shouldNotify = false;
+
+    await this._mutex.runExclusive(async () => {
       const existingTimeout = this._debounceTimeouts.get(slaveId);
       if (existingTimeout) {
         clearTimeout(existingTimeout);
@@ -107,10 +114,19 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
       };
 
       this._states.set(slaveId, state);
+      handlerToCall = this._handler;
+      shouldNotify = true;
+    });
 
-      this._handler?.(slaveId, true);
-    } finally {
-      release();
+    if (shouldNotify && handlerToCall) {
+      try {
+        handlerToCall(slaveId, true);
+      } catch (err) {
+        console.error(
+          `[DeviceConnectionTracker] Error in handler (connected) for slave ${slaveId}:`,
+          err
+        );
+      }
     }
   }
 
@@ -146,13 +162,15 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * Ensures that the next `notifyConnected` will trigger a fresh notification.
    * @param slaveId - Slave identifier (1–255)
    */
-  public removeState(slaveId: number): void {
-    const existingTimeout = this._debounceTimeouts.get(slaveId);
-    if (existingTimeout) {
-      clearTimeout(existingTimeout);
-      this._debounceTimeouts.delete(slaveId);
-    }
-    this._states.delete(slaveId);
+  public async removeState(slaveId: number): Promise<void> {
+    await this._mutex.runExclusive(async () => {
+      const existingTimeout = this._debounceTimeouts.get(slaveId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        this._debounceTimeouts.delete(slaveId);
+      }
+      this._states.delete(slaveId);
+    });
   }
 
   /**
@@ -163,10 +181,15 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
     errorType: EConnectionErrorType,
     errorMessage: string
   ): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
-      const existing = this._states.get(slaveId);
+    let handlerToCall: TDeviceStateHandler | undefined;
+    let shouldNotify = false;
 
+    await this._mutex.runExclusive(async () => {
+      if (this._debounceTimeouts.has(slaveId)) {
+        return;
+      }
+
+      const existing = this._states.get(slaveId);
       if (existing && !existing.hasConnectionDevice && existing.errorType === errorType) {
         return;
       }
@@ -179,9 +202,19 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
       };
 
       this._states.set(slaveId, newState);
-      this._handler?.(slaveId, false, { type: errorType, message: errorMessage });
-    } finally {
-      release();
+      handlerToCall = this._handler;
+      shouldNotify = true;
+    });
+
+    if (shouldNotify && handlerToCall) {
+      try {
+        handlerToCall(slaveId, false, { type: errorType, message: errorMessage });
+      } catch (err) {
+        console.error(
+          `[DeviceConnectionTracker] Error in handler (disconnected) for slave ${slaveId}:`,
+          err
+        );
+      }
     }
   }
 
@@ -191,21 +224,17 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * @returns Device state object or undefined if not tracked
    */
   public async getState(slaveId: number): Promise<IDeviceConnectionStateObject | undefined> {
-    const release = await this._mutex.acquire();
-    try {
+    return await this._mutex.runExclusive(async () => {
       const state = this._states.get(slaveId);
       return state ? { ...state } : undefined;
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
    * Returns a deep copy of all currently tracked device states.
    */
   public async getAllStates(): Promise<IDeviceConnectionStateObject[]> {
-    const release = await this._mutex.acquire();
-    try {
+    return await this._mutex.runExclusive(async () => {
       return Array.from(
         this._states.values(),
         ({ slaveId, hasConnectionDevice, errorType, errorMessage }) => ({
@@ -215,9 +244,7 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
           errorMessage,
         })
       );
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
@@ -225,8 +252,7 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * Also removes the current handler.
    */
   public async clear(): Promise<void> {
-    const release = await this._mutex.acquire();
-    try {
+    await this._mutex.runExclusive(async () => {
       for (const timeout of this._debounceTimeouts.values()) {
         clearTimeout(timeout);
       }
@@ -234,25 +260,27 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
       this._states.clear();
       this._handler = undefined;
-    } finally {
-      release();
-    }
+    });
   }
 
   /**
    * Checks whether a specific slave is being tracked.
    */
-  public hasState(slaveId: number): boolean {
-    return this._states.has(slaveId);
+  public async hasState(slaveId: number): Promise<boolean> {
+    return await this._mutex.runExclusive(async () => {
+      return this._states.has(slaveId);
+    });
   }
 
   /**
    * Returns an array of all slaveIds that are currently marked as connected.
    */
-  public getConnectedSlaveIds(): number[] {
-    return Array.from(this._states.entries())
-      .filter(([, s]) => s.hasConnectionDevice)
-      .map(([id]) => id);
+  public async getConnectedSlaveIds(): Promise<number[]> {
+    return await this._mutex.runExclusive(async () => {
+      return Array.from(this._states.values())
+        .filter(s => s.hasConnectionDevice)
+        .map(s => s.slaveId);
+    });
   }
 
   /**

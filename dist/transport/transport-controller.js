@@ -416,21 +416,24 @@ class TransportController {
      * @param slaveId - Modbus unit identifier.
      * @throws RSModeConstraintError if RS232 already has a device.
      */
-    assignSlaveIdToTransport(transportId, slaveId) {
-        const info = this.transports.get(transportId);
-        if (!info) {
-            throw new Error(`Transport with id "${transportId}" not found`);
-        }
-        if (info.rsMode === 'RS232' && info.slaveIds.length >= 1) {
-            const existingSlaveId = info.slaveIds[0];
-            throw new errors_js_1.RSModeConstraintError(`Cannot assign slaveId ${slaveId} to transport "${transportId}". It is in 'RS232' mode and already manages device ${existingSlaveId}.`);
-        }
-        if (info.slaveIds.includes(slaveId)) {
-            throw new Error(`Cannot assign slave ID ${slaveId}". The transport is already managing this ID.`);
-        }
-        info.slaveIds.push(slaveId);
-        this._updateSlaveTransportMap(transportId, [slaveId]);
-        this.logger.info(`Assigned slaveId ${slaveId} to transport "${transportId}"`);
+    async assignSlaveIdToTransport(transportId, slaveId) {
+        await this._registryMutex.runExclusive(async () => {
+            const info = this.transports.get(transportId);
+            if (!info) {
+                throw new Error(`Transport with id "${transportId}" not found`);
+            }
+            if (info.rsMode === 'RS232' && info.slaveIds.length >= 1) {
+                const existingSlaveId = info.slaveIds[0];
+                throw new errors_js_1.RSModeConstraintError(`Cannot assign slaveId ${slaveId} to transport "${transportId}". It is in 'RS232' mode and already manages device ${existingSlaveId}.`);
+            }
+            if (info.slaveIds.includes(slaveId)) {
+                this.logger.warn(`Slave ID ${slaveId} is already assigned to transport "${transportId}"`);
+                return;
+            }
+            info.slaveIds.push(slaveId);
+            this._updateSlaveTransportMap(transportId, [slaveId]);
+            this.logger.info(`Assigned slaveId ${slaveId} to transport "${transportId}"`);
+        });
     }
     /**
      * Unbinds a Slave ID from a transport and cleans up its state in trackers.
@@ -492,6 +495,8 @@ class TransportController {
                 throw new Error(`Transport with id "${id}" not found`);
             const wasConnected = info.status === 'connected';
             info.pollingManager.clearAll();
+            info.transport.setDeviceStateHandler(() => { });
+            info.transport.setPortStateHandler(() => { });
             await this._disconnectTransportInternal(id);
             const newTransport = await transport_factory_js_1.TransportFactory.create(info.type, options, this.logger);
             const deviceTracker = new DeviceConnectionTracker_js_1.DeviceConnectionTracker();
@@ -515,7 +520,18 @@ class TransportController {
             info.transport = newTransport;
             info.rsMode = newTransport.getRSMode();
             if (wasConnected) {
-                await this.connectTransport(id);
+                info.status = 'connecting';
+                try {
+                    await info.transport.connect();
+                    info.status = 'connected';
+                    info.reconnectAttempts = 0;
+                    info.pollingManager.resumeAllTasks();
+                }
+                catch (err) {
+                    info.status = 'error';
+                    info.lastError = err instanceof Error ? err : new Error(String(err));
+                    this.logger.error({ transportId: id, err: err.message }, 'Failed to reconnect after reload');
+                }
             }
             this.logger.info(`Transport "${id}" reloaded with new options`);
         });
@@ -730,69 +746,98 @@ class TransportController {
      * Internal bridge for device state events.
      * Updates trackers and notifies global/local handlers.
      */
-    _onDeviceStateChange(transportId, slaveId, connected, error) {
-        const tracker = this.transportToDeviceTrackerMap.get(transportId);
-        if (!tracker) {
-            this.logger.warn(`No device tracker found for transport "${transportId}"`);
-            return;
-        }
-        if (connected) {
-            tracker.notifyConnected(slaveId);
-        }
-        else {
-            const errorType = error?.type || modbus_types_js_1.EConnectionErrorType.UnknownError;
-            const errorMessage = error?.message || 'Device disconnected';
-            tracker.notifyDisconnected(slaveId, errorType, errorMessage);
-        }
+    async _onDeviceStateChange(transportId, slaveId, connected, error) {
+        await this._registryMutex.runExclusive(async () => {
+            const info = this.transports.get(transportId);
+            if (!info) {
+                this.logger.debug(`[${transportId}] Device event ignored: transport removed from registry`);
+                return;
+            }
+            const tracker = this.transportToDeviceTrackerMap.get(transportId);
+            if (!tracker) {
+                this.logger.warn(`No device tracker found for transport "${transportId}"`);
+                return;
+            }
+            if (connected) {
+                await tracker.notifyConnected(slaveId);
+            }
+            else {
+                const errorType = error?.type || modbus_types_js_1.EConnectionErrorType.UnknownError;
+                const errorMessage = error?.message || 'Device disconnected';
+                tracker.notifyDisconnected(slaveId, errorType, errorMessage);
+            }
+        });
         const handler = this.transportToDeviceHandlerMap.get(transportId);
         if (handler) {
-            handler(slaveId, connected, error);
+            try {
+                handler(slaveId, connected, error);
+            }
+            catch (e) {
+                this.logger.error({ e }, `Error in local device handler for transport ${transportId}:`);
+            }
         }
         if (this._externalDeviceStateHandler) {
-            this._externalDeviceStateHandler(slaveId, connected, error);
+            try {
+                this._externalDeviceStateHandler(slaveId, connected, error);
+            }
+            catch (e) {
+                this.logger.error({ e }, `Error in external device state handler:`);
+            }
         }
     }
     /**
      * Internal bridge for port/socket state events.
      * Updates trackers, pauses/resumes polling, and notifies global/local handlers.
      */
-    _onPortStateChange(transportId, connected, slaveIds, error) {
-        const tracker = this.transportToPortTrackerMap.get(transportId);
-        if (!tracker) {
-            this.logger.warn(`No port tracker found for transport "${transportId}"`);
-            return;
-        }
-        const info = this.transports.get(transportId);
-        if (connected) {
-            tracker.notifyConnected();
-            if (info)
+    async _onPortStateChange(transportId, connected, slaveIds, error) {
+        await this._registryMutex.runExclusive(async () => {
+            const info = this.transports.get(transportId);
+            if (!info) {
+                this.logger.debug(`[${transportId}] Port event ignored: transport no logger exists in registry`);
+                return;
+            }
+            const tracker = this.transportToPortTrackerMap.get(transportId);
+            if (!tracker)
+                return;
+            if (connected) {
+                await tracker.notifyConnected();
                 info.pollingManager.resumeAllTasks();
-        }
-        else {
-            const errorType = error?.type || modbus_types_js_1.EConnectionErrorType.UnknownError;
-            const errorMessage = error?.message || 'Port disconnected';
-            tracker.notifyDisconnected(errorType, errorMessage, slaveIds);
-            if (info)
+            }
+            else {
+                const errorType = error?.type || modbus_types_js_1.EConnectionErrorType.UnknownError;
+                const errorMessage = error?.message || 'Port disconnected';
+                tracker.notifyDisconnected(errorType, errorMessage, slaveIds);
                 info.pollingManager.pauseAllTasks();
-        }
-        if (info) {
+            }
             info.status = connected ? 'connected' : 'disconnected';
             if (!connected && error) {
                 info.lastError = new Error(error?.message);
             }
-        }
+        });
         const handler = this.transportToPortHandlerMap.get(transportId);
         if (handler) {
-            handler(connected, slaveIds, error);
+            try {
+                handler(connected, slaveIds, error);
+            }
+            catch (e) {
+                this.logger.error({ e }, `Error in local port state handler for ${transportId}:`);
+            }
         }
         if (this._externalPortStateHandler) {
-            this._externalPortStateHandler(connected, slaveIds, error);
+            try {
+                this._externalPortStateHandler(connected, slaveIds, error);
+            }
+            catch (e) {
+                this.logger.error({ e }, `Error in external port state handler`);
+            }
         }
     }
     async _removeTransportInternal(id) {
         const info = this.transports.get(id);
         if (!info)
             return;
+        info.transport.setDeviceStateHandler(() => { });
+        info.transport.setPortStateHandler(() => { });
         info.pollingManager.clearAll();
         await this._disconnectTransportInternal(id);
         this.transports.delete(id);
@@ -812,6 +857,12 @@ class TransportController {
         for (const [slaveId, tid] of this._stickyMap.entries()) {
             if (tid === id) {
                 this._stickyMap.delete(slaveId);
+            }
+        }
+        const transportAny = info.transport;
+        if (typeof transportAny.removeConnectedDevice === 'function') {
+            for (const sid of info.slaveIds) {
+                transportAny.removeConnectedDevice(sid);
             }
         }
         this.logger.info(`Transport "${id}" fully removed and cleaned up`);

@@ -93,7 +93,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
     const slaveId = buffer[0];
     const pdu = buffer.subarray(1, buffer.length - 2);
 
-    // --- ЭМУЛЯЦИЯ ЗАДЕРЖКИ ОТВЕТА ---
+    // --- RESPONSE DELAY EMULATION ---
     if (this.responseLatencyMs > 0) {
       await new Promise(r => setTimeout(r, this.responseLatencyMs));
     }

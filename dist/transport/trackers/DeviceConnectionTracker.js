@@ -38,20 +38,23 @@ class DeviceConnectionTracker {
      * @param handler - Callback function `(slaveId: number, connected: boolean, error?) => void`
      */
     async setHandler(handler) {
-        const release = await this._mutex.acquire();
-        try {
+        const statesToNotify = [];
+        await this._mutex.runExclusive(async () => {
             this._handler = handler;
-            for (const state of this._states.values()) {
+            statesToNotify.push(...this._states.values());
+        });
+        for (const state of statesToNotify) {
+            try {
                 handler(state.slaveId, state.hasConnectionDevice, state.hasConnectionDevice
                     ? undefined
                     : {
-                        type: state.errorType, // Приведение к типу
+                        type: state.errorType || modbus_types_1.EConnectionErrorType.UnknownError,
                         message: state.errorMessage || 'Unknown error',
                     });
             }
-        }
-        finally {
-            release();
+            catch (err) {
+                console.error(`[DeviceConnectionTracker] Error in handler for slave ${state.slaveId}:`, err);
+            }
         }
     }
     /**
@@ -59,13 +62,9 @@ class DeviceConnectionTracker {
      * After calling this method, no further notifications will be sent.
      */
     async removeHandler() {
-        const release = await this._mutex.acquire();
-        try {
+        await this._mutex.runExclusive(async () => {
             this._handler = undefined;
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Notifies the tracker that a device has become connected.
@@ -76,9 +75,9 @@ class DeviceConnectionTracker {
     async notifyConnected(slaveId) {
         if (this._validateSlaveId && (slaveId < 1 || slaveId > 255))
             return;
-        const release = await this._mutex.acquire();
-        try {
-            // Cancel any pending disconnection debounce
+        let handlerToCall;
+        let shouldNotify = false;
+        await this._mutex.runExclusive(async () => {
             const existingTimeout = this._debounceTimeouts.get(slaveId);
             if (existingTimeout) {
                 clearTimeout(existingTimeout);
@@ -93,10 +92,16 @@ class DeviceConnectionTracker {
                 hasConnectionDevice: true,
             };
             this._states.set(slaveId, state);
-            this._handler?.(slaveId, true);
-        }
-        finally {
-            release();
+            handlerToCall = this._handler;
+            shouldNotify = true;
+        });
+        if (shouldNotify && handlerToCall) {
+            try {
+                handlerToCall(slaveId, true);
+            }
+            catch (err) {
+                console.error(`[DeviceConnectionTracker] Error in handler (connected) for slave ${slaveId}:`, err);
+            }
         }
     }
     /**
@@ -125,20 +130,26 @@ class DeviceConnectionTracker {
      * Ensures that the next `notifyConnected` will trigger a fresh notification.
      * @param slaveId - Slave identifier (1–255)
      */
-    removeState(slaveId) {
-        const existingTimeout = this._debounceTimeouts.get(slaveId);
-        if (existingTimeout) {
-            clearTimeout(existingTimeout);
-            this._debounceTimeouts.delete(slaveId);
-        }
-        this._states.delete(slaveId);
+    async removeState(slaveId) {
+        await this._mutex.runExclusive(async () => {
+            const existingTimeout = this._debounceTimeouts.get(slaveId);
+            if (existingTimeout) {
+                clearTimeout(existingTimeout);
+                this._debounceTimeouts.delete(slaveId);
+            }
+            this._states.delete(slaveId);
+        });
     }
     /**
      * Performs the actual disconnection notification (internal method).
      */
     async _doNotifyDisconnected(slaveId, errorType, errorMessage) {
-        const release = await this._mutex.acquire();
-        try {
+        let handlerToCall;
+        let shouldNotify = false;
+        await this._mutex.runExclusive(async () => {
+            if (this._debounceTimeouts.has(slaveId)) {
+                return;
+            }
             const existing = this._states.get(slaveId);
             if (existing && !existing.hasConnectionDevice && existing.errorType === errorType) {
                 return;
@@ -150,10 +161,16 @@ class DeviceConnectionTracker {
                 errorMessage,
             };
             this._states.set(slaveId, newState);
-            this._handler?.(slaveId, false, { type: errorType, message: errorMessage });
-        }
-        finally {
-            release();
+            handlerToCall = this._handler;
+            shouldNotify = true;
+        });
+        if (shouldNotify && handlerToCall) {
+            try {
+                handlerToCall(slaveId, false, { type: errorType, message: errorMessage });
+            }
+            catch (err) {
+                console.error(`[DeviceConnectionTracker] Error in handler (disconnected) for slave ${slaveId}:`, err);
+            }
         }
     }
     /**
@@ -162,63 +179,55 @@ class DeviceConnectionTracker {
      * @returns Device state object or undefined if not tracked
      */
     async getState(slaveId) {
-        const release = await this._mutex.acquire();
-        try {
+        return await this._mutex.runExclusive(async () => {
             const state = this._states.get(slaveId);
             return state ? { ...state } : undefined;
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Returns a deep copy of all currently tracked device states.
      */
     async getAllStates() {
-        const release = await this._mutex.acquire();
-        try {
+        return await this._mutex.runExclusive(async () => {
             return Array.from(this._states.values(), ({ slaveId, hasConnectionDevice, errorType, errorMessage }) => ({
                 slaveId,
                 hasConnectionDevice,
                 errorType,
                 errorMessage,
             }));
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Clears all tracked states and cancels any pending debounce timers.
      * Also removes the current handler.
      */
     async clear() {
-        const release = await this._mutex.acquire();
-        try {
+        await this._mutex.runExclusive(async () => {
             for (const timeout of this._debounceTimeouts.values()) {
                 clearTimeout(timeout);
             }
             this._debounceTimeouts.clear();
             this._states.clear();
             this._handler = undefined;
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Checks whether a specific slave is being tracked.
      */
-    hasState(slaveId) {
-        return this._states.has(slaveId);
+    async hasState(slaveId) {
+        return await this._mutex.runExclusive(async () => {
+            return this._states.has(slaveId);
+        });
     }
     /**
      * Returns an array of all slaveIds that are currently marked as connected.
      */
-    getConnectedSlaveIds() {
-        return Array.from(this._states.entries())
-            .filter(([, s]) => s.hasConnectionDevice)
-            .map(([id]) => id);
+    async getConnectedSlaveIds() {
+        return await this._mutex.runExclusive(async () => {
+            return Array.from(this._states.values())
+                .filter(s => s.hasConnectionDevice)
+                .map(s => s.slaveId);
+        });
     }
     /**
      * Resets the debounce timer for a specific slave (intended for testing only).

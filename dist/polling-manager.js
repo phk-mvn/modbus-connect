@@ -33,6 +33,7 @@ class TaskController {
     logger;
     manager;
     timerId = null;
+    isEnqueued = false;
     /**
      * Creates a new TaskController instance.
      * @param options - Configuration options for this polling task
@@ -102,6 +103,7 @@ class TaskController {
             return;
         }
         this.stopped = true;
+        this.isEnqueued = false;
         if (this.timerId) {
             clearTimeout(this.timerId);
             this.timerId = null;
@@ -133,7 +135,7 @@ class TaskController {
         if (!this.stopped && this.paused) {
             this.paused = false;
             this.logger.info('Task resumed');
-            if (!this.timerId && !this.executionInProgress) {
+            if (!this.timerId && !this.executionInProgress && !this.isEnqueued) {
                 this._scheduleNextRun(true);
             }
         }
@@ -159,6 +161,7 @@ class TaskController {
             this.timerId = null;
             if (this.stopped)
                 return;
+            this.isEnqueued = true;
             this.manager.enqueueTask(this);
         }, delay);
     }
@@ -175,9 +178,8 @@ class TaskController {
      * After execution completes (success or failure), it always schedules the next run.
      */
     async execute() {
+        this.isEnqueued = false;
         if (this.stopped || this.paused) {
-            this.logger.debug({ id: this.id }, 'Cannot execute - task is stopped or paused');
-            this._scheduleNextRun();
             return;
         }
         if (this.shouldRun && !this.shouldRun()) {
@@ -187,32 +189,30 @@ class TaskController {
         }
         this.onBeforeEach?.();
         this.executionInProgress = true;
-        this.logger.debug('Executing task');
         try {
             let overallSuccess = false;
             const results = [];
             for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
-                if (this.stopped)
-                    break;
-                if (this.paused)
+                if (this.stopped || this.paused)
                     break;
                 let retryCount = 0;
                 let result = null;
                 let fnSuccess = false;
-                while (!this.stopped && retryCount <= this.maxRetries) {
-                    if (this.paused)
-                        break;
+                while (!this.stopped && !this.paused && retryCount <= this.maxRetries) {
                     try {
                         const fnToExecute = this.fn[fnIndex];
-                        if (typeof fnToExecute !== 'function') {
-                            throw new errors_js_1.PollingManagerError(`Task ${this.id} fn at index ${fnIndex} is not a function`);
-                        }
+                        if (typeof fnToExecute !== 'function')
+                            break;
                         const executionResult = fnToExecute();
                         result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
+                        if (this.stopped || this.paused)
+                            return;
                         fnSuccess = true;
                         break;
                     }
                     catch (err) {
+                        if (this.stopped || this.paused)
+                            return;
                         const error = err instanceof Error ? err : new errors_js_1.PollingManagerError(String(err));
                         this._logSpecificError(error, fnIndex, retryCount);
                         retryCount++;
@@ -220,25 +220,13 @@ class TaskController {
                         if (retryCount > this.maxRetries) {
                             this.onFailure?.(error);
                             this.onError?.(error, fnIndex, retryCount);
-                            this.logger.warn({
-                                id: this.id,
-                                fnIndex,
-                                retryCount,
-                                error: error.message,
-                            }, 'Max retries exhausted for fn[' + fnIndex + ']');
                         }
                         else {
                             const isFlushedError = error instanceof errors_js_1.ModbusFlushError;
                             const baseDelay = isFlushedError
                                 ? 50
                                 : this.backoffDelay * Math.pow(2, retryCount - 1);
-                            const jitter = Math.random() * baseDelay * 0.5;
-                            const delay = baseDelay + jitter;
-                            this.logger.debug({
-                                id: this.id,
-                                delay,
-                                retryCount,
-                            }, 'Retrying fn[' + fnIndex + '] with delay');
+                            const delay = baseDelay + Math.random() * baseDelay * 0.5;
                             await this._sleep(delay);
                         }
                     }
@@ -246,29 +234,26 @@ class TaskController {
                 results.push(result);
                 overallSuccess = overallSuccess || fnSuccess;
             }
+            if (this.stopped || this.paused)
+                return;
             if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
                 this.onData?.(results);
             }
             if (overallSuccess) {
-                this.logger.debug(`Done`);
                 this.onSuccess?.(results);
             }
             this.onFinish?.(overallSuccess, results);
-            this.logger.debug({
-                id: this.id,
-                success: overallSuccess,
-                resultsCount: results.length,
-            }, 'Task execution completed');
         }
         catch (err) {
-            this.logger.error({
-                id: this.id,
-                error: err instanceof Error ? err.message : String(err),
-            }, 'Fatal error during task execution cycle');
+            if (!this.stopped && !this.paused) {
+                this.logger.error({ id: this.id, error: err.message }, 'Fatal error in task');
+            }
         }
         finally {
             this.executionInProgress = false;
-            this._scheduleNextRun();
+            if (!this.stopped && !this.paused) {
+                this._scheduleNextRun();
+            }
         }
     }
     /**
@@ -378,6 +363,7 @@ class PollingManager {
             defaultMaxRetries: 3,
             defaultBackoffDelay: 1000,
             defaultTaskTimeout: 5000,
+            interTaskDelay: config.interTaskDelay ?? 0,
             logLevel: 'info',
             ...config,
         };
@@ -430,7 +416,7 @@ class PollingManager {
                 ...options,
                 maxRetries: options.maxRetries ?? this.config.defaultMaxRetries,
                 backoffDelay: options.backoffDelay ?? this.config.defaultBackoffDelay,
-                taskTimeout: options.taskTimeout ?? this.config['defaultTaskTimout'],
+                taskTimeout: options.taskTimeout ?? this.config['defaultTaskTimeout'],
             }, this);
             this.tasks.set(options.id, task);
             this.logger.info(`Task added -> ${options.id}`);
@@ -549,8 +535,10 @@ class PollingManager {
      */
     resumeTask(id) {
         const task = this.tasks.get(id);
-        if (task)
+        if (task) {
             task.resume();
+            this._processQueue();
+        }
     }
     /**
      * Changes the polling interval for a specific task.
@@ -719,18 +707,30 @@ class PollingManager {
         this.isProcessing = true;
         try {
             while (this.executionQueue.length > 0 && !this.paused) {
-                const task = this.executionQueue[0];
-                if (task) {
-                    this.executionQueue.shift();
-                    this.logger.debug({ id: task.id }, 'Processing from queue');
-                    await new Promise(r => setTimeout(r, 30));
-                    await task.execute();
+                const task = this.executionQueue.shift();
+                if (!task)
+                    continue;
+                this.logger.debug({ id: task.id }, 'Processing task from queue');
+                try {
+                    await this.mutex.runExclusive(async () => {
+                        if (!task.stopped && !task.paused) {
+                            await task.execute();
+                        }
+                    });
                 }
-                await this._sleep(10);
+                catch (taskError) {
+                    this.logger.error({ id: task.id, error: taskError.message }, 'Task execution failed in queue');
+                }
+                if (this.config.interTaskDelay > 0 && this.executionQueue.length > 0) {
+                    await this._sleep(this.config.interTaskDelay);
+                }
+                else {
+                    await new Promise(resolve => setImmediate?.(resolve) || setTimeout(resolve, 0));
+                }
             }
         }
-        catch (error) {
-            this.logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Critical error in processQueue loop');
+        catch (criticalError) {
+            this.logger.error({ error: criticalError.message }, 'Critical error in _processQueue loop');
         }
         finally {
             this.isProcessing = false;

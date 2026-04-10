@@ -118,15 +118,12 @@ class ModbusClient {
         this.retryCount = options.retryCount ?? 0;
         this.retryDelay = options.retryDelay ?? 100;
         this._mutex = new async_mutex_1.Mutex();
-        if (options.RSMode) {
-            this.RSMode = options.RSMode;
-        }
-        else {
-            this.RSMode = options.framing === 'tcp' ? 'TCP/IP' : 'RS485';
-        }
-        const transport = this._effectiveTransport;
         this._framing = options.framing === 'tcp' ? framer.TcpFramer : framer.RtuFramer;
-        this._protocol = new protocol_1.ModbusProtocol(transport, this._framing);
+        this.RSMode = options.RSMode || (options.framing === 'tcp' ? 'TCP/IP' : 'RS485');
+        const transport = this._effectiveTransport;
+        if (transport) {
+            this._protocol = new protocol_1.ModbusProtocol(transport, this._framing);
+        }
         if (options.plugins && Array.isArray(options.plugins)) {
             for (const PluginClass of options.plugins) {
                 this.use(new PluginClass());
@@ -223,21 +220,16 @@ class ModbusClient {
      * @throws ModbusNotConnectedError if transport is not available or not open
      */
     async connect() {
-        const release = await this._mutex.acquire();
-        try {
+        await this._mutex.runExclusive(async () => {
             const transport = this._effectiveTransport;
-            if (!transport)
+            if (!transport || !transport.isOpen) {
                 throw new errors_1.ModbusNotConnectedError();
-            if (!transport.isOpen)
-                throw new errors_1.ModbusNotConnectedError();
+            }
             this.logger.info({
                 slaveId: this.slaveId,
                 transport: transport.constructor.name,
             }, 'Client is ready. Transport is connected and available');
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Performs a logical disconnection.
@@ -246,20 +238,16 @@ class ModbusClient {
      * Mainly used for logging and consistency with connect().
      */
     async disconnect() {
-        const release = await this._mutex.acquire();
-        try {
+        await this._mutex.runExclusive(async () => {
             const transport = this._effectiveTransport;
-            const transportId = this.transportController
+            const transportInfo = this.transportController
                 .listTransports()
-                .find(t => t.transport === transport)?.id;
-            if (transportId) {
-                this.transportController.removeSlaveIdFromTransport(transportId, this.slaveId);
+                .find(t => t.transport === transport);
+            if (transportInfo) {
+                await this.transportController.removeSlaveIdFromTransport(transportInfo.id, this.slaveId);
             }
             this.logger.info('Client disconnected and unregistered from transport');
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Returns the current slave ID used by this client instance
@@ -285,6 +273,24 @@ class ModbusClient {
         }, `Slave ID changed ${old} -> ${newSlaveId}`);
     }
     /**
+     * Synchronizes the protocol instance with the current transport.
+     * Implements lazy principalization and hot reload support for transport.
+     */
+    _syncProtocol() {
+        const transport = this._effectiveTransport;
+        if (!transport) {
+            throw new errors_1.ModbusNotConnectedError();
+        }
+        if (!this._protocol || this._protocol.transport !== transport) {
+            this.logger.debug({
+                reason: !this._protocol ? 'initial_sync' : 'transport_changed',
+                transport: transport.constructor.name,
+            }, 'Syncing protocol with transport instance');
+            this._protocol = new protocol_1.ModbusProtocol(transport, this._framing);
+        }
+        return this._protocol;
+    }
+    /**
      * Low-level method to send a Modbus request and receive a response.
      * Handles retries, timeouts, exception responses, and device connection notifications.
      * All public read/write methods use this internally.
@@ -295,28 +301,26 @@ class ModbusClient {
      * @throws ModbusNotConnectedError, ModbusTimeoutError, ModbusExceptionError, etc.
      */
     async _sendRequest(pdu, timeout = this.defaultTimeout, ignoreNoResponse = false) {
-        const release = await this._mutex.acquire();
-        const funcCode = pdu[0];
-        const funcCodeEnum = ModbusClient.FUNCION_CODE_MAP.get(funcCode) ?? funcCode;
-        const slaveId = this.slaveId;
-        const startTime = Date.now();
-        let lastError;
-        try {
+        return await this._mutex.runExclusive(async () => {
+            const funcCode = pdu[0];
+            const slaveId = this.slaveId;
+            const startTime = Date.now();
+            let lastError;
             for (let attempt = 0; attempt <= this.retryCount; attempt++) {
-                const transport = this._effectiveTransport;
-                if (!transport)
-                    throw new errors_1.ModbusNotConnectedError();
                 try {
+                    const protocol = this._syncProtocol();
+                    const transport = protocol.transport;
                     const attemptStart = Date.now();
                     const timeLeft = timeout - (attemptStart - startTime);
-                    if (timeLeft <= 0)
-                        throw new errors_1.ModbusTimeoutError('Timeout before request');
-                    this.logger.debug({ slaveId, funcCode }, `Attempt #${attempt + 1} - exchange start`);
+                    if (timeLeft <= 0) {
+                        throw new errors_1.ModbusTimeoutError('Timeout before request started');
+                    }
+                    this.logger.debug({ slaveId, funcCode, attempt: attempt + 1 }, 'Exchange start');
                     if (ignoreNoResponse) {
                         await transport.write(this._framing.buildAdu(slaveId, pdu));
                         return new Uint8Array(0);
                     }
-                    const responsePdu = await this._protocol.exchange(slaveId, pdu, timeLeft);
+                    const responsePdu = await protocol.exchange(slaveId, pdu, timeLeft);
                     if (transport.notifyDeviceConnected) {
                         transport.notifyDeviceConnected(this.slaveId);
                     }
@@ -325,18 +329,14 @@ class ModbusClient {
                         const modbusExc = ModbusClient.EXCEPTION_CODE_MAP.get(excCode) ?? excCode;
                         throw new errors_1.ModbusExceptionError(responsePdu[0] & 0x7f, modbusExc);
                     }
-                    this.logger.info({
-                        slaveId,
-                        funcCode,
-                        ms: Date.now() - startTime,
-                    }, 'Response received', Date.now() - startTime);
+                    this.logger.info({ slaveId, funcCode, ms: Date.now() - startTime }, 'Response received');
                     return responsePdu;
                 }
                 catch (err) {
                     lastError = err;
-                    const elapsed = Date.now() - startTime;
-                    this.logger.warn({ slaveId, funcCode, responseTime: elapsed }, `Attempt #${attempt + 1} failed: ${err instanceof Error ? err.message : String(err)}`);
-                    if (!(err instanceof errors_1.ModbusExceptionError)) {
+                    this.logger.warn({ slaveId, funcCode, attempt: attempt + 1, err: err.message }, 'Attempt failed');
+                    const transport = this._effectiveTransport;
+                    if (transport && !(err instanceof errors_1.ModbusExceptionError)) {
                         if (transport.notifyDeviceDisconnected) {
                             let errorType = modbus_types_1.EConnectionErrorType.UnknownError;
                             if (err instanceof errors_1.ModbusTimeoutError)
@@ -353,10 +353,7 @@ class ModbusClient {
                 }
             }
             throw lastError instanceof Error ? lastError : new Error(String(lastError));
-        }
-        finally {
-            release();
-        }
+        });
     }
     /**
      * Reads multiple holding registers (Function Code 0x03).
@@ -528,32 +525,26 @@ class ModbusClient {
      * @returns Detailed device identification object with object values as strings
      */
     async readDeviceIdentification(decoder = 'utf-8', timeout) {
-        const originalSlaveId = this.slaveId;
-        try {
-            const pdu = functions.buildReadDeviceIdentificationRequest(0x01, 0x00);
-            const responsePdu = await this._sendRequest(pdu, timeout);
-            const rawResponse = functions.parseReadDeviceIdentificationResponse(responsePdu);
-            if (!rawResponse) {
-                this.logger.error('Failed to parse 0x2B response. PDU might be corrupted.');
-                throw new Error('Modbus function 0x2B parsing failed');
-            }
-            const formattedObjects = {};
-            if (rawResponse.objects) {
-                const decodeText = new TextDecoder(decoder);
-                for (const [key, value] of Object.entries(rawResponse.objects)) {
-                    const id = parseInt(key, 10);
-                    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-                    formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
-                }
-            }
-            return {
-                ...rawResponse,
-                objects: formattedObjects,
-            };
+        const pdu = functions.buildReadDeviceIdentificationRequest(0x01, 0x00);
+        const responsePdu = await this._sendRequest(pdu, timeout);
+        const rawResponse = functions.parseReadDeviceIdentificationResponse(responsePdu);
+        if (!rawResponse) {
+            this.logger.error('Failed to parse 0x2B response');
+            throw new Error('Modbus function 0x2B parsing failed');
         }
-        finally {
-            this.slaveId = originalSlaveId;
+        const formattedObjects = {};
+        if (rawResponse.objects) {
+            const decodeText = new TextDecoder(decoder);
+            for (const [key, value] of Object.entries(rawResponse.objects)) {
+                const id = parseInt(key, 10);
+                const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+                formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
+            }
         }
+        return {
+            ...rawResponse,
+            objects: formattedObjects,
+        };
     }
 }
 module.exports = ModbusClient;

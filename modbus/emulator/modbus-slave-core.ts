@@ -119,7 +119,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
       }
     } catch (err: any) {
       if (err instanceof ModbusExceptionError) {
-        // Возвращаем Exception Response: functionCode | 0x80 + exception code
+        // Return Exception Response: functionCode | 0x80 + exception code
         return new Uint8Array([functionCode | 0x80, err.exceptionCode]);
       }
 
@@ -127,7 +127,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
         err,
         `Unexpected error while processing function code 0x${functionCode.toString(16)}`
       );
-      // По умолчанию возвращаем Illegal Function
+      // By default, we return Illegal Function
       return new Uint8Array([functionCode | 0x80, 0x01]);
     }
   }
