@@ -10,11 +10,12 @@ modbus-connect is a [cross-platform]() library for Modbus RTU/TCP communication 
 
 ## Features
 
-- Isomorphism: Works in Node.js and modern browsers
-- Security (Mutex): Eliminates collisions between background polling and manual commands
-- Polling Manager: A queue of tasks with priorities, delays and exponential backoff
-- Smart reconnect: Automatic connection recovery for Serial and TCP/IP
-- Emulator: Full-fiedged TCP-slave and RTU-slave for testing without hardware
+- **Isomorphism**: Works in Node.js and modern browsers
+- **Security (Mutex)**: Eliminates collisions between background polling and manual commands
+- **Polling Manager**: A queue of tasks with priorities, delays and exponential backoff
+- **Smart reconnect**: Automatic connection recovery for Serial and TCP/IP
+- **Emulator**: Full-fiedged TCP-slave and RTU-slave for testing without hardware
+- **Auto Discovery (Scanner)**: Ultra-fast device discovery with adaptive mathematical timeouts and parallel TCP scanning.
 
 ## Documentation
 
@@ -23,6 +24,7 @@ modbus-connect is a [cross-platform]() library for Modbus RTU/TCP communication 
 - [Modbus Client ⇗](#modbus-client)
 - [Polling Manager ⇗](#polling-manager)
 - [Emulator's ⇗](#emulators)
+- [Modbus Scanner ⇗](#modbus-scanner)
 - [Types ⇗](#types)
 - [Error's ⇗](#errors)
 - [Changelog ⇗](#changelog)
@@ -54,7 +56,7 @@ import ModbusClient from 'modbus-client/client';
 import TransportController from 'modbus-connect/transport';
 ```
 
-## Simple Node RTU with Polling Manager Example
+## Node RTU connection Example
 
 ```js
 import TransportController from 'modbus-connect/transport';
@@ -116,6 +118,210 @@ phk_mvn@MacBook-Air-Danila modbus-connect % node test-rtu.js
 [14:20:03] INFO: [ModbusClient][ID:92] Response received 42ms
 ...
 ```
+
+## Node TCP connection Example
+
+```js
+import TransportController from 'modbus-connect/transport';
+import ModbusClient from 'modbus-connect/client';
+
+const SLAVE_ID = 92;
+const TRANSPORT_ID = 'TEST_TCP';
+
+async function main() {
+  const controller = new TransportController();
+
+  await controller.addTransport(TRANSPORT_ID, 'node-tcp', {
+    host: '10.59.43.96',
+    port: 502,
+    readTimeout: 2000,
+    writeTimeout: 1000,
+    maxBufferSize: 4096,
+    reconnectInterval: 5000,
+    maxReconnectAttempts: Infinity,
+    slaveIds: [SLAVE_ID],
+  });
+
+  await controller.connectTransport(TRANSPORT_ID);
+
+  const client = new ModbusClient(controller, SLAVE_ID, {
+    framing: 'tcp',
+    timeout: 3000,
+  });
+
+  await new Promise(r => setTimeout(r, 250));
+
+  const pollingTask = {
+    id: 'task-read-holding-registers',
+    interval: 1000,
+    fn: async () => {
+      return await client.readHoldingRegisters(0, 4);
+    },
+    onData: data => {
+      console.log(data);
+    },
+    onError: err => {
+      console.error(err.message);
+    },
+  };
+
+  controller.addPollingTask(TRANSPORT_ID, pollingTask);
+}
+```
+
+**Expected result**:
+
+```bash
+phk_mvn@MacBook-Air-Danila modbus-connect % node test.js
+[04:04:57] INFO: [Transport Controller] Transport "TEST_TCP" added with PollingManager
+[04:04:57] INFO: [Node TCP] Connecting to 10.59.43.96:502...
+[04:04:57] INFO: [Transport Controller] Transport "TEST_TCP" connected
+[04:04:57] INFO: [Node TCP] SUCCESS: Connected to 10.59.43.96:502
+[04:04:57] INFO: [Polling Manager] Task added -> task-read-holding-registers
+[ [ 4114, 35714, 1986, 0 ] ]
+[04:04:57] INFO: [ModbusClient][ID:92] Response received 13ms
+[ [ 4114, 35714, 1986, 0 ] ]
+[04:04:58] INFO: [ModbusClient][ID:92] Response received 11ms
+[ [ 4114, 35714, 1986, 0 ] ]
+[04:04:59] INFO: [ModbusClient][ID:92] Response received 12ms
+...
+```
+
+## Web RTU (browser) connection Example
+
+To use Modbus in the browser, you must first obtain a port using the `Web Serial API`. Note that this code must be triggered by a user gesture (e.g., a button click).
+
+```js
+import TransportController from 'modbus-connect/transport';
+import ModbusClient from 'modbus-connect/client';
+
+const SLAVE_ID = 1;
+const TRANSPORT_ID = 'WEB_SERIAL_RTU';
+
+async function startModbus() {
+  // 1. Request port from user
+  const port = await navigator.serial.requestPort();
+
+  const controller = new TransportController();
+
+  // 2. Add transport with 'web-rtu' type
+  await controller.addTransport(TRANSPORT_ID, 'web-rtu', {
+    port, // Pass the native WebSerial port object
+    baudRate: 9600,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'none',
+    slaveIds: [SLAVE_ID],
+  });
+
+  await controller.connectTransport(TRANSPORT_ID);
+
+  const client = new ModbusClient(controller, SLAVE_ID, {
+    framing: 'rtu',
+    timeout: 2000,
+  });
+
+  // 3. Setup Polling
+  controller.addPollingTask(TRANSPORT_ID, {
+    id: 'web-task-coils',
+    interval: 2000,
+    fn: async () => {
+      return await client.readCoils(0, 8);
+    },
+    onData: data => {
+      console.log('Coils status:', data[0]);
+    },
+    onError: err => {
+      console.error('Web Serial Error:', err.message);
+    },
+  });
+}
+```
+
+**Expected result**:
+
+```bash
+[14:25:10] INFO: [Transport Controller] Transport "WEB_SERIAL_RTU" added with PollingManager
+[14:25:10] INFO: [Web RTU] Port opened successfully
+[14:25:10] INFO: [Transport Controller] Transport "WEB_SERIAL_RTU" connected
+[14:25:10] INFO: [Polling Manager] Task added -> web-task-coils
+Coils status: [true, false, true, true, false, false, false, true]
+[14:25:11] INFO: [ModbusClient][ID:1] Response received 85ms
+...
+```
+
+## Emulator Node RTU / TCP connection
+
+```js
+import TransportController from 'modbus-connect/transport';
+import ModbusClient from 'modbus-connect/client';
+
+const SLAVE_ID = 92;
+const TRANSPORT_ID = 'TEST_TCP';
+
+async function main() {
+  const controller = new TransportController();
+  await controller.addTransport(
+    'emulator-1',
+    'rtu-emulator', // or 'tcp-emulator'
+    {
+      slaveId: 1,
+      responseLatencyMs: 30,
+      initialRegisters: {
+        holding: [
+          { start: 100, value: 1234 },
+          { start: 101, value: 5678 },
+        ],
+        coils: [{ start: 0, value: true }],
+      },
+    }
+  );
+
+  await controller.connectTransport('emulator-1');
+
+  // Client configuration depending on the type of emulator
+  const client = new ModbusClient(controller, 1, {
+    framing: 'rtu', // or 'tcp'
+    timeout: 3000,
+    retryCount: 1,
+  });
+
+  // Polling task (will work with any emulator)
+  controller.addPollingTask('emulator-1', {
+    id: 'task1',
+    interval: 1000,
+    fn: async () => {
+      return await client.readHoldingRegisters(100, 2);
+    },
+    onData: data => {
+      console.log(data);
+    },
+    onError: err => {
+      console.error('Polling error:', err.message);
+    },
+  });
+}
+```
+
+**Expected result**:
+
+```bash
+phk_mvn@MacBook-Air-Danila modbus-connect % node test.js
+[04:04:52] INFO: [Polling Manager] Task added -> task1
+[04:04:52] INFO: [Transport Controller] Transport "emulator-1" added with PollingManager
+[04:04:52] INFO: [ModbusSlaveCore] ModbusSlaveCore initialized successfully (Slave ID: 1)
+[04:04:52] INFO: [RTU Emulator] RTU Emulator connected
+[04:04:52] INFO: [ModbusSlaveCore] Registers added successfully: {"coils":1,"discrete":0,"holding":2,"input":0}
+[04:04:52] INFO: [Transport Controller] Transport "emulator-1" connected
+[ [ 1234, 5678 ] ]
+[04:04:52] INFO: [ModbusClient][ID:1] Response received 32ms
+[ [ 1234, 5678 ] ]
+[04:04:53] INFO: [ModbusClient][ID:1] Response received 32ms
+[ [ 1234, 5678 ] ]
+[04:04:54] INFO: [ModbusClient][ID:1] Response received 32ms
+```
+
+<br>
 
 # <span id="transport-controller">TransportController</span>
 
@@ -348,11 +554,11 @@ await controller.setDeviceStateHandlerForTransport('RS485_BUS', (slaveId, connec
 [Event] Device 1 is now disabled (Modbus request timed out)
 ```
 
----
+<br>
 
 # <span id="modbus-client">ModbusClient</span>
 
-'ModbusClient' is a high—level interface for communicating with Modbus devices. It manages thread safety via Mutex, implements the logic of retries, and automatically synchronizes with transports in case they are rebooted.
+`ModbusClient` is a high—level interface for communicating with Modbus devices. It manages thread safety via Mutex, implements the logic of retries, and automatically synchronizes with transports in case they are rebooted.
 
 ---
 
@@ -688,7 +894,7 @@ console.log(client.currentSlaveId); // 122
   - If the device does not respond or the data is corrupted (CRC Error), the client will automatically retry (`retryCount`).
   - If the device has responded with a **Modbus Exception** (for example, Illegal Function), repeated attempts **are not performed**, as this is a logical error, not a physical failure.
 
----
+<br>
 
 # <span id="polling-manager">PollingManager</span>
 
@@ -957,7 +1163,7 @@ manager.disableAllLoggers(); // Sets the 'silent' level for a total of 4. Bulk M
 - **FIFO + Priority**: The queue is sorted by priority. If tasks have the same priority, they are executed in the order they arrive (First-In-First-Out).
 - **Zombie Task Protection**: If you call `removeTask` while waiting for a response from the device (e.g., 2 seconds), the manager will intercept the response but will not call the `onData` callback, preventing the processing of stale data. - **CPU Safety**: Between tasks in the queue, the manager takes a micro-pause using `setImmediate` (or `setTimeout(0)`) to avoid blocking the Event Loop and allow the application to process other asynchronous events.
 
----
+<br>
 
 # <span id="emulators">Modbus Emulators (RTU & TCP)</span>
 
@@ -1194,7 +1400,132 @@ startSystem();
 Value from emulator: [34]
 ```
 
+<br>
+
+# <span id="modbus-scanner">Modbus Scanner</span>
+
+The `ModbusScanner` is a high-performance tool built into the `TransportController` that allows you to discover Modbus devices on a line or network without knowing their exact settings.
+
+### **Key Features**
+
+- **Adaptive Turbo Mode**: Automatically calculates the minimum physical timeout based on the Baud Rate. (e.g., ~14ms for 115200 baud).
+- **Isomorphic RTU Scanning**: Automatically detects if you are in Node.js or a Browser environment.
+- **High-Concurrency TCP Scanning**: Scans multiple Unit IDs in parallel (up to 50 at once).
+- **Lifecycle Control**: Ability to pause, resume, or stop the scanning process programmatically.
+
 ---
+
+### **Callback System**
+
+The scanner uses a reactive callback system to provide real-time feedback, making it ideal for building smooth User Interfaces.
+
+- `onDeviceFound(device)`: Triggered immediately when a device is verified. You can use this to populate a list in your UI as the scan progresses.
+- `onProgress(current, total, info)`: Triggered on every request attempt.
+  - `current`: Current attempt index.
+  - `total`: Total planned attempts.
+  - `info`: Object containing current scan parameters (`baud`, `parity`, `slaveId`).
+- `onFinish(results)`: Triggered when the entire scan process is complete. Returns an array of all discovered IScanResult objects.
+
+---
+
+### **Scanning Options (`IScanOptions`)**
+
+| Property          | Type               | Description                                                                  |
+| ----------------- | ------------------ | ---------------------------------------------------------------------------- |
+| `path`            | `string or object` | Serial port path (Node) or SerialPort object (Web).                          |
+| `bauds`           | `number[]`         | List of baud rates to check. Default: `[115200, 57600, 38400, 19200, 9600]`. |
+| `parities`        | `TParityType[]`    | List of parities to check. Default: `['none', 'even', 'odd']`.               |
+| `slaveIds`        | `number[]`         | Range of Slave IDs to check (1-247).                                         |
+| `registerAddress` | `number`           | The register address to read for verification. Default: `0`.                 |
+| `controller`      | `ScanController`   | An instance of `ScanController` to manage the scan externally.               |
+
+---
+
+### **Scanning Methods**
+
+`scanRtuPort(options)`
+
+This method iterates through the matrix of Baud Rates and Parities. Once a device is found, it "locks" the port settings and quickly scans the remaining Slave IDs.
+
+**Example**:
+
+```js
+const results = await controller.scanRtuPort({
+  path: '/dev/ttyUSB0', // In Browser, pass the port object here
+  bauds: [9600, 115200],
+  slaveIds: Array.from({ length: 247 }, (_, i) => i + 1),
+
+  onDeviceFound: device => {
+    console.log(`✨ New device discovered! ID: ${device.slaveId}`);
+  },
+
+  onProgress: (current, total, info) => {
+    // Smooth progress update for UI
+    const percent = Math.round((current / total) * 100);
+    process.stdout.write(`Scanning ${info.baud}bps | ID: ${info.slaveId} [${percent}%]\r`);
+  },
+
+  onFinish: allDevices => {
+    console.log(`\nScan complete. Total devices found: ${allDevices.length}`);
+  },
+});
+```
+
+---
+
+`scanTcpPort(options)`
+
+Uses high-concurrency parallel requests to map a TCP gateway or a subnetwork.
+
+**Example**:
+
+```js
+const tcpDevices = await controller.scanTcpPort({
+  hosts: ['192.168.1.100'], // Scan devices behind this gateway
+  ports: [502],
+  unitIds: Array.from({ length: 255 }, (_, i) => i + 1), // Check all possible Unit IDs
+
+  onDeviceFound: device => {
+    console.log(`✅ Found TCP Unit: ${device.slaveId} at ${device.host}`);
+  },
+
+  onFinish: results => {
+    // Process final list
+    saveDevicesToDatabase(results);
+  },
+});
+```
+
+---
+
+### **Scanner Control**
+
+If you need to manage the scan process (e.g., from a UI), use these methods:
+
+| Method         | Description                                              |
+| -------------- | -------------------------------------------------------- |
+| `pauseScan()`  | Suspends the current scan at the next iteration.         |
+| `resumeScan()` | Resumes a previously paused scan.                        |
+| `stopScan()`   | Immediately stops the scan and releases the port/socket. |
+
+---
+
+Scan Result Interface (`IScanResult`)
+
+```ts
+{
+  type: 'node-rtu' | 'web-rtu' | 'node-tcp';
+  slaveId: number;     // The Modbus address found
+  baudRate?: number;   // (RTU only) The working baud rate
+  parity?: string;     // (RTU only) none, even, or odd
+  stopBits?: number;   // (RTU only) 1 or 2
+  port?: string | any; // The physical port identifier
+  host?: string;       // (TCP only) The device IP
+  tcpPort?: number;    // (TCP only) The device Port
+}
+```
+
+<br>
 
 # <span id="types">Types and Interfaces</span>
 
@@ -1366,7 +1697,7 @@ if (status.connected) {
 }
 ```
 
----
+<br>
 
 # <span id="errors">Error Reference</span>
 
@@ -1483,9 +1814,17 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 | `PollingTaskValidationError`    | Error in task parameters (invalid interval, missing function).       |
 | `RSModeConstraintError`         | Violation of mode rules (e.g., attempt to add two devices to RS232). |
 
----
+<br>
 
 # <span id="changelog">Changelog</span>
+
+### 4.1.0 (2026-04-11)
+
+- Major Feature: High-Performance Modbus Scanner
+  - **Ultra-Fast RTU Scanning**: Introduced a new algorithm that uses mathematical formulas `(264000 / baud + 5)` to calculate the absolute minimum physical timeout for each speed.
+  - **Scan Lifecycle Management**: Added `pauseScan()`, `resumeScan()`, and `stopScan()` methods to `TransportController` for granular control.
+  - **Smart Filtering**: The scanner now automatically filters duplicate devices if they respond across different parity settings on short lines.
+  - **Enhanced Progress Tracking**: `onProgress` callback now provides real-time metadata (current baud, parity, and slave ID).
 
 ### 4.0.8 (2026-04-09)
 
@@ -1563,35 +1902,3 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 - **Robust Task Validation** — Rewritten `_validateTaskOptions` logic to perform deep validation of the `fn` parameter. If an array of functions is provided, the manager now verifies every single element to ensure it is a valid function before starting the task.
 - **Execution Safety** — Internal task runner now wraps all calls in `Promise.resolve()`, ensuring that even functions returning `undefined` or non-promise values are handled gracefully by the timeout and retry logic.
 - **Arrow Function Support** — Explicitly tested and optimized for arrow functions with multi-line blocks, allowing complex logic directly within the task definition.
-
-### 3.1.2 (2026-03-03)
-
-**Major Features:**
-
-- **Dynamic Slave ID Change** - full runtime support for changing a device's Modbus address without recreating the `ModbusClient` instance or reconnecting the transport
-- Added `setSlaveId(newSlaveId: number): Promise<void>` method to `ModbusClient` - immediately updates the slave ID used for all subsequent requests.
-- Added read-only `currentSlaveId: number` property - returns the currently active slave ID (useful in polling callbacks, logging, and diagnostics).
-- Recommended workflow after device address change: call `setSlaveId()`, update `TransportController` routing (`removeSlaveIdFromTransport` + `assignSlaveIdToTransport`), and **recreate polling tasks** for reliability.
-
-**Improvements & Fixes:**
-
-- Polling tasks can now be safely recreated after slave ID changes using `removePollingTask` + `createPollingTask` with the new ID.
-- Improved RS-485 stability: enforced minimum inter-frame delay (30-50 ms) between polling cycles and manual requests to prevent collisions on multi-device buses.
-- Enhanced logging context: `currentSlaveId` is now automatically included in all request/response logs when changed.
-- Documentation update: added detailed "Dynamic Slave ID Change" section with full example workflow.
-
-### 3.0.1 (2026-01-14)
-
-- Fixed an issue with the **Device Connection Tracker**. Now everything works as it did before the `3.0.0` update.
-
-### 3.0.0 (2026-01-13)
-
-- **Improved:** The `add Transport`, `remove Transport`, `reload Transport` and `destroy` methods in the **TransportController** module are now mutex protected.
-- **Improved:** Updated typing of the **TransportController** module in the `src/transport/transport-controller.d.ts` file
-- **Major Feature:** Added full **Modbus TCP** support for both Node.js and Web (WebSocket proxy).
-- **Architecture Overhaul:** Introduced `ModbusFramer` and `ModbusProtocol` layers.
-- **Performance Optimization:** Eliminated redundant framing checks in the main execution loop (Zero-Branching logic).
-- **Improved Reliability:** Implemented an intelligent stream reading loop in `ModbusProtocol` that waits for complete/valid packets. This fixes CRC errors on variable-length responses.
-- **Encapsulation:** Transaction ID management moved entirely to `TcpFramer`.
-- **Breaking Change:** Internal methods `_readPacket` and `_getExpectedResponseLength` removed from `ModbusClient`.
-- **Bug Fix:** Fixed plugin support for custom functions with dynamic response lengths (e.g., file/archive reading).

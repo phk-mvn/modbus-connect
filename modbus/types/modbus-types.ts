@@ -238,6 +238,11 @@ export type TLoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available'
 export interface ITransportController {
   disableLogger(): void;
   enableLogger(): void;
+  scanRtuPort(options: IScanOptions): Promise<IScanResult[]>;
+  scanTcpPort(options: IScanOptions): Promise<IScanResult[]>;
+  pauseScan(): void;
+  resumeScan(): void;
+  stopScan(): void;
   addTransport(
     id: string,
     type: TTransportType,
@@ -467,6 +472,45 @@ export interface IPortConnectionState {
 
 export interface IPortConnectionTrackerOptions {
   debounceMs?: number;
+}
+
+// ===================================================
+// SCANER'S
+// ===================================================
+
+export interface IScanResult {
+  type: 'node-rtu' | 'node-tcp' | 'web-rtu';
+  slaveId: number;
+  baudRate?: number;
+  parity?: TParityType;
+  port?: string | any;
+  stopBits?: number;
+  host?: string;
+  tcpPort?: number;
+}
+
+export interface IScanController {
+  pause: () => void;
+  resume: () => void;
+  stop: () => void;
+  readonly isPaused: boolean;
+  readonly isStopped: boolean;
+}
+
+export interface IScanOptions {
+  registerAddress?: number;
+  path?: string | any;
+  type?: 'node-rtu' | 'web-rtu';
+  bauds?: number[];
+  parities?: TParityType[];
+  slaveIds?: number[];
+  hosts?: string[];
+  ports?: number[];
+  unitIds?: number[];
+  controller?: IScanController;
+  onProgress?: (current: number, total: number, info?: any) => void;
+  onDeviceFound?: (device: IScanResult) => void;
+  onFinish?: (results: IScanResult[]) => void;
 }
 
 // ===================================================

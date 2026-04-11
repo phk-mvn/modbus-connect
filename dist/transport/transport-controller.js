@@ -41,6 +41,7 @@ const utils = __importStar(require("../utils/utils.js"));
 const polling_manager_js_1 = __importDefault(require("../polling-manager.js"));
 const async_mutex_1 = require("async-mutex");
 const transport_factory_js_1 = require("./modules/transport-factory.js");
+const scanners_js_1 = require("../utils/scanners.js");
 const modbus_types_js_1 = require("../types/modbus-types.js");
 const DeviceConnectionTracker_js_1 = require("./trackers/DeviceConnectionTracker.js");
 const PortConnectionTracker_js_1 = require("./trackers/PortConnectionTracker.js");
@@ -52,6 +53,8 @@ const errors_js_1 = require("../errors.js");
  * connection state tracking, and provides a proxy interface for polling management.
  */
 class TransportController {
+    scanner;
+    _activeScanCtrl = null;
     /** Internal registry of all added transports */
     transports = new Map();
     /** Routing map: SlaveID -> Array of Transport IDs capable of reaching it */
@@ -96,6 +99,7 @@ class TransportController {
                 : undefined,
         });
         this.logger.debug('Transport Controller initialized');
+        this.scanner = new scanners_js_1.ModbusScanner(this.logger);
     }
     /**
      * Disables all logging output.
@@ -145,6 +149,63 @@ class TransportController {
      */
     setPortStateHandler(handler) {
         this._externalPortStateHandler = handler;
+    }
+    /**
+     * Pauses the currently active scanning process.
+     */
+    pauseScan() {
+        this._activeScanCtrl?.pause();
+    }
+    /**
+     * Resumes the currently active scanning process.
+     */
+    resumeScan() {
+        this._activeScanCtrl?.resume();
+    }
+    /**
+     * Stops the currently active scanning process and clears state.
+     */
+    stopScan() {
+        this._activeScanCtrl?.stop();
+    }
+    /**
+     * Scans an RTU line for Modbus devices.
+     * Automatically detects the environment (Node.js or Web Serial) based on the path type,
+     * or uses the explicitly provided 'type' in options.
+     *
+     * @param options - Scanning configurations (path, IDs, bauds, etc.).
+     * @returns A promise resolving to a list of discovered RTU devices.
+     */
+    async scanRtuPort(options) {
+        let transportType = 'node-rtu';
+        if (options.type) {
+            transportType = options.type;
+        }
+        else if (options.path && typeof options.path !== 'string') {
+            transportType = 'web-rtu';
+        }
+        this._activeScanCtrl = options.controller || new scanners_js_1.ScanController();
+        try {
+            this.logger.info(`Starting RTU scan using ${transportType} transport`);
+            return await this.scanner.scanRtu(options, transportType, this._activeScanCtrl);
+        }
+        finally {
+            this._activeScanCtrl = null;
+        }
+    }
+    /**
+     * Initiates an auto-discovery scan for Modbus TCP devices on the network.
+     * @param options - Scanning configurations (hosts, ports, unit IDs).
+     * @returns A promise resolving to a list of discovered TCP devices.
+     */
+    async scanTcpPort(options) {
+        this._activeScanCtrl = options.controller || new scanners_js_1.ScanController();
+        try {
+            return await this.scanner.scanTcp(options, this._activeScanCtrl);
+        }
+        finally {
+            this._activeScanCtrl = null;
+        }
     }
     /**
      * Adds a new transport to the controller.

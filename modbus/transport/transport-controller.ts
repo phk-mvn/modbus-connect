@@ -6,7 +6,8 @@ import PollingManager from '../polling-manager.js';
 
 import { Mutex } from 'async-mutex';
 import { TransportFactory } from './modules/transport-factory.js';
-import { EConnectionErrorType } from '../types/modbus-types.js';
+import { ModbusScanner, ScanController } from '../utils/scanners.js';
+import { EConnectionErrorType, IScanResult, IScanOptions } from '../types/modbus-types.js';
 import { DeviceConnectionTracker } from './trackers/DeviceConnectionTracker.js';
 import { PortConnectionTracker } from './trackers/PortConnectionTracker.js';
 import { RSModeConstraintError } from '../errors.js';
@@ -35,6 +36,8 @@ import type {
  * connection state tracking, and provides a proxy interface for polling management.
  */
 class TransportController implements ITransportController {
+  private scanner: ModbusScanner;
+  private _activeScanCtrl: ScanController | null = null;
   /** Internal registry of all added transports */
   private transports: Map<string, ITransportInfo> = new Map();
   /** Routing map: SlaveID -> Array of Transport IDs capable of reaching it */
@@ -86,6 +89,8 @@ class TransportController implements ITransportController {
     });
 
     this.logger.debug('Transport Controller initialized');
+
+    this.scanner = new ModbusScanner(this.logger);
   }
 
   /**
@@ -140,6 +145,68 @@ class TransportController implements ITransportController {
    */
   public setPortStateHandler(handler: TPortStateHandler): void {
     this._externalPortStateHandler = handler;
+  }
+
+  /**
+   * Pauses the currently active scanning process.
+   */
+  public pauseScan(): void {
+    this._activeScanCtrl?.pause();
+  }
+
+  /**
+   * Resumes the currently active scanning process.
+   */
+  public resumeScan(): void {
+    this._activeScanCtrl?.resume();
+  }
+
+  /**
+   * Stops the currently active scanning process and clears state.
+   */
+  public stopScan(): void {
+    this._activeScanCtrl?.stop();
+  }
+
+  /**
+   * Scans an RTU line for Modbus devices.
+   * Automatically detects the environment (Node.js or Web Serial) based on the path type,
+   * or uses the explicitly provided 'type' in options.
+   *
+   * @param options - Scanning configurations (path, IDs, bauds, etc.).
+   * @returns A promise resolving to a list of discovered RTU devices.
+   */
+  public async scanRtuPort(options: IScanOptions): Promise<IScanResult[]> {
+    let transportType: 'node-rtu' | 'web-rtu' = 'node-rtu';
+
+    if (options.type) {
+      transportType = options.type;
+    } else if (options.path && typeof options.path !== 'string') {
+      transportType = 'web-rtu';
+    }
+
+    this._activeScanCtrl = (options.controller as ScanController) || new ScanController();
+
+    try {
+      this.logger.info(`Starting RTU scan using ${transportType} transport`);
+      return await this.scanner.scanRtu(options, transportType, this._activeScanCtrl);
+    } finally {
+      this._activeScanCtrl = null;
+    }
+  }
+
+  /**
+   * Initiates an auto-discovery scan for Modbus TCP devices on the network.
+   * @param options - Scanning configurations (hosts, ports, unit IDs).
+   * @returns A promise resolving to a list of discovered TCP devices.
+   */
+  public async scanTcpPort(options: IScanOptions): Promise<IScanResult[]> {
+    this._activeScanCtrl = (options.controller as ScanController) || new ScanController();
+    try {
+      return await this.scanner.scanTcp(options, this._activeScanCtrl);
+    } finally {
+      this._activeScanCtrl = null;
+    }
   }
 
   /**
