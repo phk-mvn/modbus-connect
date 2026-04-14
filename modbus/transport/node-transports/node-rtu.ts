@@ -1,4 +1,4 @@
-// modbus/transport/node-transports/node-serialport.ts
+// modbus/transport/node-transports/node-rtu.ts
 
 import { SerialPort } from 'serialport';
 import { Mutex } from 'async-mutex';
@@ -37,7 +37,7 @@ const NODE_SERIAL_CONSTANTS = {
   MIN_BAUD_RATE: 300,
   MAX_BAUD_RATE: 115200,
   DEFAULT_MAX_BUFFER_SIZE: 4096,
-  POLL_INTERVAL_MS: 10,
+  POLL_INTERVAL_MS: 0,
 } as const;
 
 /**
@@ -56,7 +56,11 @@ export default class NodeSerialTransport implements ITransport {
   private path: string;
   private options: Required<INodeSerialTransportOptions>;
   private port: SerialPort | null = null;
-  private readBuffer: Uint8Array = utils.allocUint8Array(0);
+
+  private _readBuffer: Uint8Array = utils.allocUint8Array(0);
+  private _readBufferHead: number = 0;
+  private _readBufferTail: number = 0;
+  private _readBufferCount: number = 0;
 
   private _reconnectAttempts: number = 0;
   private _shouldReconnect: boolean = true;
@@ -94,6 +98,8 @@ export default class NodeSerialTransport implements ITransport {
       maxReconnectAttempts: options.maxReconnectAttempts ?? Infinity,
       RSMode: options.RSMode || 'RS485',
     };
+
+    this._readBuffer = new Uint8Array(this.options.maxBufferSize);
 
     this.logger = pino({
       level: 'info',
@@ -250,20 +256,29 @@ export default class NodeSerialTransport implements ITransport {
   private _onData(data: Buffer): void {
     if (!this.isOpen) return;
     try {
-      const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-      if (this.readBuffer.length + chunk.length > this.options.maxBufferSize) {
+      const chunkLen = data.length;
+
+      if (this._readBufferCount + chunkLen > this.options.maxBufferSize) {
         this._handleError(
           new ModbusBufferOverflowError(
-            this.readBuffer.length + chunk.length,
+            this._readBufferCount + chunkLen,
             this.options.maxBufferSize
           )
         );
         return;
       }
-      this.readBuffer = utils.concatUint8Arrays([this.readBuffer, chunk]);
-      if (this.readBuffer.length > this.options.maxBufferSize) {
-        this.readBuffer = utils.sliceUint8Array(this.readBuffer, -this.options.maxBufferSize);
+
+      const spaceAtEnd = this.options.maxBufferSize - this._readBufferHead;
+
+      if (chunkLen <= spaceAtEnd) {
+        this._readBuffer.set(data, this._readBufferHead);
+      } else {
+        this._readBuffer.set(data.subarray(0, spaceAtEnd), this._readBufferHead);
+        this._readBuffer.set(data.subarray(spaceAtEnd), 0);
       }
+
+      this._readBufferHead = (this._readBufferHead + chunkLen) % this.options.maxBufferSize;
+      this._readBufferCount += chunkLen;
     } catch (err: unknown) {
       this._handleError(err instanceof Error ? err : new NodeSerialTransportError(String(err)));
     }
@@ -293,6 +308,9 @@ export default class NodeSerialTransport implements ITransport {
     this._notifyPortDisconnected(EConnectionErrorType.PortClosed, 'Port was closed').catch(
       () => {}
     );
+    this._readBufferCount = 0;
+    this._readBufferHead = 0;
+    this._readBufferTail = 0;
   }
 
   /**
@@ -353,8 +371,11 @@ export default class NodeSerialTransport implements ITransport {
     }
     this._isFlushing = true;
     const p = new Promise<void>(resolve => this._pendingFlushPromises.push(resolve));
+
     try {
-      this.readBuffer = utils.allocUint8Array(0);
+      this._readBufferHead = 0;
+      this._readBufferTail = 0;
+      this._readBufferCount = 0;
     } finally {
       this._isFlushing = false;
       this._pendingFlushPromises.forEach(r => r());
@@ -416,6 +437,7 @@ export default class NodeSerialTransport implements ITransport {
     if (length <= 0) throw new ModbusDataConversionError(length, 'positive');
     const release = await this._operationMutex.acquire();
     const start = Date.now();
+
     try {
       return new Promise((resolve, reject) => {
         const check = () => {
@@ -425,13 +447,25 @@ export default class NodeSerialTransport implements ITransport {
           if (this._isFlushing) {
             return reject(new ModbusFlushError());
           }
-          if (this.readBuffer.length >= length) {
-            const data = utils.sliceUint8Array(this.readBuffer, 0, length);
-            this.readBuffer = utils.sliceUint8Array(this.readBuffer, length);
-            if (data.length !== length) {
-              return reject(new ModbusInsufficientDataError(data.length, length));
+
+          if (this._readBufferCount >= length) {
+            let result: Uint8Array;
+            const spaceAtEnd = this.options.maxBufferSize - this._readBufferTail;
+
+            if (length <= spaceAtEnd) {
+              result = this._readBuffer.slice(this._readBufferTail, this._readBufferTail + length);
+            } else {
+              result = new Uint8Array(length);
+              const part1 = this._readBuffer.subarray(this._readBufferTail);
+              const part2 = this._readBuffer.subarray(0, length - spaceAtEnd);
+              result.set(part1, 0);
+              result.set(part2, part1.length);
             }
-            return resolve(data);
+
+            this._readBufferTail = (this._readBufferTail + length) % this.options.maxBufferSize;
+            this._readBufferCount -= length;
+
+            return resolve(result);
           }
 
           if (Date.now() - start > timeout) {
@@ -645,7 +679,9 @@ export default class NodeSerialTransport implements ITransport {
 
     this.port = null;
     this.isOpen = false;
-    this.readBuffer = utils.allocUint8Array(0);
+    this._readBufferHead = 0;
+    this._readBufferTail = 0;
+    this._readBufferCount = 0;
     this._connectedSlaveIds.clear();
   }
 

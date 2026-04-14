@@ -88,7 +88,7 @@ export class ModbusScanner {
       for (const parity of parities) {
         if (ctrl.isStopped) break;
 
-        // MATHEMATICAL TIMEOUT: (11 bits * 24 chars) / baud + 5ms system latency padding
+        // TIMEOUT: (11 bits * 24 chars) / baud + 5ms system latency padding
         const timeout = Math.ceil(264000 / baud + 5);
 
         let transport: any = null;

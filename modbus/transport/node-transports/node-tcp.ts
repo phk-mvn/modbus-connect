@@ -1,4 +1,4 @@
-// modbus/transport/node-transports/node-tcp-serialport.ts
+// modbus/transport/node-transports/node-tcp.ts
 
 import * as net from 'net';
 import { Mutex } from 'async-mutex';
@@ -19,7 +19,7 @@ import {
 const NODE_TCP_CONSTANTS = {
   DEFAULT_PORT: 502,
   DEFAULT_MAX_BUFFER_SIZE: 8192,
-  POLL_INTERVAL_MS: 10,
+  POLL_INTERVAL_MS: 5,
 } as const;
 
 /**
@@ -38,7 +38,11 @@ export default class NodeTcpTransport implements ITransportTcp {
   private port: number;
   private options: Required<INodeTcpTransportOptions>;
   private socket: net.Socket | null = null;
-  private readBuffer: Uint8Array = utils.allocUint8Array(0);
+
+  private _readBuffer: Uint8Array;
+  private _readBufferHead: number = 0;
+  private _readBufferTail: number = 0;
+  private _readBufferCount: number = 0;
 
   private _reconnectAttempts: number = 0;
   private _shouldReconnect: boolean = true;
@@ -73,6 +77,8 @@ export default class NodeTcpTransport implements ITransportTcp {
       reconnectInterval: options.reconnectInterval ?? 3000,
       maxReconnectAttempts: options.maxReconnectAttempts ?? Infinity,
     };
+
+    this._readBuffer = new Uint8Array(this.options.maxBufferSize);
 
     this.logger = pino({
       level: 'info',
@@ -212,12 +218,24 @@ export default class NodeTcpTransport implements ITransportTcp {
    * @param data - Raw buffer received from the socket.
    */
   private _onData(data: Buffer): void {
-    const chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    if (this.readBuffer.length + chunk.length > this.options.maxBufferSize) {
-      this.readBuffer = utils.allocUint8Array(0);
+    const chunkLen = data.length;
+    if (this._readBufferCount + chunkLen > this.options.maxBufferSize) {
+      this._readBufferCount = 0;
+      this._readBufferHead = 0;
+      this._readBufferTail = 0;
       return;
     }
-    this.readBuffer = utils.concatUint8Arrays([this.readBuffer, chunk]);
+
+    const spaceAtEnd = this.options.maxBufferSize - this._readBufferHead;
+    if (chunkLen <= spaceAtEnd) {
+      this._readBuffer.set(data, this._readBufferHead);
+    } else {
+      this._readBuffer.set(data.subarray(0, spaceAtEnd), this._readBufferHead);
+      this._readBuffer.set(data.subarray(spaceAtEnd), 0);
+    }
+
+    this._readBufferHead = (this._readBufferHead + chunkLen) % this.options.maxBufferSize;
+    this._readBufferCount += chunkLen;
   }
 
   /**
@@ -252,6 +270,9 @@ export default class NodeTcpTransport implements ITransportTcp {
     }
 
     this._connectedSlaveIds.clear();
+    this._readBufferCount = 0;
+    this._readBufferHead = 0;
+    this._readBufferTail = 0;
 
     if (this._shouldReconnect && !this._isDisconnecting) {
       this._scheduleReconnect();
@@ -348,10 +369,23 @@ export default class NodeTcpTransport implements ITransportTcp {
         const check = () => {
           if (!this.isOpen) return reject(new Error('Transport closed during read'));
 
-          if (this.readBuffer.length >= length) {
-            const data = utils.sliceUint8Array(this.readBuffer, 0, length);
-            this.readBuffer = utils.sliceUint8Array(this.readBuffer, length);
-            return resolve(data);
+          if (this._readBufferCount >= length) {
+            let result: Uint8Array;
+            const spaceAtEnd = this.options.maxBufferSize - this._readBufferTail;
+
+            if (length <= spaceAtEnd) {
+              result = this._readBuffer.slice(this._readBufferTail, this._readBufferTail + length);
+            } else {
+              result = new Uint8Array(length);
+              const part1 = this._readBuffer.subarray(this._readBufferTail);
+              const part2 = this._readBuffer.subarray(0, length - spaceAtEnd);
+              result.set(part1, 0);
+              result.set(part2, part1.length);
+            }
+
+            this._readBufferTail = (this._readBufferTail + length) % this.options.maxBufferSize;
+            this._readBufferCount -= length;
+            return resolve(result);
           }
 
           if (Date.now() - start > timeout) {
@@ -401,7 +435,9 @@ export default class NodeTcpTransport implements ITransportTcp {
    * Clears the current read buffer.
    */
   public async flush(): Promise<void> {
-    this.readBuffer = utils.allocUint8Array(0);
+    this._readBufferHead = 0;
+    this._readBufferTail = 0;
+    this._readBufferCount = 0;
   }
 
   /**

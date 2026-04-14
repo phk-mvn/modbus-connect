@@ -831,7 +831,6 @@ class PollingManager implements IPollingManager {
         if (this.config.interTaskDelay > 0 && this.executionQueue.length > 0) {
           await this._sleep(this.config.interTaskDelay);
         } else {
-          // await new Promise(resolve => setImmediate?.(resolve) || setTimeout(resolve, 0));
           await new Promise(resolve => setTimeout(resolve, 0));
         }
       }

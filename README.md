@@ -1818,10 +1818,20 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 
 # <span id="changelog">Changelog</span>
 
+### 4.1.7 (2026-04-14)
+
+- **Patch Performance Update: Zero-Copy Transport Architecture**
+  - **Circular Buffer Implementation**: Transitioned all primary transports (`node-rtu`, `node-tcp`, `web-rtu`) from dynamic array reallocation to a **fixed-size pre-allocated circular buffer** system.
+  - **GC Pressure Reduction**: Eliminated hundreds of temporary `Uint8Array` allocations per second by replacing `concatUint8Arrays` and `slice()` with zero-copy `.subarray()` and V8-native `.set()` operations.
+  - **Memory Stability**: Fixed-size buffers are now allocated once during transport initialization, resulting in a "flat" memory consumption profile even during high-frequency (10ms) polling cycles.
+  - **CPU Optimization**: Incoming data processing now uses native memory copying (`memcpy` equivalent), significantly reducing the overhead of the transport layer and freeing up CPU cycles for the main application logic.
+  - **Reliable Wrap-around Logic**: Implemented robust handling for "broken" data packets that span across the end of the physical buffer, ensuring 100% data integrity with minimal performance penalty.
+  - **Web Serial Enhancement**: Reduced UI thread "jank" in browser environments by minimizing the activity of the JavaScript Garbage Collector during continuous serial streaming.
+
 ### 4.1.0 (2026-04-11)
 
 - Major Feature: High-Performance Modbus Scanner
-  - **Ultra-Fast RTU Scanning**: Introduced a new algorithm that uses mathematical formulas `(264000 / baud + 5)` to calculate the absolute minimum physical timeout for each speed.
+  - **Fast RTU Scanning**: Introduced a algorithm that uses mathematical formulas `(264000 / baud + 5)` to calculate the absolute minimum physical timeout for each speed.
   - **Scan Lifecycle Management**: Added `pauseScan()`, `resumeScan()`, and `stopScan()` methods to `TransportController` for granular control.
   - **Smart Filtering**: The scanner now automatically filters duplicate devices if they respond across different parity settings on short lines.
   - **Enhanced Progress Tracking**: `onProgress` callback now provides real-time metadata (current baud, parity, and slave ID).

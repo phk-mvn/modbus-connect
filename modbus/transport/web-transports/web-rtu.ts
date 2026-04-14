@@ -1,4 +1,4 @@
-// modbus/transport/web-transports/web-serialport.ts
+// modbus/transport/web-transports/web-rtu.ts
 
 import { Mutex } from 'async-mutex';
 import { pino, Logger } from 'pino';
@@ -36,7 +36,7 @@ const WEB_SERIAL_CONSTANTS = {
   MIN_BAUD_RATE: 300,
   MAX_BAUDRATE: 115200,
   MAX_READ_BUFFER_SIZE: 65536,
-  POLL_INTERVAL_MS: 10,
+  POLL_INTERVAL_MS: 5,
 } as const;
 
 /**
@@ -52,7 +52,11 @@ export default class WebSerialTransport implements ITransport {
   private options: Required<IWebSerialTransportOptions>;
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
-  private readBuffer: Uint8Array;
+
+  private _readBuffer: Uint8Array;
+  private _readBufferHead: number = 0;
+  private _readBufferTail: number = 0;
+  private _readBufferCount: number = 0;
 
   private _connectedSlaveIds: Set<number> = new Set();
 
@@ -110,7 +114,8 @@ export default class WebSerialTransport implements ITransport {
       RSMode: options.RSMode || 'RS485',
       ...options,
     };
-    this.readBuffer = new Uint8Array(0);
+
+    this._readBuffer = new Uint8Array(WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE);
     this._operationMutex = new Mutex();
 
     this.logger = pino({
@@ -318,7 +323,11 @@ export default class WebSerialTransport implements ITransport {
 
     this.isOpen = false;
     this._isPortReady = false;
-    this.readBuffer = utils.allocUint8Array(0);
+    this._readBufferHead = 0;
+    this._readBufferTail = 0;
+    this._readBufferCount = 0;
+    this._emptyReadCount = 0;
+    this._isPortReady = false;
     this._emptyReadCount = 0;
 
     this._connectedSlaveIds.clear();
@@ -483,21 +492,28 @@ export default class WebSerialTransport implements ITransport {
 
             if (value && value.length > 0) {
               this._emptyReadCount = 0;
-              if (
-                this.readBuffer.length + value.length >
-                WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE
-              ) {
+              const chunkLen = value.length;
+
+              if (this._readBufferCount + chunkLen > WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE) {
                 this.logger.error('Buffer overflow detected');
                 throw new ModbusBufferOverflowError(
-                  this.readBuffer.length + value.length,
+                  this._readBufferCount + chunkLen,
                   WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE
                 );
               }
 
-              const newBuffer = new Uint8Array(this.readBuffer.length + value.length);
-              newBuffer.set(this.readBuffer, 0);
-              newBuffer.set(value, this.readBuffer.length);
-              this.readBuffer = newBuffer;
+              const spaceAtEnd = WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE - this._readBufferHead;
+
+              if (chunkLen <= spaceAtEnd) {
+                this._readBuffer.set(value, this._readBufferHead);
+              } else {
+                this._readBuffer.set(value.subarray(0, spaceAtEnd), this._readBufferHead);
+                this._readBuffer.set(value.subarray(spaceAtEnd), 0);
+              }
+
+              this._readBufferHead =
+                (this._readBufferHead + chunkLen) % WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE;
+              this._readBufferCount += chunkLen;
             } else {
               this._emptyReadCount++;
               if (this._emptyReadCount >= this.options.maxEmptyReadsBeforeReconnect) {
@@ -615,13 +631,25 @@ export default class WebSerialTransport implements ITransport {
             return reject(new ModbusFlushError());
           }
 
-          if (this.readBuffer.length >= length) {
-            const data = this.readBuffer.slice(0, length);
-            this.readBuffer = this.readBuffer.slice(length);
-            if (data.length !== length) {
-              return reject(new ModbusInsufficientDataError(data.length, length));
+          if (this._readBufferCount >= length) {
+            let result: Uint8Array;
+            const spaceAtEnd = WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE - this._readBufferTail;
+
+            if (length <= spaceAtEnd) {
+              result = this._readBuffer.slice(this._readBufferTail, this._readBufferTail + length);
+            } else {
+              result = new Uint8Array(length);
+              const part1 = this._readBuffer.subarray(this._readBufferTail);
+              const part2 = this._readBuffer.subarray(0, length - spaceAtEnd);
+              result.set(part1, 0);
+              result.set(part2, part1.length);
             }
-            return resolve(data);
+
+            this._readBufferTail =
+              (this._readBufferTail + length) % WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE;
+            this._readBufferCount -= length;
+
+            return resolve(result);
           }
 
           if (Date.now() - start >= timeout) {
@@ -693,7 +721,9 @@ export default class WebSerialTransport implements ITransport {
     });
 
     try {
-      this.readBuffer = utils.allocUint8Array(0);
+      this._readBufferHead = 0;
+      this._readBufferTail = 0;
+      this._readBufferCount = 0;
       this._emptyReadCount = 0;
     } finally {
       this._isFlushing = false;
