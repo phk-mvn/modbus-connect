@@ -36,16 +36,17 @@ var __importStar = (this && this.__importStar) || (function () {
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
-const pino_1 = require("pino");
 const utils = __importStar(require("../utils/utils.js"));
 const polling_manager_js_1 = __importDefault(require("../polling-manager.js"));
 const async_mutex_1 = require("async-mutex");
+const pino_1 = require("pino");
 const transport_factory_js_1 = require("./modules/transport-factory.js");
 const scanners_js_1 = require("../utils/scanners.js");
 const modbus_types_js_1 = require("../types/modbus-types.js");
 const DeviceConnectionTracker_js_1 = require("./trackers/DeviceConnectionTracker.js");
 const PortConnectionTracker_js_1 = require("./trackers/PortConnectionTracker.js");
 const errors_js_1 = require("../errors.js");
+const TrafficSniffer_js_1 = require("./trackers/TrafficSniffer.js");
 /**
  * TransportController.
  * The central hub managing the lifecycle of all transport connections (Node/Web Serial, TCP).
@@ -63,6 +64,10 @@ class TransportController {
     loadBalancerStrategy = 'first-available';
     /** Winston logger instance for controller-level logging */
     logger;
+    _sniffer = null;
+    get sniffer() {
+        return this._sniffer;
+    }
     /**
      * Mutex to protect the transport registry from race conditions.
      * Locks add/remove/reload/destroy operations to ensure atomicity.
@@ -82,7 +87,7 @@ class TransportController {
     /**
      * Initializes the TransportController with a custom formatted logger.
      */
-    constructor() {
+    constructor(options) {
         this.logger = (0, pino_1.pino)({
             level: 'info',
             base: { component: 'Transport Controller' },
@@ -98,6 +103,9 @@ class TransportController {
                 }
                 : undefined,
         });
+        if (options.sniffer) {
+            this._sniffer = new TrafficSniffer_js_1.TrafficSniffer();
+        }
         this.logger.debug('Transport Controller initialized');
         this.scanner = new scanners_js_1.ModbusScanner(this.logger);
     }
@@ -229,7 +237,7 @@ class TransportController {
             if (rsMode === 'RS232' && slaveIds.length > 1) {
                 throw new errors_js_1.RSModeConstraintError(`Transport "${id}" with RSMode 'RS232' cannot be assigned more than one device. Provided ${slaveIds.length} devices.`);
             }
-            const transport = await transport_factory_js_1.TransportFactory.create(type, options, this.logger);
+            const transport = await transport_factory_js_1.TransportFactory.create(type, options, this.logger, this._sniffer);
             const seenSlaveIds = new Set();
             for (const slaveId of slaveIds) {
                 if (seenSlaveIds.has(slaveId)) {

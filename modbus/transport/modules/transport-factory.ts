@@ -1,6 +1,7 @@
 // modbus/transport/modules/transport-factory.ts
 
 import { Logger } from 'pino';
+import { TrafficSniffer } from '../trackers/TrafficSniffer';
 
 import type {
   ITransport,
@@ -12,26 +13,39 @@ import type {
 
 /**
  * TransportFactory is a static factory class responsible for creating
- * different types of transport implementations (serial, TCP, WebSerial, etc.).
- * It encapsulates the logic for dynamic imports and configuration mapping.
+ * different types of transport implementations (serial, TCP, WebSerial, emulators, etc.).
+ *
+ * It encapsulates the logic for dynamic imports of transport modules to keep the
+ * bundle size optimized and provides a unified interface for transport initialization.
  */
 export class TransportFactory {
   /**
    * Creates and returns a transport instance based on the specified type.
-   * @param type - Type of transport to create ('node', 'web', 'node-tcp', 'web-tcp')
-   * @param options - Configuration options specific to the chosen transport
-   * @param logger - Winston logger instance for error reporting
-   * @returns Promise that resolves to an ITransport implementation
-   * @throws Error if required options are missing or transport type is unknown
+   *
+   * This method performs the following steps:
+   * 1. Validates required options for the specific transport type.
+   * 2. Dynamically imports the required transport class.
+   * 3. Instantiates the transport with provided options.
+   * 4. Automatically attaches a TrafficSniffer instance if one is provided.
+   *
+   * @param type - Type of transport to create ('node-rtu', 'node-tcp', 'web-rtu', 'rtu-emulator', 'tcp-emulator').
+   * @param options - Configuration options specific to the chosen transport (e.g., port, baudRate, host).
+   * @param logger - Pino logger instance for internal transport diagnostics.
+   * @param sniffer - Optional TrafficSniffer instance to monitor and analyze raw traffic on this transport.
+   * @returns A Promise that resolves to an implementation of the ITransport interface.
+   * @throws Error if required options are missing or the transport type is unknown.
    */
   public static async create(
     type: 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tcp-emulator',
     options: any,
-    logger: Logger
+    logger: Logger,
+    sniffer: TrafficSniffer | null = null
   ): Promise<ITransport> {
     const factoryLogger = logger.child({ component: 'TransportFactory' });
 
     try {
+      let transport: ITransport;
+
       switch (type) {
         case 'node-rtu': {
           const path = options.port || options.path;
@@ -61,7 +75,8 @@ export class TransportFactory {
             }
           }
 
-          return new NodeSerialTransport(path, nodeOptions);
+          transport = new NodeSerialTransport(path, nodeOptions);
+          break;
         }
 
         case 'node-tcp': {
@@ -90,7 +105,8 @@ export class TransportFactory {
             }
           }
 
-          return new NodeTcpTransport(host, port, tcpOptions);
+          transport = new NodeTcpTransport(host, port, tcpOptions);
+          break;
         }
 
         case 'web-rtu': {
@@ -127,7 +143,8 @@ export class TransportFactory {
             }
           }
 
-          return new WebSerialTransport(portFactory, webOptions);
+          transport = new WebSerialTransport(portFactory, webOptions);
+          break;
         }
 
         case 'rtu-emulator': {
@@ -141,7 +158,8 @@ export class TransportFactory {
             initialRegisters: options.initialRegisters,
           };
 
-          return new RtuEmulatorTransport(opts);
+          transport = new RtuEmulatorTransport(opts);
+          break;
         }
 
         case 'tcp-emulator': {
@@ -157,12 +175,19 @@ export class TransportFactory {
           };
 
           factoryLogger.info(`Creating emulator transport for slaveId ${emulatorOptions.slaveId}`);
-          return new TcpEmulatorTransport(emulatorOptions);
+          transport = new TcpEmulatorTransport(emulatorOptions);
+          break;
         }
 
         default:
           throw new Error(`Unknown transport type ${type}`);
       }
+
+      if (sniffer && transport) {
+        transport.setSniffer(sniffer);
+      }
+
+      return transport;
     } catch (err: any) {
       factoryLogger.error(
         { transportType: type, error: err.message },

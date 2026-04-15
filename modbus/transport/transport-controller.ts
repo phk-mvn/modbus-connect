@@ -1,10 +1,10 @@
 // modbus/transport/transport-controller.ts
 
-import { pino, Logger, transport } from 'pino';
 import * as utils from '../utils/utils.js';
 import PollingManager from '../polling-manager.js';
 
 import { Mutex } from 'async-mutex';
+import { pino, Logger, transport } from 'pino';
 import { TransportFactory } from './modules/transport-factory.js';
 import { ModbusScanner, ScanController } from '../utils/scanners.js';
 import { EConnectionErrorType, IScanResult, IScanOptions } from '../types/modbus-types.js';
@@ -27,7 +27,9 @@ import type {
   TPortStateHandler,
   TRSMode,
   ITransportController,
+  ITransportControllerOptions,
 } from '../types/modbus-types.js';
+import { TrafficSniffer } from './trackers/TrafficSniffer.js';
 
 /**
  * TransportController.
@@ -46,6 +48,11 @@ class TransportController implements ITransportController {
   private loadBalancerStrategy: TLoadBalancerStrategy = 'first-available';
   /** Winston logger instance for controller-level logging */
   public logger: Logger;
+
+  private _sniffer: TrafficSniffer | null = null;
+  public get sniffer(): TrafficSniffer | null {
+    return this._sniffer;
+  }
 
   /**
    * Mutex to protect the transport registry from race conditions.
@@ -70,7 +77,7 @@ class TransportController implements ITransportController {
   /**
    * Initializes the TransportController with a custom formatted logger.
    */
-  constructor() {
+  constructor(options: ITransportControllerOptions) {
     this.logger = pino({
       level: 'info',
       base: { component: 'Transport Controller' },
@@ -87,6 +94,10 @@ class TransportController implements ITransportController {
             }
           : undefined,
     });
+
+    if (options.sniffer) {
+      this._sniffer = new TrafficSniffer();
+    }
 
     this.logger.debug('Transport Controller initialized');
 
@@ -245,7 +256,7 @@ class TransportController implements ITransportController {
         );
       }
 
-      const transport = await TransportFactory.create(type, options, this.logger);
+      const transport = await TransportFactory.create(type, options, this.logger, this._sniffer);
 
       const seenSlaveIds = new Set<number>();
       for (const slaveId of slaveIds) {

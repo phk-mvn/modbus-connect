@@ -21,10 +21,11 @@ modbus-connect is a [cross-platform]() library for Modbus RTU/TCP communication 
 
 - [Usage example ⇗](#usage-example)
 - [Transport Controller ⇗](#transport-controller)
+  - [Modbus Scanner ⇗](#modbus-scanner)
+  - [Traffic Sniffer ⇗](#traffic-sniffer)
 - [Modbus Client ⇗](#modbus-client)
 - [Polling Manager ⇗](#polling-manager)
 - [Emulator's ⇗](#emulators)
-- [Modbus Scanner ⇗](#modbus-scanner)
 - [Types ⇗](#types)
 - [Error's ⇗](#errors)
 - [Changelog ⇗](#changelog)
@@ -553,6 +554,276 @@ await controller.setDeviceStateHandlerForTransport('RS485_BUS', (slaveId, connec
 [14:30:05] WARN: [DeviceConnectionTracker] Device 1: OFFLINE (Timeout)
 [Event] Device 1 is now disabled (Modbus request timed out)
 ```
+
+<br>
+
+# <span id="modbus-scanner">Modbus Scanner</span>
+
+The `ModbusScanner` is a high-performance tool built into the `TransportController` that allows you to discover Modbus devices on a line or network without knowing their exact settings.
+
+### **Key Features**
+
+- **Adaptive Turbo Mode**: Automatically calculates the minimum physical timeout based on the Baud Rate. (e.g., ~14ms for 115200 baud).
+- **Isomorphic RTU Scanning**: Automatically detects if you are in Node.js or a Browser environment.
+- **High-Concurrency TCP Scanning**: Scans multiple Unit IDs in parallel (up to 50 at once).
+- **Lifecycle Control**: Ability to pause, resume, or stop the scanning process programmatically.
+
+---
+
+### **Callback System**
+
+The scanner uses a reactive callback system to provide real-time feedback, making it ideal for building smooth User Interfaces.
+
+- `onDeviceFound(device)`: Triggered immediately when a device is verified. You can use this to populate a list in your UI as the scan progresses.
+- `onProgress(current, total, info)`: Triggered on every request attempt.
+  - `current`: Current attempt index.
+  - `total`: Total planned attempts.
+  - `info`: Object containing current scan parameters (`baud`, `parity`, `slaveId`).
+- `onFinish(results)`: Triggered when the entire scan process is complete. Returns an array of all discovered IScanResult objects.
+
+---
+
+### **Scanning Options (`IScanOptions`)**
+
+| Property          | Type               | Description                                                                  |
+| ----------------- | ------------------ | ---------------------------------------------------------------------------- |
+| `path`            | `string or object` | Serial port path (Node) or SerialPort object (Web).                          |
+| `bauds`           | `number[]`         | List of baud rates to check. Default: `[115200, 57600, 38400, 19200, 9600]`. |
+| `parities`        | `TParityType[]`    | List of parities to check. Default: `['none', 'even', 'odd']`.               |
+| `slaveIds`        | `number[]`         | Range of Slave IDs to check (1-247).                                         |
+| `registerAddress` | `number`           | The register address to read for verification. Default: `0`.                 |
+| `controller`      | `ScanController`   | An instance of `ScanController` to manage the scan externally.               |
+
+---
+
+### **Scanning Methods**
+
+`scanRtuPort(options)`
+
+This method iterates through the matrix of Baud Rates and Parities. Once a device is found, it "locks" the port settings and quickly scans the remaining Slave IDs.
+
+**Example**:
+
+```js
+const results = await controller.scanRtuPort({
+  path: '/dev/ttyUSB0', // In Browser, pass the port object here
+  bauds: [9600, 115200],
+  slaveIds: Array.from({ length: 247 }, (_, i) => i + 1),
+
+  onDeviceFound: device => {
+    console.log(`✨ New device discovered! ID: ${device.slaveId}`);
+  },
+
+  onProgress: (current, total, info) => {
+    // Smooth progress update for UI
+    const percent = Math.round((current / total) * 100);
+    process.stdout.write(`Scanning ${info.baud}bps | ID: ${info.slaveId} [${percent}%]\r`);
+  },
+
+  onFinish: allDevices => {
+    console.log(`\nScan complete. Total devices found: ${allDevices.length}`);
+  },
+});
+```
+
+---
+
+`scanTcpPort(options)`
+
+Uses high-concurrency parallel requests to map a TCP gateway or a subnetwork.
+
+**Example**:
+
+```js
+const tcpDevices = await controller.scanTcpPort({
+  hosts: ['192.168.1.100'], // Scan devices behind this gateway
+  ports: [502],
+  unitIds: Array.from({ length: 255 }, (_, i) => i + 1), // Check all possible Unit IDs
+
+  onDeviceFound: device => {
+    console.log(`✅ Found TCP Unit: ${device.slaveId} at ${device.host}`);
+  },
+
+  onFinish: results => {
+    // Process final list
+    saveDevicesToDatabase(results);
+  },
+});
+```
+
+---
+
+### **Scanner Control**
+
+If you need to manage the scan process (e.g., from a UI), use these methods:
+
+| Method         | Description                                              |
+| -------------- | -------------------------------------------------------- |
+| `pauseScan()`  | Suspends the current scan at the next iteration.         |
+| `resumeScan()` | Resumes a previously paused scan.                        |
+| `stopScan()`   | Immediately stops the scan and releases the port/socket. |
+
+---
+
+Scan Result Interface (`IScanResult`)
+
+```ts
+{
+  type: 'node-rtu' | 'web-rtu' | 'node-tcp';
+  slaveId: number;     // The Modbus address found
+  baudRate?: number;   // (RTU only) The working baud rate
+  parity?: string;     // (RTU only) none, even, or odd
+  stopBits?: number;   // (RTU only) 1 or 2
+  port?: string | any; // The physical port identifier
+  host?: string;       // (TCP only) The device IP
+  tcpPort?: number;    // (TCP only) The device Port
+}
+```
+
+<br>
+
+# <span id="traffic-sniffer">Traffic Sniffer</span>
+
+The sniffer instance is available via the `controller.sniffer` property. It uses an Observer pattern (subscription-based) to deliver data.
+
+**Methods**:
+
+| Method                   | Description                                                           | Returns                             |
+| ------------------------ | --------------------------------------------------------------------- | ----------------------------------- |
+| `onPacket(handler)`      | Subscribes to the stream of individual packets (TX and RX separately) | `() => void` (Unsubscribe function) |
+| `onTransaction(handler)` | Subscribes to completed transactions (Paired Request + Response)      | `() => void` (Unsubscribe function) |
+
+---
+
+### Transaction Structure (`ITransaction`)
+
+Unlike individual packets, a transaction represents a full Modbus cycle. This is the best way to monitor device health and latency.
+
+| Property      | Type                               | Description                                                               |
+| ------------- | ---------------------------------- | ------------------------------------------------------------------------- |
+| `id`          | `string`                           | Unique alphanumeric ID for the transaction.                               |
+| `transportId` | `string`                           | Identifier of the transport channel.                                      |
+| `protocol`    | `'rtu'` or `'tcp'`                 | The protocol used for this exchange.                                      |
+| `request`     | `ISnifferPacket`                   | The complete request packet (TX).                                         |
+| `response`    | `ISnifferPacket` or `null`         | The complete response packet (RX). `null` if a timeout occurred.          |
+| `status`      | `'ok'` or `'error'` or `'timeout'` | Transaction result: `ok` (success), `error` (exception/CRC), `timeout`.   |
+| `durationMs`  | `number`                           | Round-trip time (RTT) from start of TX to end of RX.                      |
+| `error`       | `string`                           | Error message (e.g., "Response Timeout" or Modbus Exception description). |
+| `timestamp`   | `number`                           | Unix timestamp of when the transaction was completed.                     |
+
+---
+
+### Packet Structure (`ISnifferPacket`):
+
+Every packet (`tx` or `rx`) captured by the sniffer:
+
+| Property      | Type             | Description                                                       |
+| ------------- | ---------------- | ----------------------------------------------------------------- |
+| `id`          | `string`         | Unique alphanumeric ID for the transaction.                       |
+| `transportId` | `string`         | Identifier of the transport (e.g., COM port path or IP:Port).     |
+| `direction`   | `'tx'` or `'rx'` | Direction: `tx` (Sent request), `rx` (Received response).         |
+| `timestamp`   | `number`         | Precise high-resolution timestamp (`performance.now()`).          |
+| `raw`         | `Uint8Array`     | The actual raw bytes of the packet.                               |
+| `hex`         | `string`         | Formatted HEX string (e.g., `"7A 03 00 01"`).                     |
+| `ascii`       | `string`         | ASCII representation (non-printable characters replaced by dots). |
+| `analysis`    | `object`         | Deep protocol analysis (see below).                               |
+| `meta`        | `object`         | Performance metrics and status (see below).                       |
+
+---
+
+### `onTransaction` Usage Example
+
+```js
+const controller = new TransportController({ sniffer: true });
+
+controller.sniffer.onTransaction(tx => {
+  const { status, durationMs, request, response, transportId } = tx;
+
+  if (status === 'timeout') {
+    console.log(
+      `\x1b[31m[TIMEOUT]\x1b[0m ${transportId} -> Device ${request.analysis.slaveId} didn't respond`
+    );
+    return;
+  }
+
+  const color = status === 'ok' ? '\x1b[32m' : '\x1b[31m'; // Green for OK, Red for Error
+
+  console.log(`${color}===[${status.toUpperCase()}] [${transportId}] [${durationMs}ms]===\x1b[0m`);
+  console.log(
+    `  Req: Slave ${request.analysis.slaveId} | Func 0x${request.analysis.funcCode.toString(16)}`
+  );
+
+  if (response) {
+    console.log(`  Res: ${response.analysis.description}`);
+    console.log(`  CRC: ${response.analysis.crcValid ? 'VALID' : 'INVALID'}`);
+  }
+});
+```
+
+---
+
+### Packet Structure (`ISnifferPacket`):
+
+| Property         | Type      | Description                                                             |
+| ---------------- | --------- | ----------------------------------------------------------------------- |
+| `latencyMs`      | `number`  | Time between TX completion and first byte of RX (Device reaction time). |
+| `transferMs`     | `number`  | Time taken to receive the entire packet (Physical transmission time).   |
+| `totalMs`        | `number`  | Full transaction cycle time (`latency + transfer`).                     |
+| `bytesPerSecond` | `number`  | Calculated throughput speed of the line.                                |
+| `isFragment`     | `boolean` | `true` if the packet is part of a larger chunk (internal use).          |
+| `error`          | `string`  | Optional transport-level error message.                                 |
+
+---
+
+### `onPacket()` Usage Example
+
+```js
+const controller = new TransportController({ sniffer: true });
+
+// Subscribe to packets
+controller.sniffer.onPacket(packet => {
+  // Ignore RX fragments (wait for fully reassembled packets)
+  if (packet.direction === 'rx' && packet.meta.isFragment) return;
+
+  const { direction, transportId, analysis, meta, hex, ascii } = packet;
+
+  // Style settings
+  const color = direction === 'tx' ? '\x1b[36m' : '\x1b[32m'; // Cyan for TX, Green for RX
+  const reset = '\x1b[0m';
+
+  console.log(`\n${color}===[${direction.toUpperCase()}] [${transportId}]===${reset}`);
+
+  // Protocol Details
+  if (analysis) {
+    console.log(`  Protocol: Slave ${analysis.slaveId} | Func 0x${analysis.funcCode.toString(16)}`);
+    console.log(`  Summary:  ${analysis.description}`);
+  }
+
+  // Data Representations
+  console.log(`  HEX:      ${hex}`);
+  console.log(`  ASCII:    ${ascii}`);
+
+  // Performance Metrics (for RX)
+  if (direction === 'rx') {
+    console.log(`  Metrics:`);
+    console.log(`    ⏱  Latency:  ${meta.latencyMs} ms`);
+    console.log(`    🚀 Transfer: ${meta.transferMs} ms`);
+    console.log(`    📊 Bitrate:  ${meta.bytesPerSecond} B/s`);
+    console.log(`    🛡  Checksum: ${analysis.crcValid ? 'VALID' : 'INVALID'}`);
+  }
+});
+```
+
+---
+
+### Why use the Sniffer?
+
+Unlike standard logging, the `TrafficSniffer`:
+
+- **Zero Impact**: It runs asynchronously and doesn't delay your Modbus requests.
+- **Sub-millisecond Precision**: Uses `performance.now()` for ultra-accurate timing.
+- **Fragment Reassembly**: Automatically glues together packets that arrive in multiple chunks (common in Serial/TCP).
+- **Error Debugging**: Helps identify if a failure is due to device latency, CRC corruption, or transport issues.
 
 <br>
 
@@ -1402,131 +1673,6 @@ Value from emulator: [34]
 
 <br>
 
-# <span id="modbus-scanner">Modbus Scanner</span>
-
-The `ModbusScanner` is a high-performance tool built into the `TransportController` that allows you to discover Modbus devices on a line or network without knowing their exact settings.
-
-### **Key Features**
-
-- **Adaptive Turbo Mode**: Automatically calculates the minimum physical timeout based on the Baud Rate. (e.g., ~14ms for 115200 baud).
-- **Isomorphic RTU Scanning**: Automatically detects if you are in Node.js or a Browser environment.
-- **High-Concurrency TCP Scanning**: Scans multiple Unit IDs in parallel (up to 50 at once).
-- **Lifecycle Control**: Ability to pause, resume, or stop the scanning process programmatically.
-
----
-
-### **Callback System**
-
-The scanner uses a reactive callback system to provide real-time feedback, making it ideal for building smooth User Interfaces.
-
-- `onDeviceFound(device)`: Triggered immediately when a device is verified. You can use this to populate a list in your UI as the scan progresses.
-- `onProgress(current, total, info)`: Triggered on every request attempt.
-  - `current`: Current attempt index.
-  - `total`: Total planned attempts.
-  - `info`: Object containing current scan parameters (`baud`, `parity`, `slaveId`).
-- `onFinish(results)`: Triggered when the entire scan process is complete. Returns an array of all discovered IScanResult objects.
-
----
-
-### **Scanning Options (`IScanOptions`)**
-
-| Property          | Type               | Description                                                                  |
-| ----------------- | ------------------ | ---------------------------------------------------------------------------- |
-| `path`            | `string or object` | Serial port path (Node) or SerialPort object (Web).                          |
-| `bauds`           | `number[]`         | List of baud rates to check. Default: `[115200, 57600, 38400, 19200, 9600]`. |
-| `parities`        | `TParityType[]`    | List of parities to check. Default: `['none', 'even', 'odd']`.               |
-| `slaveIds`        | `number[]`         | Range of Slave IDs to check (1-247).                                         |
-| `registerAddress` | `number`           | The register address to read for verification. Default: `0`.                 |
-| `controller`      | `ScanController`   | An instance of `ScanController` to manage the scan externally.               |
-
----
-
-### **Scanning Methods**
-
-`scanRtuPort(options)`
-
-This method iterates through the matrix of Baud Rates and Parities. Once a device is found, it "locks" the port settings and quickly scans the remaining Slave IDs.
-
-**Example**:
-
-```js
-const results = await controller.scanRtuPort({
-  path: '/dev/ttyUSB0', // In Browser, pass the port object here
-  bauds: [9600, 115200],
-  slaveIds: Array.from({ length: 247 }, (_, i) => i + 1),
-
-  onDeviceFound: device => {
-    console.log(`✨ New device discovered! ID: ${device.slaveId}`);
-  },
-
-  onProgress: (current, total, info) => {
-    // Smooth progress update for UI
-    const percent = Math.round((current / total) * 100);
-    process.stdout.write(`Scanning ${info.baud}bps | ID: ${info.slaveId} [${percent}%]\r`);
-  },
-
-  onFinish: allDevices => {
-    console.log(`\nScan complete. Total devices found: ${allDevices.length}`);
-  },
-});
-```
-
----
-
-`scanTcpPort(options)`
-
-Uses high-concurrency parallel requests to map a TCP gateway or a subnetwork.
-
-**Example**:
-
-```js
-const tcpDevices = await controller.scanTcpPort({
-  hosts: ['192.168.1.100'], // Scan devices behind this gateway
-  ports: [502],
-  unitIds: Array.from({ length: 255 }, (_, i) => i + 1), // Check all possible Unit IDs
-
-  onDeviceFound: device => {
-    console.log(`✅ Found TCP Unit: ${device.slaveId} at ${device.host}`);
-  },
-
-  onFinish: results => {
-    // Process final list
-    saveDevicesToDatabase(results);
-  },
-});
-```
-
----
-
-### **Scanner Control**
-
-If you need to manage the scan process (e.g., from a UI), use these methods:
-
-| Method         | Description                                              |
-| -------------- | -------------------------------------------------------- |
-| `pauseScan()`  | Suspends the current scan at the next iteration.         |
-| `resumeScan()` | Resumes a previously paused scan.                        |
-| `stopScan()`   | Immediately stops the scan and releases the port/socket. |
-
----
-
-Scan Result Interface (`IScanResult`)
-
-```ts
-{
-  type: 'node-rtu' | 'web-rtu' | 'node-tcp';
-  slaveId: number;     // The Modbus address found
-  baudRate?: number;   // (RTU only) The working baud rate
-  parity?: string;     // (RTU only) none, even, or odd
-  stopBits?: number;   // (RTU only) 1 or 2
-  port?: string | any; // The physical port identifier
-  host?: string;       // (TCP only) The device IP
-  tcpPort?: number;    // (TCP only) The device Port
-}
-```
-
-<br>
-
 # <span id="types">Types and Interfaces</span>
 
 All interactions in the library are strongly typed. The interfaces are divided into logical blocks: Client, Transport, Polling Manager, and Emulation.
@@ -1817,6 +1963,29 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 <br>
 
 # <span id="changelog">Changelog</span>
+
+### 4.2.0 (2026-04-14)
+
+- **Intelligent Traffic Analysis & Sniffing Layer**
+  - **Non-Invasive Monitoring**: Integrated a `TrafficSniffer` module that monitors raw byte streams across all transport types (RTU, TCP, and Emulators) without interfering with the main protocol logic.
+  - **Isomorphic Observer Pattern**: Implemented a dependency-free subscription system (`onPacket` and `onTransaction`) that works identically in Node.js and Browser environments.
+  - **Automatic Transaction Pairing**: Added `onTransaction` method that automatically matches Modbus requests with their corresponding responses, providing a unified view of the exchange and automatic timeout detection.
+  - **Sub-millisecond Diagnostic Metrics**:
+    - **Monotonic RTT Calculation**: Round-trip time (RTT) is now calculated using high-resolution monotonic counters (`performance.now()`), eliminating negative or incorrect durations during system time drift.
+    - **Latency & Transfer Tracking**: Precise measurement of device reaction time (from last byte sent to first byte received) and physical transmission duration.
+    - **Throughput Calculation**: Real-time bitrate calculation (Bytes/sec) for every successful response.
+  - **Improved Time Handling**:
+    - **System Time Synchronization**: All packets now use `Date.now()` for primary timestamps to align with system-level logging.
+    - **Automatic Local Time Formatting**: Added `localTime` metadata to all packets, providing a pre-formatted string (HH:MM:SS.mmm) based on the local machine's timezone for superior debugging experience.
+  - **Smart Fragment Reassembly**:
+    - **TCP MBAP Engine**: Automatically reassembles fragmented TCP packets by analyzing the length field in the MBAP header.
+    - **RTU CRC Validation**: Real-time reassembly of serial data chunks via continuous CRC16 verification, ensuring only valid ADUs are reported.
+  - **Deep Packet Inspection (DPI)**:
+    - Built-in PDU decoder for standard Modbus functions (0x01-0x06, 0x0F, 0x10).
+    - Automatic identification of Modbus Exception responses with human-readable descriptions.
+  - **Developer Tools**:
+    - **HEX/ASCII Representations**: Every captured packet includes pre-formatted HEX strings and ASCII views with non-printable character filtering.
+    - **Lazy Initialization**: The sniffer only activates if explicitly enabled, ensuring zero overhead in production environments.
 
 ### 4.1.7 (2026-04-14)
 

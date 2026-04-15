@@ -32,12 +32,13 @@ import {
   TPortStateHandler,
   TRSMode,
 } from '../../types/modbus-types';
+import { TrafficSniffer } from '../trackers/TrafficSniffer.js';
 
 const NODE_SERIAL_CONSTANTS = {
   MIN_BAUD_RATE: 300,
   MAX_BAUD_RATE: 115200,
   DEFAULT_MAX_BUFFER_SIZE: 4096,
-  POLL_INTERVAL_MS: 0,
+  POLL_INTERVAL_MS: 5,
 } as const;
 
 /**
@@ -47,7 +48,7 @@ const NODE_SERIAL_CONSTANTS = {
  * - Read/write operations with timeouts and mutex protection
  * - Buffer management and overflow protection
  * - Device and port state tracking via callbacks
- * - Comprehensive error handling and logging
+ * - Non-invasive traffic sniffing and real-time protocol analysis
  */
 export default class NodeSerialTransport implements ITransport {
   public isOpen: boolean = false;
@@ -56,6 +57,9 @@ export default class NodeSerialTransport implements ITransport {
   private path: string;
   private options: Required<INodeSerialTransportOptions>;
   private port: SerialPort | null = null;
+
+  private _sniffer: TrafficSniffer | null = null;
+  private _waitingForResponse: boolean = false;
 
   private _readBuffer: Uint8Array = utils.allocUint8Array(0);
   private _readBufferHead: number = 0;
@@ -119,6 +123,15 @@ export default class NodeSerialTransport implements ITransport {
     });
 
     this.logger.debug('Transport instance created');
+  }
+
+  /**
+   * Attaches a TrafficSniffer instance to monitor and analyze raw serial traffic.
+   * This allows for sub-millisecond latency tracking and real-time protocol inspection.
+   * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   */
+  public setSniffer(sniffer: TrafficSniffer): void {
+    this._sniffer = sniffer;
   }
 
   /**
@@ -255,6 +268,12 @@ export default class NodeSerialTransport implements ITransport {
    */
   private _onData(data: Buffer): void {
     if (!this.isOpen) return;
+
+    if (this._sniffer && this._waitingForResponse && this._readBufferCount === 0) {
+      this._sniffer.recordRxStart();
+      this._waitingForResponse = false;
+    }
+
     try {
       const chunkLen = data.length;
 
@@ -397,6 +416,11 @@ export default class NodeSerialTransport implements ITransport {
     const release = await this._operationMutex.acquire();
     try {
       return new Promise<void>((resolve, reject) => {
+        if (this._sniffer) {
+          this._sniffer?.recordTx(this.path, buffer, 'rtu');
+          this._waitingForResponse = true;
+        }
+
         this.port!.write(buffer, 'binary', (_err: Error | null | undefined) => {
           if (_err) {
             const e = _err.message.includes('parity')
@@ -464,6 +488,8 @@ export default class NodeSerialTransport implements ITransport {
 
             this._readBufferTail = (this._readBufferTail + length) % this.options.maxBufferSize;
             this._readBufferCount -= length;
+
+            if (this._sniffer) this._sniffer.recordRxEnd(this.path, result, 'rtu');
 
             return resolve(result);
           }

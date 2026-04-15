@@ -12,6 +12,7 @@ import {
 } from '../../types/modbus-types';
 import ModbusSlaveCore from '../../emulator/modbus-slave-core';
 import { Logger, pino } from 'pino';
+import { TrafficSniffer } from '../trackers/TrafficSniffer';
 
 /**
  * Node.js TCP Emulator Transport.
@@ -28,12 +29,11 @@ import { Logger, pino } from 'pino';
  */
 export default class NodeTcpEmulatorTransport implements ITransport {
   public isOpen: boolean = false;
-
   private core: ModbusSlaveCore;
   private logger: Logger;
-
   private responseLatencyMs: number;
   private _pendingResponse: Uint8Array | null = null;
+  private _sniffer: TrafficSniffer | null = null;
 
   private _deviceStateHandler: TDeviceStateHandler | null = null;
   private _portStateHandler: TPortStateHandler | null = null;
@@ -72,6 +72,14 @@ export default class NodeTcpEmulatorTransport implements ITransport {
     }
 
     this.logger.info(`NodeTcpEmulatorTransport created for slaveId ${slaveId}`);
+  }
+
+  /**
+   * Attaches a TrafficSniffer instance to monitor emulated Modbus TCP traffic.
+   * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   */
+  public setSniffer(sniffer: TrafficSniffer): void {
+    this._sniffer = sniffer;
   }
 
   /**
@@ -115,6 +123,10 @@ export default class NodeTcpEmulatorTransport implements ITransport {
   async write(buffer: Uint8Array): Promise<void> {
     if (!this.isOpen) throw new Error('TCP Emulator transport is not open');
     if (buffer.length < 8) return;
+
+    if (this._sniffer) {
+      this._sniffer.recordTx(`tcp-emulator-${this.core.slaveId}`, buffer);
+    }
 
     const transactionId = (buffer[0] << 8) | buffer[1];
     const protocolId = (buffer[2] << 8) | buffer[3];
@@ -167,6 +179,12 @@ export default class NodeTcpEmulatorTransport implements ITransport {
       if (this._pendingResponse) {
         const resp = this._pendingResponse;
         this._pendingResponse = null;
+
+        if (this._sniffer) {
+          this._sniffer.recordRxStart();
+          this._sniffer.recordRxEnd(`tcp-emulator-${this.core.slaveId}`, resp);
+        }
+
         return resp;
       }
       await new Promise(r => setTimeout(r, 4));

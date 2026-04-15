@@ -1,6 +1,7 @@
 // modbus/types/modbus-types.ts
 
 import { Logger } from 'pino';
+import { TrafficSniffer } from '../transport/trackers/TrafficSniffer';
 import type PollingManager from '../polling-manager';
 
 // ===================================================
@@ -126,6 +127,8 @@ export interface ITransport {
     errorType: EConnectionErrorType,
     errorMessage?: string
   ): void;
+
+  setSniffer(sniffer: TrafficSniffer): void;
 }
 
 export interface ITransportTcp extends Omit<ITransport, 'flush'> {
@@ -236,6 +239,7 @@ export type TLoadBalancerStrategy = 'round-robin' | 'sticky' | 'first-available'
 // ===================================================
 
 export interface ITransportController {
+  readonly sniffer: TrafficSniffer | null;
   disableLogger(): void;
   enableLogger(): void;
   scanRtuPort(options: IScanOptions): Promise<IScanResult[]>;
@@ -306,6 +310,70 @@ export interface ITransportController {
   executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T>;
   destroy(): Promise<void>;
 }
+
+export interface ITransportControllerOptions {
+  sniffer?: boolean;
+}
+
+export interface ITrafficSniffer {
+  onPacket(handler: TSnifferHandler): () => void;
+  onTransaction(handler: TTransactionHandler): () => void;
+  recordTx(transportId: string, data: Uint8Array, protocol?: TModbusProtocolType): void;
+  recordRxStart(): void;
+  recordRxEnd(
+    transportId: string,
+    data: Uint8Array,
+    protocol: TModbusProtocolType,
+    error?: string
+  ): void;
+}
+
+export interface ITransaction {
+  id: string;
+  transportId: string;
+  protocol: TModbusProtocolType;
+  request: ISnifferPacket;
+  response: ISnifferPacket | null;
+  status: 'ok' | 'error' | 'timeout';
+  error?: string;
+  durationMs: number;
+  timestamp: number;
+}
+
+export type TTransactionHandler = (transaction: ITransaction) => void;
+
+export interface ISnifferAnalysis {
+  protocol: TModbusProtocolType;
+  slaveId: number;
+  funcCode: number;
+  isException: boolean;
+  crcValid: boolean;
+  data?: any;
+  description: string;
+}
+
+export interface ISnifferPacket {
+  id: string;
+  transportId: string;
+  direction: 'tx' | 'rx';
+  raw: Uint8Array;
+  hex: string;
+  ascii: string;
+  timestamp: number;
+  analysis?: ISnifferAnalysis;
+  meta: {
+    latencyMs?: number;
+    transferMs?: number;
+    totalMs?: number;
+    bytesPerSecond?: number;
+    error?: string;
+    isFragment?: boolean;
+  };
+}
+
+export type TSnifferHandler = (packet: ISnifferPacket) => void;
+
+export type TModbusProtocolType = 'rtu' | 'tcp';
 
 // ===================================================
 // POLLING MANAGER

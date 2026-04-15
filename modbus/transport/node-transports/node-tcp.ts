@@ -15,6 +15,7 @@ import {
   TPortStateHandler,
   TRSMode,
 } from '../../types/modbus-types';
+import { TrafficSniffer } from '../trackers/TrafficSniffer.js';
 
 const NODE_TCP_CONSTANTS = {
   DEFAULT_PORT: 502,
@@ -38,6 +39,9 @@ export default class NodeTcpTransport implements ITransportTcp {
   private port: number;
   private options: Required<INodeTcpTransportOptions>;
   private socket: net.Socket | null = null;
+
+  private _sniffer: TrafficSniffer | null = null;
+  private _waitingForResponse: boolean = false;
 
   private _readBuffer: Uint8Array;
   private _readBufferHead: number = 0;
@@ -96,6 +100,15 @@ export default class NodeTcpTransport implements ITransportTcp {
             }
           : undefined,
     });
+  }
+
+  /**
+   * Attaches a TrafficSniffer instance to monitor and analyze raw TCP traffic.
+   * This allows for sub-millisecond latency tracking and real-time MBAP/PDU inspection.
+   * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   */
+  public setSniffer(sniffer: TrafficSniffer): void {
+    this._sniffer = sniffer;
   }
 
   /**
@@ -218,6 +231,11 @@ export default class NodeTcpTransport implements ITransportTcp {
    * @param data - Raw buffer received from the socket.
    */
   private _onData(data: Buffer): void {
+    if (this._sniffer && this._waitingForResponse && this._readBufferCount === 0) {
+      this._sniffer.recordRxStart();
+      this._waitingForResponse = false;
+    }
+
     const chunkLen = data.length;
     if (this._readBufferCount + chunkLen > this.options.maxBufferSize) {
       this._readBufferCount = 0;
@@ -338,6 +356,11 @@ export default class NodeTcpTransport implements ITransportTcp {
     const release = await this._operationMutex.acquire();
     try {
       return new Promise((resolve, reject) => {
+        if (this._sniffer) {
+          this._sniffer.recordTx(`${this.host}:${this.port}`, buffer, 'tcp');
+          this._waitingForResponse = true;
+        }
+
         this.socket!.write(Buffer.from(buffer), err => {
           if (err) reject(new NodeSerialWriteError(err.message));
           else resolve();
@@ -385,6 +408,11 @@ export default class NodeTcpTransport implements ITransportTcp {
 
             this._readBufferTail = (this._readBufferTail + length) % this.options.maxBufferSize;
             this._readBufferCount -= length;
+
+            if (this._sniffer) {
+              this._sniffer.recordRxEnd(`${this.host}:${this.port}`, result, 'tcp');
+            }
+
             return resolve(result);
           }
 

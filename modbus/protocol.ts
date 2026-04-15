@@ -3,7 +3,6 @@
 import * as utils from './utils/utils.js';
 import * as framer from './utils/framers.js';
 import { IModbusProtocol, ITransport } from './types/modbus-types';
-import { ModbusCRCError, ModbusResponseError } from './errors';
 
 /**
  * ModbusProtocol is a low-level class responsible for reliable Modbus ADU (Application Data Unit) exchange.

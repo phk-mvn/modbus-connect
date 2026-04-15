@@ -4,6 +4,7 @@ import { ITransport, TRSMode, IRtuEmulatorTransportOptions } from '../../types/m
 import ModbusSlaveCore from '../../emulator/modbus-slave-core';
 import { Logger, pino } from 'pino';
 import { crc16Modbus } from '../../utils/crc';
+import { TrafficSniffer } from '../trackers/TrafficSniffer';
 
 /**
  * Node.js RTU Emulator Transport.
@@ -19,7 +20,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   private core: ModbusSlaveCore;
   private logger: Logger;
   private responseLatencyMs: number;
-
+  private _sniffer: TrafficSniffer | null = null;
   private _responseAdu: Uint8Array | null = null;
 
   /**
@@ -61,6 +62,15 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   }
 
   /**
+   * Attaches a TrafficSniffer instance to monitor emulated Modbus RTU traffic.
+   * This allows for real-time analysis of emulated requests and responses.
+   * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   */
+  public setSniffer(sniffer: TrafficSniffer): void {
+    this._sniffer = sniffer;
+  }
+
+  /**
    * Opens the transport (emulator connection).
    * Marks the transport as open and ready to receive requests.
    */
@@ -89,6 +99,10 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   async write(buffer: Uint8Array): Promise<void> {
     if (!this.isOpen) throw new Error('Not open');
     if (buffer.length < 4) return;
+
+    if (this._sniffer) {
+      this._sniffer.recordTx(`emulator-${this.core.slaveId}`, buffer);
+    }
 
     const slaveId = buffer[0];
     const pdu = buffer.subarray(1, buffer.length - 2);
@@ -130,6 +144,12 @@ export default class NodeRtuEmulatorTransport implements ITransport {
     if (this._responseAdu) {
       const resp = this._responseAdu;
       this._responseAdu = null;
+
+      if (this._sniffer) {
+        this._sniffer.recordRxStart();
+        this._sniffer.recordRxEnd(`emulator-${this.core.slaveId}`, resp);
+      }
+
       return resp;
     }
 

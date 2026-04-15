@@ -31,6 +31,7 @@ import {
   ModbusCollisionError,
   ModbusNoiseError,
 } from '../../errors';
+import { TrafficSniffer } from '../trackers/TrafficSniffer.js';
 
 const WEB_SERIAL_CONSTANTS = {
   MIN_BAUD_RATE: 300,
@@ -52,6 +53,9 @@ export default class WebSerialTransport implements ITransport {
   private options: Required<IWebSerialTransportOptions>;
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+
+  private _sniffer: TrafficSniffer | null = null;
+  private _waitingForResponse: boolean = false;
 
   private _readBuffer: Uint8Array;
   private _readBufferHead: number = 0;
@@ -136,6 +140,15 @@ export default class WebSerialTransport implements ITransport {
     });
 
     this.logger.debug('Transport instance created');
+  }
+
+  /**
+   * Attaches a TrafficSniffer instance to monitor and analyze raw Web Serial traffic.
+   * This allows for sub-millisecond latency tracking and real-time protocol inspection.
+   * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   */
+  public setSniffer(sniffer: TrafficSniffer): void {
+    this._sniffer = sniffer;
   }
 
   /**
@@ -491,6 +504,11 @@ export default class WebSerialTransport implements ITransport {
             }
 
             if (value && value.length > 0) {
+              if (this._sniffer && this._waitingForResponse && this._readBufferCount === 0) {
+                this._sniffer.recordRxStart();
+                this._waitingForResponse = false;
+              }
+
               this._emptyReadCount = 0;
               const chunkLen = value.length;
 
@@ -556,6 +574,11 @@ export default class WebSerialTransport implements ITransport {
 
     const release = await this._operationMutex.acquire();
     try {
+      if (this._sniffer) {
+        this._sniffer.recordTx('web-serial', buffer, 'rtu');
+        this._waitingForResponse = true;
+      }
+
       const timeout = this.options.writeTimeout;
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(), timeout);
@@ -648,6 +671,10 @@ export default class WebSerialTransport implements ITransport {
             this._readBufferTail =
               (this._readBufferTail + length) % WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE;
             this._readBufferCount -= length;
+
+            if (this._sniffer) {
+              this._sniffer.recordRxEnd('web-serial', result, 'rtu');
+            }
 
             return resolve(result);
           }
