@@ -1,26 +1,26 @@
 {
   "name": "modbus-connect",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "Modbus RTU/TCP over Web Serial",
-  "main": "./dist/client.js",
-  "module": "./dist/client.js",
+  "main": "./dist/core/client.js",
+  "module": "./dist/core/client.js",
   "type": "commonjs",
-  "types": "./dist/types/modbus-types.d.ts",
+  "types": "./dist/types/public.d.ts",
   "exports": {
     "./client": {
-      "types": "./dist/client.d.ts",
-      "require": "./dist/client.js",
-      "import": "./dist/client.js"
+      "types": "./dist/core/client.d.ts",
+      "require": "./dist/core/client.js",
+      "import": "./dist/core/client.js"
     },
     "./transport": {
-      "types": "./dist/transport/transport-controller.d.ts",
-      "require": "./dist/transport/transport-controller.js",
-      "import": "./dist/transport/transport-controller.js"
+      "types": "./dist/transport/controller/index.d.ts",
+      "require": "./dist/transport/controller/index.js",
+      "import": "./dist/transport/controller/index.js"
     },
     "./types": {
-      "types": "./dist/types/modbus-types.d.ts",
-      "require": "./dist/types/modbus-types.js",
-      "import": "./dist/types/modbus-types.js"
+      "types": "./dist/types/public.d.ts",
+      "require": "./dist/types/public.js",
+      "import": "./dist/types/public.js"
     }
   },
   "scripts": {

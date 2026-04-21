@@ -98,7 +98,7 @@ async function main() {
       console.log(data);
     },
     onError: err => {
-      console.error(err.message);
+      console.error(err.message ?? err);
     },
   };
 
@@ -162,7 +162,7 @@ async function main() {
       console.log(data);
     },
     onError: err => {
-      console.error(err.message);
+      console.error(err.message ?? err);
     },
   };
 
@@ -344,6 +344,8 @@ The `TransportController` is the central link of the library that manages the li
 `addTransport()`
 
 Adds and initializes a new transport. Creates a personal `PollingManager` for it.
+
+> **Note**: The `options` object also accepts `slaveIds: number[]` to auto-assign devices, and for `node-rtu` you can use `path` as an alias for `port`. These are convenience options extracted at runtime even though they aren't in the TypeScript transport option interfaces.
 
 **Example**:
 
@@ -529,6 +531,30 @@ Returns the number of transports that are currently successfully connected.
 
 ```js
 console.log('Active lines:', controller.getActiveTransportCount());
+```
+
+---
+
+`writeToPort()`
+
+Low-level method for writing raw bytes directly to a transport's port and optionally reading the response. The operation is protected by the polling mutex, so it won't collide with background tasks.
+
+**Example**:
+
+```js
+const response = await controller.writeToPort('RS485_BUS', rawAduBytes, 10, 3000);
+```
+
+---
+
+`destroy()`
+
+Gracefully shuts down the entire controller: stops all polling, disconnects all transports, and releases all resources.
+
+**Example**:
+
+```js
+await controller.destroy();
 ```
 
 ---
@@ -762,7 +788,7 @@ controller.sniffer.onTransaction(tx => {
 
 ---
 
-### Packet Structure (`ISnifferPacket`):
+### Meta Structure (`ISnifferPacket.meta`):
 
 | Property         | Type      | Description                                                             |
 | ---------------- | --------- | ----------------------------------------------------------------------- |
@@ -1451,6 +1477,7 @@ Emulators are registered as regular transports using `addTransport`.
 | `slaveId`           | `number`   | Modbus Unit ID of the emulator (0-247). Defaults to 1.           |
 | `responseLatencyMs` | `number`   | Artificial response delay in ms (simulates line speed).          |
 | `initialRegisters`  | `object`   | An object with initial data for memory.                          |
+| `loggerEnabled`     | `boolean`  | Enable/disable internal logging. Defaults to `true`.             |
 | `slaveIds`          | `number[]` | List of IDs that the controller should forward to this emulator. |
 | `RSMode`            | `string`   | For `tcp-emulator` only: operating mode (default: 'TCP/IP').     |
 
@@ -1726,7 +1753,6 @@ Central manager of all connections.
 - `removeTransport(id)`: Complete removal.
 - `getTransportForSlave(slaveId, requiredRSMode)`: Search for a transport by route.
 - `assignSlaveIdToTransport(transportId, slaveId)`: Bind a device to a port.
-- `setLoadBalancer(strategy)`: Select a strategy (`'round-robin' | 'sticky' | 'first-available'`).
 
 ---
 
@@ -1745,11 +1771,15 @@ Any transport (Serial, TCP, WebSerial) must implement these methods:
 
 Used in trackers to classify problems:
 
+- `UnknownError`: Unspecified error.
 - `PortClosed`: The physical port is closed.
 - `Timeout`: The device did not respond.
 - `CRCError`: Checksum error.
 - `ConnectionLost`: Connection lost.
+- `DeviceOffline`: The device went offline.
 - `MaxReconnect`: The recovery attempt limit has been exceeded.
+- `ManualDisconnect`: Disconnected by user request.
+- `Destroyed`: Transport was destroyed.
 
 ---
 
@@ -1764,6 +1794,8 @@ Used in trackers to classify problems:
     defaultTaskTimeout?: number; // Task execution timeout
     interTaskDelay?: number; // Pause between tasks in the queue
     logLevel?: string; // Log level
+    logger?: Logger; // External logger instance
+    [key: string]: unknown; // Additional custom options
 }
 ```
 
@@ -1772,14 +1804,26 @@ Used in trackers to classify problems:
 ```ts
 {
     id: string; // Unique task ID
+    name?: string; // Human-readable task name
     priority?: number; // Priority (the higher the priority, the earlier in the queue)
     interval: number; // Execution frequency (ms)
     fn: Function | Function[]; // Modbus requests
-    onData?: (data) => void; // Success data callback
-    onError?: (err, idx, retry) => void; // Error of a specific function
-    onFailure?: (err) => void; // Final task failure
-    shouldRun?: () => boolean; // Start condition
     immediate?: boolean; // Whether to run immediately
+    maxRetries?: number; // Override global retries for this task
+    backoffDelay?: number; // Override global backoff delay
+    taskTimeout?: number; // Override global task timeout
+
+    // Life cycle callbacks
+    onData?: (data: unknown[]) => void; // Success data callback
+    onError?: (error: Error, fnIndex: number, retryCount: number) => void; // Error of a specific function
+    onStart?: () => void; // Task started
+    onStop?: () => void; // Task stopped
+    onFinish?: (success: boolean, results: unknown[]) => void; // Iteration completed
+    onBeforeEach?: () => void; // Before each function call
+    onRetry?: (error: Error, fnIndex: number, retryCount: number) => void; // Retry attempt
+    onSuccess?: (result: unknown) => void; // Single function succeeded
+    onFailure?: (error: Error) => void; // Final task failure
+    shouldRun?: () => boolean; // Start condition
 }
 ```
 
@@ -1964,6 +2008,16 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 
 # <span id="changelog">Changelog</span>
 
+### 4.3.0 (2026-04-21)
+
+- The library's **file system architecture** has been **redesigned**
+- Fixed an issue where the port for the `WEB transport` (**WEB Serial API**) was not actually closed
+- The balancing system in `TransportController` has been **removed**
+- **All typing has been fixed**:
+  - Duplicates have been removed
+  - Existing interfaces have been optimized, and types for module classes have been updated
+- The documentation has been **updated**
+
 ### 4.2.0 (2026-04-14)
 
 - **Intelligent Traffic Analysis & Sniffing Layer**
@@ -1976,7 +2030,6 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
     - **Throughput Calculation**: Real-time bitrate calculation (Bytes/sec) for every successful response.
   - **Improved Time Handling**:
     - **System Time Synchronization**: All packets now use `Date.now()` for primary timestamps to align with system-level logging.
-    - **Automatic Local Time Formatting**: Added `localTime` metadata to all packets, providing a pre-formatted string (HH:MM:SS.mmm) based on the local machine's timezone for superior debugging experience.
   - **Smart Fragment Reassembly**:
     - **TCP MBAP Engine**: Automatically reassembles fragmented TCP packets by analyzing the length field in the MBAP header.
     - **RTU CRC Validation**: Real-time reassembly of serial data chunks via continuous CRC16 verification, ensuring only valid ADUs are reported.

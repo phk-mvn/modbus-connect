@@ -1,6 +1,6 @@
 // modbus/utils/crc.ts
 
-import { CRC16_MODBUS_TABLE } from '../constants/constants';
+import { CRC16_MODBUS_TABLE } from '../constants/modbus.js';
 
 // ====================== EXPORTED CRC FUNCTIONS ======================
 

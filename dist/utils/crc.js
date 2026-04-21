@@ -2,14 +2,14 @@
 // modbus/utils/crc.ts
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.crcjam = exports.crc32mpeg = exports.crc24 = exports.crc16_xmodem = exports.crc16_kermit = exports.crc8_dvbs2 = exports.crc8_1wire = exports.crc1 = exports.crc8 = exports.crc32 = exports.crc16CcittFalse = exports.crc16Modbus = void 0;
-const constants_1 = require("../constants/constants");
+const modbus_js_1 = require("../constants/modbus.js");
 // ====================== EXPORTED CRC FUNCTIONS ======================
 /** Calculates CRC16-MODBUS (Polynomial 0xA001, Init 0xFFFF). Result: [Low, High] */
 const crc16Modbus = (data) => {
     let crc = 0xffff;
     for (let i = 0; i < data.length; i++) {
         const index = (crc ^ data[i]) & 0xff;
-        crc = (crc >>> 8) ^ constants_1.CRC16_MODBUS_TABLE[index];
+        crc = (crc >>> 8) ^ modbus_js_1.CRC16_MODBUS_TABLE[index];
     }
     return new Uint8Array([crc & 0xff, (crc >>> 8) & 0xff]);
 };
