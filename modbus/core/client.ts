@@ -50,7 +50,7 @@ class ModbusClient implements IModbusClient {
 
   private logger: Logger;
 
-  private static readonly FUNCION_CODE_MAP = new Map<number, ModbusFunctionCode>([
+  private static readonly FUNCTION_CODE_MAP = new Map<number, ModbusFunctionCode>([
     [0x01, ModbusFunctionCode.READ_COILS],
     [0x02, ModbusFunctionCode.READ_DISCRETE_INPUTS],
     [0x03, ModbusFunctionCode.READ_HOLDING_REGISTERS],

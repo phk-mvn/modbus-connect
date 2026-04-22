@@ -261,8 +261,8 @@ export interface ITransportController {
   readonly sniffer: any | null;
   disableLogger(): void;
   enableLogger(): void;
-  scanRtuPort(options: IScanOptions): Promise<IScanResult[]>;
-  scanTcpPort(options: IScanOptions): Promise<IScanResult[]>;
+  scanRtuPort(options: IScanOptions): Promise<IScanReport>;
+  scanTcpPort(options: IScanOptions): Promise<IScanReport>;
   pauseScan(): void;
   resumeScan(): void;
   stopScan(): void;
@@ -352,28 +352,59 @@ export type TPortStateHandler = (
 // SCAN
 // ===================================================
 
+export type TScanProfile = 'quick' | 'deep' | 'custom';
+
+export interface IScanStats {
+  durationMs: number;
+  probesSent: number;
+  timeouts: number;
+  crcErrors: number;
+  exceptionResponses: number;
+}
+
+export interface IScanReport {
+  results: IScanResult[];
+  stats: IScanStats;
+}
+
+export interface IScanProgressRtu {
+  baud: number;
+  parity: TParityType;
+  stopBits: 1 | 2;
+  slaveId: number;
+}
+
+export interface IScanProgressTcp {
+  host: string;
+  port: number;
+  unitId: number;
+}
+
 export interface IScanResult {
   type: 'node-rtu' | 'node-tcp' | 'web-rtu';
   slaveId: number;
   baudRate?: number;
   parity?: TParityType;
-  port?: string | any;
-  stopBits?: number;
+  port?: string;
+  stopBits?: 1 | 2;
   host?: string;
   tcpPort?: number;
+  discoveredAt: number;
 }
 
 export interface IScanController {
   pause: () => void;
   resume: () => void;
   stop: () => void;
+  reset: () => void;
   readonly isPaused: boolean;
   readonly isStopped: boolean;
 }
 
 export interface IScanOptions {
+  profile: TScanProfile;
   registerAddress?: number;
-  path?: string | any;
+  path?: string | IWebSerialPort;
   type?: 'node-rtu' | 'web-rtu';
   bauds?: number[];
   parities?: TParityType[];
@@ -382,9 +413,16 @@ export interface IScanOptions {
   ports?: number[];
   unitIds?: number[];
   controller?: IScanController;
-  onProgress?: (current: number, total: number, info?: any) => void;
+  padding?: number;
+  concurrency?: number;
+  tcpTimeout?: number;
+  multiBaud?: boolean;
+  signal?: AbortSignal;
+  stopBitsList?: (1 | 2)[];
+  onProgress?: (current: number, total: number, info: IScanProgressRtu | IScanProgressTcp) => void;
   onDeviceFound?: (device: IScanResult) => void;
   onFinish?: (results: IScanResult[]) => void;
+  onStats?: (stats: IScanStats) => void;
 }
 
 // ===================================================

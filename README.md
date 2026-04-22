@@ -5,6 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/modbus-connect)](https://www.npmjs.com/package/modbus-connect)
 [![js-standart-style](https://img.shields.io/badge/code%20style-standart-brightgreen.svg?style=flat)](https://standartjs.com/)
 [![License MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensources.org/licenses/MIT)
+![npm downloads](https://img.shields.io/npm/dt/modbus-connect?logo=npm)
 
 modbus-connect is a [cross-platform]() library for Modbus RTU/TCP communication in both Node.js and modern browsers
 
@@ -589,10 +590,27 @@ The `ModbusScanner` is a high-performance tool built into the `TransportControll
 
 ### **Key Features**
 
+- **Scan Profiles**: Mandatory `profile` parameter (`'quick'`, `'deep'`, `'custom'`) that presets baud rates, parities, concurrency, and timeouts. User options override profile defaults.
 - **Adaptive Turbo Mode**: Automatically calculates the minimum physical timeout based on the Baud Rate. (e.g., ~14ms for 115200 baud).
 - **Isomorphic RTU Scanning**: Automatically detects if you are in Node.js or a Browser environment.
-- **High-Concurrency TCP Scanning**: Scans multiple Unit IDs in parallel (up to 50 at once).
-- **Lifecycle Control**: Ability to pause, resume, or stop the scanning process programmatically.
+- **High-Concurrency TCP Scanning**: Scans multiple Unit IDs in parallel with configurable concurrency and timeout.
+- **Lifecycle Control**: Ability to pause, resume, stop, and reset the scanning process programmatically. Supports `AbortSignal` for external cancellation.
+- **Scan Statistics**: Returns `IScanReport` with discovered devices and detailed `IScanStats` (duration, probes sent, timeouts, CRC errors, exception responses).
+- **Traffic Sniffer Integration**: When sniffer is enabled on the controller, scan traffic is automatically captured for analysis.
+- **Multi-Baud Discovery**: Optional `multiBaud` flag allows reporting devices found on multiple baud rates (default deduplicates by slaveId).
+- **Per-Unit Progress**: TCP scan reports progress for each individual Unit ID, not just per batch.
+
+---
+
+### **Scan Profiles**
+
+The `profile` parameter is **mandatory** and provides sensible defaults. You can still override any field by providing it explicitly.
+
+| Profile  | Baud Rates                                 | Parities                     | Stop Bits | Concurrency | TCP Timeout | Padding |
+| -------- | ------------------------------------------ | ---------------------------- | --------- | ----------- | ----------- | ------- |
+| `quick`  | 115200, 57600, 38400, 19200, 9600          | none, even                   | 1, 2      | 100         | 200ms       | 5ms     |
+| `deep`   | 115200, 57600, 38400, 19200, 9600, ...1200 | none, even, odd, mark, space | 1, 2      | 25          | 500ms       | 10ms    |
+| `custom` | — (you must provide all options)           | —                            | —         | —           | —           | —       |
 
 ---
 
@@ -604,21 +622,30 @@ The scanner uses a reactive callback system to provide real-time feedback, makin
 - `onProgress(current, total, info)`: Triggered on every request attempt.
   - `current`: Current attempt index.
   - `total`: Total planned attempts.
-  - `info`: Object containing current scan parameters (`baud`, `parity`, `slaveId`).
+  - `info`: Object containing current scan parameters (RTU: `{ baud, parity, stopBits, slaveId }`, TCP: `{ host, port, unitId }`).
 - `onFinish(results)`: Triggered when the entire scan process is complete. Returns an array of all discovered IScanResult objects.
+- `onStats(stats)`: Triggered when scan finishes with detailed statistics (`durationMs`, `probesSent`, `timeouts`, `crcErrors`, `exceptionResponses`).
 
 ---
 
 ### **Scanning Options (`IScanOptions`)**
 
-| Property          | Type               | Description                                                                  |
-| ----------------- | ------------------ | ---------------------------------------------------------------------------- |
-| `path`            | `string or object` | Serial port path (Node) or SerialPort object (Web).                          |
-| `bauds`           | `number[]`         | List of baud rates to check. Default: `[115200, 57600, 38400, 19200, 9600]`. |
-| `parities`        | `TParityType[]`    | List of parities to check. Default: `['none', 'even', 'odd']`.               |
-| `slaveIds`        | `number[]`         | Range of Slave IDs to check (1-247).                                         |
-| `registerAddress` | `number`           | The register address to read for verification. Default: `0`.                 |
-| `controller`      | `ScanController`   | An instance of `ScanController` to manage the scan externally.               |
+| Property          | Type                            | Description                                                                  |
+| ----------------- | ------------------------------- | ---------------------------------------------------------------------------- |
+| `profile`         | `'quick' \| 'deep' \| 'custom'` | **Required**. Scan profile that provides default values.                     |
+| `path`            | `string or IWebSerialPort`      | Serial port path (Node) or SerialPort object (Web).                          |
+| `bauds`           | `number[]`                      | List of baud rates to check. Overridden by profile defaults unless `custom`. |
+| `parities`        | `TParityType[]`                 | List of parities to check. Overridden by profile defaults unless `custom`.   |
+| `slaveIds`        | `number[]`                      | Range of Slave IDs to check (1-247).                                         |
+| `unitIds`         | `number[]`                      | Range of Unit IDs to check for TCP scan.                                     |
+| `registerAddress` | `number`                        | The register address to read for verification. Default: `0`.                 |
+| `controller`      | `ScanController`                | An instance of `ScanController` to manage the scan externally.               |
+| `concurrency`     | `number`                        | TCP parallel request count. Default from profile.                            |
+| `tcpTimeout`      | `number`                        | TCP response timeout in ms. Default from profile.                            |
+| `multiBaud`       | `boolean`                       | Report devices on multiple baud rates (default: `false`, dedup by slaveId).  |
+| `signal`          | `AbortSignal`                   | Standard `AbortSignal` for external scan cancellation.                       |
+| `stopBitsList`    | `(1 or 2)[]`                    | List of stop bits to scan (RTU only). Default from profile: `[1, 2]`.        |
+| `padding`         | `number`                        | Extra ms padding for RTU timeout. Default from profile.                      |
 
 ---
 
@@ -626,55 +653,63 @@ The scanner uses a reactive callback system to provide real-time feedback, makin
 
 `scanRtuPort(options)`
 
-This method iterates through the matrix of Baud Rates and Parities. Once a device is found, it "locks" the port settings and quickly scans the remaining Slave IDs.
+This method iterates through the matrix of Baud Rates and Parities. Once a device is found, it "locks" the port settings and quickly scans the remaining Slave IDs. Returns `IScanReport` with results and statistics.
 
 **Example**:
 
 ```js
-const results = await controller.scanRtuPort({
+const report = await controller.scanRtuPort({
+  profile: 'quick',
   path: '/dev/ttyUSB0', // In Browser, pass the port object here
-  bauds: [9600, 115200],
-  slaveIds: Array.from({ length: 247 }, (_, i) => i + 1),
+  bauds: [9600, 115200], // Overrides profile defaults
 
   onDeviceFound: device => {
-    console.log(`✨ New device discovered! ID: ${device.slaveId}`);
+    console.log(
+      `New device discovered! ID: ${device.slaveId} @ ${device.baudRate}bps parity:${device.parity} stopBits:${device.stopBits}`
+    );
   },
 
   onProgress: (current, total, info) => {
-    // Smooth progress update for UI
     const percent = Math.round((current / total) * 100);
-    process.stdout.write(`Scanning ${info.baud}bps | ID: ${info.slaveId} [${percent}%]\r`);
+    process.stdout.write(
+      `Scanning ${info.baud}bps | ${info.parity} | ${info.stopBits}SB | ID: ${info.slaveId} [${percent}%]\r`
+    );
   },
 
   onFinish: allDevices => {
     console.log(`\nScan complete. Total devices found: ${allDevices.length}`);
   },
 });
+
+console.log('Stats:', report.stats);
+// Stats: { durationMs: 12450, probesSent: 2470, timeouts: 2465, crcErrors: 0, exceptionResponses: 5 }
 ```
 
 ---
 
 `scanTcpPort(options)`
 
-Uses high-concurrency parallel requests to map a TCP gateway or a subnetwork.
+Uses high-concurrency parallel requests to map a TCP gateway or a subnetwork. Returns `IScanReport`.
 
 **Example**:
 
 ```js
-const tcpDevices = await controller.scanTcpPort({
-  hosts: ['192.168.1.100'], // Scan devices behind this gateway
+const report = await controller.scanTcpPort({
+  profile: 'deep',
+  hosts: ['192.168.1.100'],
   ports: [502],
-  unitIds: Array.from({ length: 255 }, (_, i) => i + 1), // Check all possible Unit IDs
+  unitIds: Array.from({ length: 255 }, (_, i) => i + 1),
 
   onDeviceFound: device => {
-    console.log(`✅ Found TCP Unit: ${device.slaveId} at ${device.host}`);
+    console.log(`Found TCP Unit: ${device.slaveId} at ${device.host}`);
   },
 
-  onFinish: results => {
-    // Process final list
-    saveDevicesToDatabase(results);
+  onStats: stats => {
+    console.log(`Scan took ${stats.durationMs}ms, ${stats.probesSent} probes sent`);
   },
 });
+
+console.log('Discovered devices:', report.results);
 ```
 
 ---
@@ -689,9 +724,35 @@ If you need to manage the scan process (e.g., from a UI), use these methods:
 | `resumeScan()` | Resumes a previously paused scan.                        |
 | `stopScan()`   | Immediately stops the scan and releases the port/socket. |
 
+You can also use `AbortController` for external cancellation:
+
+```js
+const abortCtrl = new AbortController();
+
+const report = controller.scanRtuPort({
+  profile: 'quick',
+  path: '/dev/ttyUSB0',
+  signal: abortCtrl.signal,
+});
+
+// Cancel from outside:
+setTimeout(() => abortCtrl.abort(), 5000);
+```
+
 ---
 
-Scan Result Interface (`IScanResult`)
+### **Scan Report (`IScanReport`)**
+
+Both `scanRtuPort` and `scanTcpPort` return an `IScanReport`:
+
+```ts
+{
+  results: IScanResult[];
+  stats: IScanStats;
+}
+```
+
+**Scan Result (`IScanResult`)**
 
 ```ts
 {
@@ -699,10 +760,23 @@ Scan Result Interface (`IScanResult`)
   slaveId: number;     // The Modbus address found
   baudRate?: number;   // (RTU only) The working baud rate
   parity?: string;     // (RTU only) none, even, or odd
-  stopBits?: number;   // (RTU only) 1 or 2
-  port?: string | any; // The physical port identifier
+  stopBits?: 1 | 2;    // (RTU only) Actual stop bits used during scan
+  port?: string;       // The physical port path
   host?: string;       // (TCP only) The device IP
   tcpPort?: number;    // (TCP only) The device Port
+  discoveredAt: number;// Unix timestamp when device was discovered
+}
+```
+
+**Scan Statistics (`IScanStats`)**
+
+```ts
+{
+  durationMs: number; // Total scan duration
+  probesSent: number; // Total Modbus requests sent
+  timeouts: number; // Requests that timed out
+  crcErrors: number; // CRC validation failures (RTU)
+  exceptionResponses: number; // Modbus exception responses (device exists but refused)
 }
 ```
 
@@ -2007,6 +2081,33 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 <br>
 
 # <span id="changelog">Changelog</span>
+
+### 4.3.2 (2026-04-22)
+
+- **Scanner Overhaul — Critical Bug Fixes**:
+  - **Fixed stopBits not being passed to transport**: Scanner always used `stopBits=1` (serialport default) regardless of parity, causing devices to be found with wrong connection parameters (e.g. `parity:even, stopBits:2` when actual connection was `8E1`)
+  - **Added stopBits enumeration**: Scanner now iterates over `stopBitsList` (default `[1, 2]`), checking all valid combinations: 8N1, 8N2, 8E1, 8E2, 8O1, 8O2, etc.
+  - **Fixed stopBits in scan report**: `_addRtu` was incorrectly computing `stopBits = parity === 'none' ? 1 : 2` instead of using the actual connection parameter. Now reports the real `stopBits` used during the probe
+  - **Added `stopBitsList` option**: Replaced `IScanOptions.stopBits` with `stopBitsList: (1 | 2)[]` for full control over which stop bits to scan
+  - **Added `stopBits` to `IScanProgressRtu`**: Progress callback now includes the current stopBits being scanned
+  - Fixed `ScanController` sync issue between `TransportController` and `ScanService` — `stop()`/`resume()` now correctly operate on the same controller instance
+  - Added parallel scan protection — `ScanService` now throws an error if a scan is already in progress instead of silently overwriting the active controller
+  - `ScanController.isStopped` is now reversible via new `reset()` method, allowing controller reuse
+  - Removed hardcoded TCP concurrency (50) and timeout (250ms) — both are now configurable via `IScanOptions.concurrency` and `IScanOptions.tcpTimeout`
+  - Fixed race condition between `pause` and `stop` — scan now checks `isStopped` immediately after exiting the pause loop
+  - Wrapped `TransportFactory.create` + `connect` in try/catch per baud rate — a failed port opening no longer kills the entire scan, it skips to the next speed
+  - Fixed unsafe type detection in `ScanService._detectRtuTransportType` — now checks for `IWebSerialPort` interface instead of `typeof path !== 'string'`
+  - Replaced `any` types in `IScanResult.port` and `IScanOptions.path` with proper `string` and `IWebSerialPort` types
+- **Scanner Overhaul — New Features**:
+  - **Scan Profiles** (`TScanProfile`): Mandatory `profile` parameter (`'quick'`, `'deep'`, `'custom'`) that presets baud rates, parities, concurrency, timeouts, and padding. User-provided options override profile defaults.
+  - **Scan Report** (`IScanReport`): Both `scanRtuPort` and `scanTcpPort` now return `IScanReport` containing `results: IScanResult[]` and `stats: IScanStats` instead of just `IScanResult[]`
+  - **Scan Statistics** (`IScanStats`): Tracks `durationMs`, `probesSent`, `timeouts`, `crcErrors`, and `exceptionResponses`. Available via `report.stats` or `onStats` callback.
+  - **Discovery Timestamp**: Every `IScanResult` now includes `discoveredAt: number` (Unix timestamp of when the device was found)
+  - **AbortController Integration**: Added `signal?: AbortSignal` to `IScanOptions` for standard external scan cancellation
+  - **Multi-Baud Discovery**: Added `multiBaud?: boolean` to `IScanOptions` — when `true`, devices responding on multiple baud rates are reported separately (default: `false`, deduplicates by slaveId)
+  - **Traffic Sniffer Integration**: When sniffer is enabled on `TransportController`, scan traffic is automatically captured for analysis
+  - **Per-Unit TCP Progress**: TCP scan now reports `onProgress` for each individual Unit ID (`{ host, port, unitId }`) instead of only per batch
+  - **Typed Progress Callbacks**: `onProgress` info is now typed as `IScanProgressRtu` or `IScanProgressTcp` instead of `any`
 
 ### 4.3.0 (2026-04-21)
 

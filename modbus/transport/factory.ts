@@ -3,7 +3,6 @@ import type { ITransport, TTransportType } from '../types/public.js';
 import { TrafficSniffer } from './trackers/traffic-sniffer.js';
 import {
   TransportFactoryBase,
-  TRANSPORT_TYPES,
   TransportOptionsMap,
   NodeRtuFactory,
   NodeTcpFactory,

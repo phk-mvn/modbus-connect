@@ -38,7 +38,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   private inputRegisters: Map<number, number> = new Map();
 
   private exceptions: Map<string, number> = new Map();
-  private _infinityTasks: Map<string, NodeJS.Timeout> = new Map();
+  private _infinityTasks: Map<string, ReturnType<typeof setInterval>> = new Map();
 
   public readonly logger: Logger;
   private readonly loggerEnabled: boolean;

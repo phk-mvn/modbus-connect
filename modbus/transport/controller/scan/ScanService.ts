@@ -2,14 +2,20 @@
 
 import { Logger } from 'pino';
 import { ModbusScanner, ScanController } from '../../../utils/scanner.js';
-import type { IScanOptions, IScanResult } from '../../../types/public.js';
+import { TrafficSniffer } from '../../trackers/traffic-sniffer.js';
+import type { IScanOptions, IScanReport, IWebSerialPort } from '../../../types/public.js';
 
 export class ScanService {
   private _activeController: ScanController | null = null;
+  private _isScanning: boolean = false;
   private readonly _scanner: ModbusScanner;
 
-  constructor(logger: Logger) {
-    this._scanner = new ModbusScanner(logger);
+  constructor(logger: Logger, sniffer?: TrafficSniffer) {
+    this._scanner = new ModbusScanner(logger, sniffer ?? undefined);
+  }
+
+  public get isScanning(): boolean {
+    return this._isScanning;
   }
 
   public pause(): void {
@@ -22,10 +28,16 @@ export class ScanService {
 
   public stop(): void {
     this._activeController?.stop();
-    this._activeController = null;
   }
 
-  public async scanRtu(options: IScanOptions, controller?: ScanController): Promise<IScanResult[]> {
+  public async scanRtu(options: IScanOptions, controller?: ScanController): Promise<IScanReport> {
+    if (this._isScanning) {
+      throw new Error(
+        'A scan is already in progress. Stop the current scan before starting a new one.'
+      );
+    }
+
+    this._isScanning = true;
     this._activeController = controller ?? new ScanController();
 
     try {
@@ -33,22 +45,36 @@ export class ScanService {
       return await this._scanner.scanRtu(options, transportType, this._activeController);
     } finally {
       this._activeController = null;
+      this._isScanning = false;
     }
   }
 
-  public async scanTcp(options: IScanOptions, controller?: ScanController): Promise<IScanResult[]> {
+  public async scanTcp(options: IScanOptions, controller?: ScanController): Promise<IScanReport> {
+    if (this._isScanning) {
+      throw new Error(
+        'A scan is already in progress. Stop the current scan before starting a new one.'
+      );
+    }
+
+    this._isScanning = true;
     this._activeController = controller ?? new ScanController();
 
     try {
       return await this._scanner.scanTcp(options, this._activeController);
     } finally {
       this._activeController = null;
+      this._isScanning = false;
     }
   }
 
   private _detectRtuTransportType(options: IScanOptions): 'node-rtu' | 'web-rtu' {
     if (options.type) return options.type;
-    if (options.path && typeof options.path !== 'string') return 'web-rtu';
+
+    const path = options.path;
+    if (path && typeof path === 'object' && 'open' in path && 'readable' in path) {
+      return 'web-rtu';
+    }
+
     return 'node-rtu';
   }
 }

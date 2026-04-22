@@ -3,7 +3,6 @@
 import * as net from 'net';
 import { Mutex } from 'async-mutex';
 import { pino, Logger } from 'pino';
-import * as utils from '../../utils/buffer.js';
 
 import {
   NodeSerialWriteError,

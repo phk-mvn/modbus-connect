@@ -12,7 +12,6 @@ import {
   NodeSerialReadError,
   NodeSerialWriteError,
   ModbusTimeoutError,
-  ModbusInsufficientDataError,
   ModbusDataConversionError,
   ModbusBufferOverflowError,
   ModbusBufferUnderrunError,

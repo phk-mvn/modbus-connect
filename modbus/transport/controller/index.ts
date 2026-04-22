@@ -24,7 +24,7 @@ import type {
   TPortStateHandler,
   TRSMode,
   IScanOptions,
-  IScanResult,
+  IScanReport,
   IPollingTaskOptions,
   IPollingQueueInfo,
   IPollingManagerConfig,
@@ -61,7 +61,7 @@ class TransportController implements ITransportController {
     this._router = new TransportRouter(this._registry);
     this._stateManager = new StateManager();
     this._pollingProxy = new PollingProxy(this._registry);
-    this._scanService = new ScanService(this.logger);
+    this._scanService = new ScanService(this.logger, this._sniffer ?? undefined);
 
     this.logger.debug('TransportController initialized');
   }
@@ -109,16 +109,14 @@ class TransportController implements ITransportController {
     this._scanService.stop();
   }
 
-  public async scanRtuPort(options: IScanOptions): Promise<IScanResult[]> {
+  public async scanRtuPort(options: IScanOptions): Promise<IScanReport> {
     this.logger.info('Starting RTU scan');
-    const ctrl = (options.controller as ScanController) ?? new ScanController();
-    return this._scanService.scanRtu(options, ctrl);
+    return this._scanService.scanRtu(options, options.controller as ScanController | undefined);
   }
 
-  public async scanTcpPort(options: IScanOptions): Promise<IScanResult[]> {
+  public async scanTcpPort(options: IScanOptions): Promise<IScanReport> {
     this.logger.info('Starting TCP scan');
-    const ctrl = (options.controller as ScanController) ?? new ScanController();
-    return this._scanService.scanTcp(options, ctrl);
+    return this._scanService.scanTcp(options, options.controller as ScanController | undefined);
   }
 
   // ==================== Transport CRUD ====================
