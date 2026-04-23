@@ -59,7 +59,11 @@ export class PortConnectionTracker implements IPortConnectionTracker {
     });
 
     try {
-      handler(connected!, slaves!, error as any);
+      handler(
+        connected!,
+        slaves!,
+        error as { type: EConnectionErrorType; message: string } | undefined
+      );
     } catch (e) {
       console.error('[PortConnectionTracker] Error in initial handler:', e);
     }
@@ -123,7 +127,9 @@ export class PortConnectionTracker implements IPortConnectionTracker {
 
     this._debounceTimeout = setTimeout(() => {
       this._debounceTimeout = null;
-      this._doNotifyDisconnected(errorType, errorMessage, slaveIds);
+      this._doNotifyDisconnected(errorType, errorMessage, slaveIds).catch(e => {
+        console.error('[PortConnectionTracker] Unhandled error in debounced disconnect:', e);
+      });
     }, this._debounceMs);
   }
 

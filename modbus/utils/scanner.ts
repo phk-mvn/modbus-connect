@@ -78,42 +78,69 @@ function isScanStopped(ctrl: IScanController, signal?: AbortSignal): boolean {
   return ctrl.isStopped || (signal?.aborted ?? false);
 }
 
+/**
+ * Controller class to manage the execution state of a scanning process.
+ * Provides methods to pause, resume, or stop active scans.
+ */
 export class ScanController implements IScanController {
   private _isPaused: boolean = false;
   private _isStopped: boolean = false;
 
+  /** Pauses the current scan. Probes will wait until resume is called. */
   public pause(): void {
     this._isPaused = true;
   }
 
+  /** Resumes a previously paused scan. */
   public resume(): void {
     this._isPaused = false;
   }
 
+  /** Stops the scan immediately. */
   public stop(): void {
     this._isStopped = true;
   }
 
+  /** Resets the controller state to initial (not paused, not stopped). */
   public reset(): void {
     this._isPaused = false;
     this._isStopped = false;
   }
 
+  /** Gets whether the scan is currently paused. */
   get isPaused(): boolean {
     return this._isPaused;
   }
 
+  /** Gets whether the scan has been stopped. */
   get isStopped(): boolean {
     return this._isStopped;
   }
 }
 
+/**
+ * Core utility class for discovering Modbus devices on Serial (RTU) and TCP networks.
+ * It performs brute-force probing based on defined profiles.
+ */
 export class ModbusScanner {
+  /**
+   * @param {Logger} logger - Pino logger for scan activity.
+   * @param {TrafficSniffer} [_sniffer] - Optional traffic sniffer for debugging.
+   */
   constructor(
     private logger: Logger,
     private _sniffer?: TrafficSniffer
   ) {}
 
+  /**
+   * Scans a physical Serial port or WebSerial port for Modbus RTU devices.
+   * Iterates through combinations of Baud Rate, Parity, Stop Bits, and Slave IDs.
+   *
+   * @param {IScanOptions} options - Scanning parameters and callbacks.
+   * @param {'node-rtu' | 'web-rtu'} transportType - Environment-specific transport type.
+   * @param {IScanController} ctrl - Controller to manage scan state.
+   * @returns {Promise<IScanReport>} Final report containing found devices and performance stats.
+   */
   public async scanRtu(
     options: IScanOptions,
     transportType: 'node-rtu' | 'web-rtu',
@@ -232,6 +259,14 @@ export class ModbusScanner {
     return { results, stats };
   }
 
+  /**
+   * Scans Modbus TCP unit IDs over a network connection.
+   * Uses concurrency to probe multiple Unit IDs simultaneously.
+   *
+   * @param {IScanOptions} options - Scanning parameters and callbacks.
+   * @param {IScanController} ctrl - Controller to manage scan state.
+   * @returns {Promise<IScanReport>} Final report of found TCP devices.
+   */
   public async scanTcp(options: IScanOptions, ctrl: IScanController): Promise<IScanReport> {
     const opts = resolveOptions(options);
     const results: IScanResult[] = [];
@@ -320,6 +355,10 @@ export class ModbusScanner {
     return { results, stats };
   }
 
+  /**
+   * Internal helper to add an identified RTU device to results.
+   * @private
+   */
   private _addRtu(
     res: IScanResult[],
     set: Set<number>,
@@ -346,6 +385,10 @@ export class ModbusScanner {
     opts.onDeviceFound?.(device);
   }
 
+  /**
+   * Internal helper to add an identified TCP device to results.
+   * @private
+   */
   private _addTcp(
     res: IScanResult[],
     sid: number,

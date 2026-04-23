@@ -679,7 +679,10 @@ export default class NodeSerialTransport implements ITransport {
     }
 
     if (this._portStateHandler) {
-      this._portStateHandler(false, [], { type: errorType, message: errorMessage });
+      this._portStateHandler(false, Array.from(this._connectedSlaveIds), {
+        type: errorType,
+        message: errorMessage,
+      });
     }
   }
 

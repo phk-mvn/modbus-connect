@@ -107,6 +107,10 @@ export default class NodeTcpEmulatorTransport implements ITransport {
     this.isOpen = false;
     this._pendingResponse = null;
     this.logger.info('TCP Emulator transport disconnected');
+    this._deviceStateHandler?.(this.core.slaveId, false, {
+      type: EConnectionErrorType.ManualDisconnect,
+      message: 'TCP Emulator disconnected',
+    });
     this._portStateHandler?.(false, [this.core.slaveId], {
       type: EConnectionErrorType.ManualDisconnect,
       message: 'TCP Emulator disconnected',

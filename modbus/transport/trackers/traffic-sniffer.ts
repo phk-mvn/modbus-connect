@@ -148,7 +148,7 @@ export class TrafficSniffer implements ITrafficSniffer {
         latencyMs: session.latency,
         transferMs: Number(transfer.toFixed(3)),
         totalMs: Number((session.latency + transfer).toFixed(3)),
-        bytesPerSecond: Math.round(raw.length / ((transfer || 1) / 1000)),
+        bytesPerSecond: transfer > 0 ? Math.round(raw.length / (transfer / 1000)) : 0,
         isFragment: false,
         error,
       };
@@ -203,9 +203,19 @@ export class TrafficSniffer implements ITrafficSniffer {
    */
   private _emitTransaction(tx: ITransaction): void {
     if (this._transactionHandlers.length === 0) return;
-    Promise.resolve().then(() => {
-      this._transactionHandlers.forEach(h => h(tx));
-    });
+    Promise.resolve()
+      .then(() => {
+        this._transactionHandlers.forEach(h => {
+          try {
+            h(tx);
+          } catch (e) {
+            console.error('[TrafficSniffer] Transaction handler error:', e);
+          }
+        });
+      })
+      .catch(e => {
+        console.error('[TrafficSniffer] Transaction emit error:', e);
+      });
   }
 
   /**
@@ -326,9 +336,19 @@ export class TrafficSniffer implements ITrafficSniffer {
    */
   private _notify(packet: ISnifferPacket): void {
     if (this._handlers.length === 0) return;
-    Promise.resolve().then(() => {
-      this._handlers.forEach(h => h(packet));
-    });
+    Promise.resolve()
+      .then(() => {
+        this._handlers.forEach(h => {
+          try {
+            h(packet);
+          } catch (e) {
+            console.error('[TrafficSniffer] Packet handler error:', e);
+          }
+        });
+      })
+      .catch(e => {
+        console.error('[TrafficSniffer] Packet emit error:', e);
+      });
   }
 
   /**

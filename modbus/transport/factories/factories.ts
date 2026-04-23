@@ -16,6 +16,7 @@ import type {
 // CONSTANTS
 // ===================================================
 
+/** Supported transport type identifiers. */
 export const TRANSPORT_TYPES = {
   NODE_RTU: 'node-rtu',
   NODE_TCP: 'node-tcp',
@@ -24,6 +25,7 @@ export const TRANSPORT_TYPES = {
   TCP_EMULATOR: 'tcp-emulator',
 } as const;
 
+/** Valid configuration keys for Node.js Serial RTU transport. */
 export const NODE_RTU_KEYS = [
   'baudRate',
   'dataBits',
@@ -37,6 +39,7 @@ export const NODE_RTU_KEYS = [
   'RSMode',
 ] as const;
 
+/** Valid configuration keys for Node.js TCP transport. */
 export const NODE_TCP_KEYS = [
   'readTimeout',
   'writeTimeout',
@@ -45,6 +48,7 @@ export const NODE_TCP_KEYS = [
   'maxReconnectAttempts',
 ] as const;
 
+/** Valid configuration keys for WebSerial RTU transport. */
 export const WEB_RTU_KEYS = [
   'baudRate',
   'dataBits',
@@ -74,11 +78,31 @@ export type TransportOptionsMap = {
 // BASE
 // ===================================================
 
+/**
+ * Abstract base class for transport-specific factories.
+ * @template TOptions The type of configuration options this factory accepts.
+ */
 export abstract class TransportFactoryBase<TOptions = unknown> {
+  /** The transport type identifier this factory handles. */
   abstract readonly type: TTransportType;
+
+  /**
+   * Creates an instance of a transport.
+   * @param {TOptions} options - Configuration options.
+   * @param {Logger} logger - Logger instance.
+   * @returns {Promise<ITransport>} A promise resolving to the created transport.
+   */
   abstract create(options: TOptions, logger: Logger): Promise<ITransport>;
 }
 
+/**
+ * Filters an object to include only specified keys that have defined values.
+ *
+ * @template T Resulting object type.
+ * @param {object} source - The source object.
+ * @param {readonly string[]} keys - Keys to extract.
+ * @returns {T} A new object containing only the defined selected keys.
+ */
 export function pickDefinedKeys<T extends object>(source: object, keys: readonly string[]): T {
   const result: Record<string, unknown> = {};
   for (const key of keys) {
@@ -89,6 +113,12 @@ export function pickDefinedKeys<T extends object>(source: object, keys: readonly
   return result as T;
 }
 
+/**
+ * Creates a factory function for WebSerial ports, ensuring the port is closed if already open.
+ *
+ * @param {IWebSerialPort} port - The WebSerial port instance.
+ * @returns {() => Promise<IWebSerialPort>} A factory function that returns the port.
+ */
 export function createPortFactory(port: IWebSerialPort): () => Promise<IWebSerialPort> {
   return async () => {
     if (port.readable || port.writable) {
@@ -102,6 +132,7 @@ export function createPortFactory(port: IWebSerialPort): () => Promise<IWebSeria
 // NODE RTU FACTORY
 // ===================================================
 
+/** Factory for creating Modbus RTU transports on Node.js using SerialPort. */
 export class NodeRtuFactory extends TransportFactoryBase<
   TransportOptionsMap[typeof TRANSPORT_TYPES.NODE_RTU]
 > {
@@ -124,6 +155,7 @@ export class NodeRtuFactory extends TransportFactoryBase<
 // NODE TCP FACTORY
 // ===================================================
 
+/** Factory for creating Modbus TCP transports on Node.js. */
 export class NodeTcpFactory extends TransportFactoryBase<
   TransportOptionsMap[typeof TRANSPORT_TYPES.NODE_TCP]
 > {
@@ -145,6 +177,7 @@ export class NodeTcpFactory extends TransportFactoryBase<
 // WEB RTU FACTORY
 // ===================================================
 
+/** Factory for creating Modbus RTU transports in the browser using WebSerial API. */
 export class WebRtuFactory extends TransportFactoryBase<
   TransportOptionsMap[typeof TRANSPORT_TYPES.WEB_RTU]
 > {
@@ -167,6 +200,7 @@ export class WebRtuFactory extends TransportFactoryBase<
 // RTU EMULATOR FACTORY
 // ===================================================
 
+/** Factory for creating RTU Emulators for testing and development. */
 export class RtuEmulatorFactory extends TransportFactoryBase<
   TransportOptionsMap[typeof TRANSPORT_TYPES.RTU_EMULATOR]
 > {
@@ -190,6 +224,7 @@ export class RtuEmulatorFactory extends TransportFactoryBase<
 // TCP EMULATOR FACTORY
 // ===================================================
 
+/** Factory for creating TCP Emulators for testing and development. */
 export class TcpEmulatorFactory extends TransportFactoryBase<
   TransportOptionsMap[typeof TRANSPORT_TYPES.TCP_EMULATOR]
 > {

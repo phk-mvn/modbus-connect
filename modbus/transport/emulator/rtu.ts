@@ -1,6 +1,13 @@
 // modbus/transport/emulator/rtu.ts
 
-import { ITransport, TRSMode, IRtuEmulatorTransportOptions } from '../../types/public.js';
+import {
+  ITransport,
+  TRSMode,
+  IRtuEmulatorTransportOptions,
+  EConnectionErrorType,
+  TDeviceStateHandler,
+  TPortStateHandler,
+} from '../../types/public.js';
 import ModbusSlaveCore from './slave-core.js';
 import { Logger, pino } from 'pino';
 import { crc16Modbus } from '../../utils/crc.js';
@@ -22,6 +29,9 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   private responseLatencyMs: number;
   private _sniffer: TrafficSniffer | null = null;
   private _responseAdu: Uint8Array | null = null;
+
+  private _deviceStateHandler: TDeviceStateHandler | null = null;
+  private _portStateHandler: TPortStateHandler | null = null;
 
   /**
    * Creates a new Node.js RTU Emulator Transport.
@@ -77,6 +87,8 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   async connect(): Promise<void> {
     this.isOpen = true;
     this.logger.info('RTU Emulator connected');
+    this._portStateHandler?.(true, [this.core.slaveId]);
+    this._deviceStateHandler?.(this.core.slaveId, true);
   }
 
   /**
@@ -87,6 +99,14 @@ export default class NodeRtuEmulatorTransport implements ITransport {
     this.isOpen = false;
     this._responseAdu = null;
     this.logger.info('RTU Emulator disconnected');
+    this._deviceStateHandler?.(this.core.slaveId, false, {
+      type: EConnectionErrorType.ManualDisconnect,
+      message: 'RTU Emulator disconnected',
+    });
+    this._portStateHandler?.(false, [this.core.slaveId], {
+      type: EConnectionErrorType.ManualDisconnect,
+      message: 'RTU Emulator disconnected',
+    });
   }
 
   /**
@@ -174,36 +194,57 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   }
 
   /**
-   * Placeholder for device state handler (not used in emulator).
-   * Implemented to satisfy the ITransport interface.
+   * Sets the handler for device state changes (connected/disconnected).
+   * @param handler - Callback function to be called when device state changes
    */
-  setDeviceStateHandler() {}
+  setDeviceStateHandler(handler: TDeviceStateHandler): void {
+    this._deviceStateHandler = handler;
+  }
 
   /**
-   * Placeholder for port state handler (not used in emulator).
-   * Implemented to satisfy the ITransport interface.
+   * Sets the handler for port state changes (open/closed).
+   * @param handler - Callback function to be called when port state changes
    */
-  setPortStateHandler() {}
+  setPortStateHandler(handler: TPortStateHandler): void {
+    this._portStateHandler = handler;
+  }
 
   /**
-   * Placeholder method — does nothing in emulator.
+   * Disables device tracking by removing the device state handler.
    */
-  async disableDeviceTracking() {}
+  async disableDeviceTracking(): Promise<void> {
+    this._deviceStateHandler = null;
+  }
 
   /**
-   * Placeholder method — does nothing in emulator.
+   * Enables device tracking and optionally sets a new device state handler.
+   * @param handler - Optional new device state handler
    */
-  async enableDeviceTracking() {}
+  async enableDeviceTracking(handler?: TDeviceStateHandler): Promise<void> {
+    if (handler) this._deviceStateHandler = handler;
+  }
 
   /**
-   * Placeholder method — does nothing in emulator.
+   * Notifies that a device has connected.
+   * @param slaveId - ID of the connected slave
    */
-  notifyDeviceConnected() {}
+  notifyDeviceConnected(slaveId: number): void {
+    this._deviceStateHandler?.(slaveId, true);
+  }
 
   /**
-   * Placeholder method — does nothing in emulator.
+   * Notifies that a device has disconnected with error details.
+   * @param slaveId - ID of the disconnected slave
+   * @param errorType - Type of disconnection error
+   * @param errorMessage - Description of the disconnection reason
    */
-  notifyDeviceDisconnected() {}
+  notifyDeviceDisconnected(
+    slaveId: number,
+    errorType: EConnectionErrorType,
+    errorMessage: string
+  ): void {
+    this._deviceStateHandler?.(slaveId, false, { type: errorType, message: errorMessage });
+  }
 
   /**
    * Returns the underlying ModbusSlaveCore instance.

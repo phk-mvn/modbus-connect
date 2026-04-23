@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "4.3.2",
+  "version": "4.3.3",
   "description": "Modbus RTU/TCP over Web Serial",
   "main": "./dist/core/client.js",
   "module": "./dist/core/client.js",
@@ -90,16 +90,16 @@
   "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^25.5.2",
+    "@types/node": "^25.6.0",
     "@types/serialport": "^10.2.0",
     "@typescript-eslint/eslint-plugin": "^8.58.1",
     "@typescript-eslint/parser": "^8.58.1",
     "esbuild": "^0.28.0",
-    "eslint": "^10.2.0",
+    "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
-    "globals": "^17.4.0",
-    "prettier": "^3.8.1",
+    "globals": "^17.5.0",
+    "prettier": "^3.8.3",
     "rimraf": "^6.1.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.58.1"

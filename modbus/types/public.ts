@@ -292,8 +292,8 @@ export interface ITransportController {
   disconnectTransport(id: string): Promise<void>;
 
   getTransportForSlave(slaveId: number, requiredRSMode: TRSMode): ITransport | null;
-  assignSlaveIdToTransport(transportId: string, slaveId: number): void;
-  removeSlaveIdFromTransport(transportId: string, slaveId: number): void;
+  assignSlaveIdToTransport(transportId: string, slaveId: number): Promise<void>;
+  removeSlaveIdFromTransport(transportId: string, slaveId: number): Promise<void>;
 
   getStatus(id?: string): ITransportStatus | Record<string, ITransportStatus>;
   getActiveTransportCount(): number;

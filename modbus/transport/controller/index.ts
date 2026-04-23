@@ -35,6 +35,13 @@ import type {
   EConnectionErrorType,
 } from '../../types/public.js';
 
+/**
+ * The main controller for managing Modbus transports.
+ * It serves as an orchestrator for transport creation, device state tracking,
+ * routing requests to the correct bus, and managing polling tasks.
+ *
+ * This class implements a thread-safe approach using Mutex for CRUD operations.
+ */
 class TransportController implements ITransportController {
   private readonly _mutex = new Mutex();
   public logger: Logger;
@@ -46,10 +53,19 @@ class TransportController implements ITransportController {
   private readonly _scanService: ScanService;
 
   private _sniffer: TrafficSniffer | null = null;
+
+  /**
+   * Returns the traffic sniffer if enabled, allowing inspection of raw binary traffic.
+   */
   public get sniffer(): TrafficSniffer | null {
     return this._sniffer;
   }
 
+  /**
+   * Initializes a new TransportController.
+   *
+   * @param {ITransportControllerOptions} options - Configuration for the controller (e.g., enable sniffer).
+   */
   constructor(options: ITransportControllerOptions = {}) {
     this.logger = this._createLogger();
 
@@ -68,14 +84,24 @@ class TransportController implements ITransportController {
 
   // ==================== Logger ====================
 
+  /**
+   * Silences the internal logger.
+   */
   public disableLogger(): void {
     this.logger.level = 'silent';
   }
 
+  /**
+   * Enables the internal logger with 'info' level.
+   */
   public enableLogger(): void {
     this.logger.level = 'info';
   }
 
+  /**
+   * Creates a pino logger instance with pretty printing for non-production environments.
+   * @private
+   */
   private _createLogger(): Logger {
     return pino({
       level: 'info',
@@ -97,23 +123,38 @@ class TransportController implements ITransportController {
 
   // ==================== Scan ====================
 
+  /** Pauses the currently active scan operation. */
   public pauseScan(): void {
     this._scanService.pause();
   }
 
+  /** Resumes a previously paused scan operation. */
   public resumeScan(): void {
     this._scanService.resume();
   }
 
+  /** Aborts the currently active scan operation. */
   public stopScan(): void {
     this._scanService.stop();
   }
 
+  /**
+   * Performs a scan on a Serial/RTU port to discover Modbus devices.
+   *
+   * @param {IScanOptions} options - Scan parameters (baud rates, slave IDs, etc.).
+   * @returns {Promise<IScanReport>} Result of the discovery process.
+   */
   public async scanRtuPort(options: IScanOptions): Promise<IScanReport> {
     this.logger.info('Starting RTU scan');
     return this._scanService.scanRtu(options, options.controller as ScanController | undefined);
   }
 
+  /**
+   * Performs a scan on a Network/TCP port to discover Modbus units.
+   *
+   * @param {IScanOptions} options - Scan parameters (hosts, ports, unit IDs).
+   * @returns {Promise<IScanReport>} Result of the discovery process.
+   */
   public async scanTcpPort(options: IScanOptions): Promise<IScanReport> {
     this.logger.info('Starting TCP scan');
     return this._scanService.scanTcp(options, options.controller as ScanController | undefined);
@@ -121,6 +162,17 @@ class TransportController implements ITransportController {
 
   // ==================== Transport CRUD ====================
 
+  /**
+   * Adds and initializes a new transport.
+   * Validates RSMode constraints (e.g., RS232 only allows one device).
+   *
+   * @param {string} id - Unique identifier for the transport.
+   * @param {TTransportType} type - Transport type (node-rtu, node-tcp, etc.).
+   * @param {object} options - Connection parameters.
+   * @param {object} [reconnectOptions] - Settings for automatic reconnection.
+   * @param {IPollingManagerConfig} [pollingConfig] - Custom settings for the internal polling manager.
+   * @throws {Error} If transport ID exists or RSMode constraints are violated.
+   */
   public async addTransport(
     id: string,
     type: TTransportType,
@@ -186,6 +238,11 @@ class TransportController implements ITransportController {
     });
   }
 
+  /**
+   * Removes a transport, stops its polling, and cleans up its resources.
+   *
+   * @param {string} id - The ID of the transport to remove.
+   */
   public async removeTransport(id: string): Promise<void> {
     await this._mutex.runExclusive(async () => {
       const info = await this._registry.remove(id);
@@ -200,24 +257,36 @@ class TransportController implements ITransportController {
     });
   }
 
+  /**
+   * Retrieves the raw ITransport instance for a given ID.
+   */
   public getTransport(id: string): ITransport | null {
     return this._registry.get(id)?.transport ?? null;
   }
 
+  /**
+   * Returns a list of all registered transport information.
+   */
   public listTransports(): ITransportInfo[] {
     return this._registry.getAll();
   }
 
   // ==================== Connection Management ====================
 
+  /** Attempts to connect all registered transports. */
   public async connectAll(): Promise<void> {
     await Promise.all(this._registry.getAll().map(info => this.connectTransport(info.id)));
   }
 
+  /** Disconnects all registered transports. */
   public async disconnectAll(): Promise<void> {
     await Promise.all(this._registry.getAll().map(info => this.disconnectTransport(info.id)));
   }
 
+  /**
+   * Connects a specific transport.
+   * @param {string} id - Transport identifier.
+   */
   public async connectTransport(id: string): Promise<void> {
     const info = this._registry.get(id);
     if (!info || info.status === 'connected' || info.status === 'connecting') return;
@@ -237,6 +306,9 @@ class TransportController implements ITransportController {
     }
   }
 
+  /**
+   * Disconnects a specific transport and pauses its polling tasks.
+   */
   public async disconnectTransport(id: string): Promise<void> {
     const info = this._registry.get(id);
     if (!info) return;
@@ -249,10 +321,19 @@ class TransportController implements ITransportController {
 
   // ==================== Routing ====================
 
+  /**
+   * Finds an appropriate transport instance for a specific Slave ID and RS mode.
+   * @param {number} slaveId - The Modbus slave ID.
+   * @param {TRSMode} requiredRSMode - The required communication mode.
+   */
   public getTransportForSlave(slaveId: number, requiredRSMode: TRSMode): ITransport | null {
     return this._router.select(slaveId, requiredRSMode);
   }
 
+  /**
+   * Assigns a Slave ID to a transport.
+   * Checks for RS232 limitations (max 1 device).
+   */
   public async assignSlaveIdToTransport(transportId: string, slaveId: number): Promise<void> {
     await this._mutex.runExclusive(() => {
       const info = this._registry.get(transportId);
@@ -269,13 +350,17 @@ class TransportController implements ITransportController {
     });
   }
 
+  /**
+   * Unassigns a Slave ID from a transport.
+   * If the transport becomes empty, it is automatically removed.
+   */
   public async removeSlaveIdFromTransport(transportId: string, slaveId: number): Promise<void> {
     await this._mutex.runExclusive(async () => {
       const info = this._registry.get(transportId);
       if (!info) return;
 
       this._registry.unassignSlave(transportId, slaveId);
-      this._stateManager.removeDeviceState(slaveId);
+      this._stateManager.removeDeviceState(slaveId, transportId);
 
       const transportAny = info.transport as any;
       if (typeof transportAny.removeConnectedDevice === 'function') {
@@ -293,6 +378,10 @@ class TransportController implements ITransportController {
 
   // ==================== Hot Reload ====================
 
+  /**
+   * Re-initializes a transport with new options without removing its ID from the registry.
+   * Useful for changing baud rate or IP address on the fly.
+   */
   public async reloadTransport(
     id: string,
     options: INodeSerialTransportOptions | (IWebSerialTransportOptions & { port: IWebSerialPort })
@@ -344,6 +433,16 @@ class TransportController implements ITransportController {
 
   // ==================== Write to Port ====================
 
+  /**
+   * Low-level method to write raw data to a transport and optionally read a response.
+   * This call is wrapped in the transport's polling manager to ensure synchronized access to the port.
+   *
+   * @param {string} transportId - Target transport.
+   * @param {Uint8Array} data - Raw binary data to write.
+   * @param {number} [readLength=0] - Number of bytes to read after writing.
+   * @param {number} [timeout=3000] - Read timeout.
+   * @returns {Promise<Uint8Array>} The read response or an empty array.
+   */
   public async writeToPort(
     transportId: string,
     data: Uint8Array,
@@ -371,14 +470,17 @@ class TransportController implements ITransportController {
 
   // ==================== State Handlers ====================
 
+  /** Sets a global handler for device state changes. */
   public setDeviceStateHandler(handler: TDeviceStateHandler): void {
     this._stateManager.setDeviceHandler(handler);
   }
 
+  /** Sets a global handler for port state changes. */
   public setPortStateHandler(handler: TPortStateHandler): void {
     this._stateManager.setPortHandler(handler);
   }
 
+  /** Sets a device state handler for a specific transport only. */
   public async setDeviceStateHandlerForTransport(
     transportId: string,
     handler: TDeviceStateHandler
@@ -386,6 +488,7 @@ class TransportController implements ITransportController {
     await this._stateManager.setDeviceHandlerForTransport(transportId, handler);
   }
 
+  /** Sets a port state handler for a specific transport only. */
   public async setPortStateHandlerForTransport(
     transportId: string,
     handler: TPortStateHandler
@@ -395,14 +498,17 @@ class TransportController implements ITransportController {
 
   // ==================== Polling Proxy ====================
 
+  /** Adds a recurring polling task to a transport. */
   public addPollingTask(transportId: string, options: IPollingTaskOptions): void {
     this._pollingProxy.addTask(transportId, options);
   }
 
+  /** Removes a specific polling task. */
   public removePollingTask(transportId: string, taskId: string): void {
     this._pollingProxy.removeTask(transportId, taskId);
   }
 
+  /** Updates options for an existing polling task. */
   public updatePollingTask(
     transportId: string,
     taskId: string,
@@ -411,6 +517,7 @@ class TransportController implements ITransportController {
     this._pollingProxy.updateTask(transportId, taskId, options as IPollingTaskOptions);
   }
 
+  /** Performs an action (start/stop/pause/resume) on a polling task. */
   public controlTask(
     transportId: string,
     taskId: string,
@@ -419,6 +526,7 @@ class TransportController implements ITransportController {
     this._pollingProxy.controlTask(transportId, taskId, action);
   }
 
+  /** Performs a bulk action on all polling tasks of a transport. */
   public controlPolling(
     transportId: string,
     action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
@@ -426,16 +534,22 @@ class TransportController implements ITransportController {
     this._pollingProxy.controlAll(transportId, action);
   }
 
+  /** Returns queue info and current task states for a transport. */
   public getPollingQueueInfo(transportId: string): IPollingQueueInfo {
     return this._pollingProxy.getQueueInfo(transportId);
   }
 
+  /** Executes a one-off function with immediate priority on the transport's queue. */
   public async executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T> {
     return this._pollingProxy.executeImmediate(transportId, fn);
   }
 
   // ==================== Status ====================
 
+  /**
+   * Retrieves status for one or all transports.
+   * @param {string} [id] - Optional ID to get status for a single transport.
+   */
   public getStatus(id?: string): ITransportStatus | Record<string, ITransportStatus> {
     if (id) {
       const info = this._registry.get(id);
@@ -449,10 +563,15 @@ class TransportController implements ITransportController {
     return result;
   }
 
+  /** Returns the count of transports currently in 'connected' state. */
   public getActiveTransportCount(): number {
     return this._registry.getAll().filter(i => i.status === 'connected').length;
   }
 
+  /**
+   * Maps internal transport info to a public status object.
+   * @private
+   */
   private _buildStatus(info: ITransportInfo): ITransportStatus {
     return {
       id: info.id,
@@ -466,6 +585,9 @@ class TransportController implements ITransportController {
 
   // ==================== Lifecycle ====================
 
+  /**
+   * Shuts down the controller, disconnecting all transports and clearing all polling tasks.
+   */
   public async destroy(): Promise<void> {
     await this._mutex.runExclusive(async () => {
       for (const info of this._registry.getAll()) {
@@ -486,6 +608,7 @@ class TransportController implements ITransportController {
 
   // ==================== Internal Methods ====================
 
+  /** Internal disconnect logic used by reload and destroy. @private */
   private async _disconnectTransportInternal(id: string): Promise<void> {
     const info = this._registry.get(id);
     if (!info) return;
@@ -499,6 +622,7 @@ class TransportController implements ITransportController {
     }
   }
 
+  /** Internal removal logic used by removeSlaveIdFromTransport. @private */
   private async _removeTransportInternal(id: string): Promise<void> {
     const info = this._registry.get(id);
     if (!info) return;
@@ -525,6 +649,7 @@ class TransportController implements ITransportController {
     this.logger.info(`Transport "${id}" fully removed`);
   }
 
+  /** Internal handler for device state changes received from ITransport. @private */
   private async _onDeviceStateChange(
     transportId: string,
     slaveId: number,
@@ -548,6 +673,7 @@ class TransportController implements ITransportController {
     }
   }
 
+  /** Internal handler for port/transport status changes received from ITransport. @private */
   private async _onPortStateChange(
     transportId: string,
     connected: boolean,
@@ -558,7 +684,7 @@ class TransportController implements ITransportController {
     if (!info) return;
 
     if (connected) {
-      await this._stateManager.notifyPortConnected(transportId, slaveIds);
+      await this._stateManager.notifyPortConnected(transportId, info.slaveIds);
       this._pollingProxy.resumeAllForTransport(transportId);
       info.status = 'connected';
     } else {
@@ -566,7 +692,7 @@ class TransportController implements ITransportController {
       const errorMessage = error?.message ?? 'Port disconnected';
       await this._stateManager.notifyPortDisconnected(
         transportId,
-        slaveIds,
+        info.slaveIds,
         errorType as EConnectionErrorType,
         errorMessage
       );

@@ -9,6 +9,9 @@ import type {
   EConnectionErrorType,
 } from '../../../types/public.js';
 
+/**
+ * Interface for the State Manager.
+ */
 export interface IStateManager {
   setDeviceHandler(handler: TDeviceStateHandler): void;
   setDeviceHandlerForTransport(transportId: string, handler: TDeviceStateHandler): Promise<void>;
@@ -32,9 +35,13 @@ export interface IStateManager {
 
   createTrackersForTransport(transportId: string): void;
   clearTransport(transportId: string): Promise<void>;
-  removeDeviceState(slaveId: number): void;
+  removeDeviceState(slaveId: number, transportId?: string): void;
 }
 
+/**
+ * Manages connection states and event propagation for devices (Slave IDs) and ports (Transports).
+ * It aggregates local transport trackers into global state handlers.
+ */
 export class StateManager implements IStateManager {
   private readonly _mutex = new Mutex();
 
@@ -47,15 +54,33 @@ export class StateManager implements IStateManager {
   private readonly _deviceHandlers = new Map<string, TDeviceStateHandler>();
   private readonly _portHandlers = new Map<string, TPortStateHandler>();
 
+  /**
+   * Initializes internal trackers for a newly created transport.
+   * @param {string} transportId - The transport identifier.
+   */
   public createTrackersForTransport(transportId: string): void {
+    const oldDeviceTracker = this._deviceTrackers.get(transportId);
+    const oldPortTracker = this._portTrackers.get(transportId);
+    if (oldDeviceTracker) oldDeviceTracker.clear().catch(() => {});
+    if (oldPortTracker) oldPortTracker.clear().catch(() => {});
+
     this._deviceTrackers.set(transportId, new DeviceConnectionTracker());
     this._portTrackers.set(transportId, new PortConnectionTracker());
   }
 
+  /**
+   * Sets a global handler that will be called whenever ANY device state changes.
+   * @param {TDeviceStateHandler} handler - Callback for device state events.
+   */
   public setDeviceHandler(handler: TDeviceStateHandler): void {
     this._globalDeviceHandler = handler;
   }
 
+  /**
+   * Sets a specific handler for a single transport's device events.
+   * @param {string} transportId - Target transport ID.
+   * @param {TDeviceStateHandler} handler - Callback for events from this transport.
+   */
   public async setDeviceHandlerForTransport(
     transportId: string,
     handler: TDeviceStateHandler
@@ -68,6 +93,11 @@ export class StateManager implements IStateManager {
     this._deviceHandlers.set(transportId, handler);
   }
 
+  /**
+   * Triggers a 'connected' state event for a specific Slave ID on a transport.
+   * @param {string} transportId - The transport where the device was found.
+   * @param {number} slaveId - The Slave ID.
+   */
   public async notifyDeviceConnected(transportId: string, slaveId: number): Promise<void> {
     const tracker = this._deviceTrackers.get(transportId);
     if (tracker) {
@@ -77,6 +107,13 @@ export class StateManager implements IStateManager {
     this._emitDeviceState(slaveId, true, undefined);
   }
 
+  /**
+   * Triggers a 'disconnected' state event for a specific Slave ID.
+   * @param {string} transportId - Originating transport.
+   * @param {number} slaveId - The Slave ID.
+   * @param {EConnectionErrorType} errorType - Reason for disconnection.
+   * @param {string} message - Descriptive error message.
+   */
   public async notifyDeviceDisconnected(
     transportId: string,
     slaveId: number,
@@ -91,10 +128,17 @@ export class StateManager implements IStateManager {
     this._emitDeviceState(slaveId, false, { type: errorType, message });
   }
 
+  /**
+   * Sets a global handler for port/transport connection status changes.
+   * @param {TPortStateHandler} handler - Callback for port state events.
+   */
   public setPortHandler(handler: TPortStateHandler): void {
     this._globalPortHandler = handler;
   }
 
+  /**
+   * Sets a port handler for a specific transport.
+   */
   public async setPortHandlerForTransport(
     transportId: string,
     handler: TPortStateHandler
@@ -107,15 +151,21 @@ export class StateManager implements IStateManager {
     this._portHandlers.set(transportId, handler);
   }
 
+  /**
+   * Notifies that a port (transport) is successfully connected.
+   */
   public async notifyPortConnected(transportId: string, slaveIds: number[]): Promise<void> {
     const tracker = this._portTrackers.get(transportId);
     if (tracker) {
-      await tracker.notifyConnected();
+      await tracker.notifyConnected(slaveIds);
     }
 
     this._emitPortState(true, slaveIds, undefined);
   }
 
+  /**
+   * Notifies that a port (transport) has been disconnected or failed.
+   */
   public async notifyPortDisconnected(
     transportId: string,
     slaveIds: number[],
@@ -130,12 +180,27 @@ export class StateManager implements IStateManager {
     this._emitPortState(false, slaveIds, { type: errorType, message });
   }
 
-  public removeDeviceState(slaveId: number): void {
-    for (const tracker of this._deviceTrackers.values()) {
-      tracker.removeState(slaveId);
+  /**
+   * Cleans up stored state for a specific slave.
+   * @param {number} slaveId - The slave ID to remove.
+   * @param {string} [transportId] - Optional transport ID to limit the scope.
+   */
+  public removeDeviceState(slaveId: number, transportId?: string): void {
+    if (transportId) {
+      const tracker = this._deviceTrackers.get(transportId);
+      if (tracker) tracker.removeState(slaveId);
+    } else {
+      for (const tracker of this._deviceTrackers.values()) {
+        tracker.removeState(slaveId);
+      }
     }
   }
 
+  /**
+   * Completely removes a transport and all its associated trackers and handlers.
+   * This is a thread-safe operation.
+   * @param {string} transportId - The transport ID to clear.
+   */
   public async clearTransport(transportId: string): Promise<void> {
     await this._mutex.runExclusive(async () => {
       const deviceTracker = this._deviceTrackers.get(transportId);
@@ -155,6 +220,10 @@ export class StateManager implements IStateManager {
     });
   }
 
+  /**
+   * Internal helper to propagate events to the global device handler.
+   * @private
+   */
   private _emitDeviceState(
     slaveId: number,
     connected: boolean,
@@ -169,6 +238,10 @@ export class StateManager implements IStateManager {
     }
   }
 
+  /**
+   * Internal helper to propagate events to the global port handler.
+   * @private
+   */
   private _emitPortState(
     connected: boolean,
     slaveIds: number[],

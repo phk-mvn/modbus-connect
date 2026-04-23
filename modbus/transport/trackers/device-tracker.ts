@@ -148,7 +148,12 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
     const timeout = setTimeout(() => {
       this._debounceTimeouts.delete(slaveId);
-      this._doNotifyDisconnected(slaveId, errorType, errorMessage);
+      this._doNotifyDisconnected(slaveId, errorType, errorMessage).catch(e => {
+        console.error(
+          `[DeviceConnectionTracker] Unhandled error in debounced disconnect for slave ${slaveId}:`,
+          e
+        );
+      });
     }, this._debounceMs);
 
     this._debounceTimeouts.set(slaveId, timeout);
