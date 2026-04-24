@@ -34,6 +34,7 @@ import type {
   ITransportControllerOptions,
   EConnectionErrorType,
 } from '../../types/public.js';
+import type { TPollingAction, TPollingBulkAction } from '../../types/public.js';
 
 /**
  * The main controller for managing Modbus transports.
@@ -245,13 +246,25 @@ class TransportController implements ITransportController {
    */
   public async removeTransport(id: string): Promise<void> {
     await this._mutex.runExclusive(async () => {
-      const info = await this._registry.remove(id);
+      const info = this._registry.get(id);
       if (!info) return;
 
-      this._pollingProxy.clearAllForTransport(id);
-      await info.transport.disconnect();
+      info.transport.setDeviceStateHandler(() => {});
+      info.transport.setPortStateHandler(() => {});
+
+      info.pollingManager.clearAll();
+      await this._disconnectTransportInternal(id);
       this._registry.clearSlaveAssignments(id);
+
+      const transportAny = info.transport as any;
+      if (typeof transportAny.removeConnectedDevice === 'function') {
+        for (const sid of info.slaveIds) {
+          transportAny.removeConnectedDevice(sid);
+        }
+      }
+
       await this._stateManager.clearTransport(id);
+      await this._registry.remove(id);
 
       this.logger.info(`Transport "${id}" removed`);
     });
@@ -307,13 +320,13 @@ class TransportController implements ITransportController {
   }
 
   /**
-   * Disconnects a specific transport and pauses its polling tasks.
+   * Disconnects a specific transport and stops its polling tasks.
    */
   public async disconnectTransport(id: string): Promise<void> {
     const info = this._registry.get(id);
     if (!info) return;
 
-    this._pollingProxy.pauseAllForTransport(id);
+    this._pollingProxy.stopAllForTransport(id);
     await info.transport.disconnect();
     info.status = 'disconnected';
     this.logger.info(`Transport "${id}" disconnected`);
@@ -509,28 +522,21 @@ class TransportController implements ITransportController {
   }
 
   /** Updates options for an existing polling task. */
-  public updatePollingTask(
+  public async updatePollingTask(
     transportId: string,
     taskId: string,
     options: Partial<IPollingTaskOptions>
-  ): void {
-    this._pollingProxy.updateTask(transportId, taskId, options as IPollingTaskOptions);
+  ): Promise<void> {
+    await this._pollingProxy.updateTask(transportId, taskId, options as IPollingTaskOptions);
   }
 
-  /** Performs an action (start/stop/pause/resume) on a polling task. */
-  public controlTask(
-    transportId: string,
-    taskId: string,
-    action: 'start' | 'stop' | 'pause' | 'resume'
-  ): void {
+  /** Performs an action (start/stop/pause/resume) on a polling task. Accepts string or EPollingAction. */
+  public controlTask(transportId: string, taskId: string, action: TPollingAction): void {
     this._pollingProxy.controlTask(transportId, taskId, action);
   }
 
-  /** Performs a bulk action on all polling tasks of a transport. */
-  public controlPolling(
-    transportId: string,
-    action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
-  ): void {
+  /** Performs a bulk action on all polling tasks of a transport. Accepts string or EPollingBulkAction. */
+  public controlPolling(transportId: string, action: TPollingBulkAction): void {
     this._pollingProxy.controlAll(transportId, action);
   }
 
@@ -601,6 +607,8 @@ class TransportController implements ITransportController {
       for (const info of this._registry.getAll()) {
         await this._stateManager.clearTransport(info.id);
       }
+
+      this._registry.clearAll();
 
       this.logger.info('TransportController destroyed');
     });
@@ -690,14 +698,14 @@ class TransportController implements ITransportController {
     } else {
       const errorType = error?.type ?? ({} as EConnectionErrorType);
       const errorMessage = error?.message ?? 'Port disconnected';
+      this._pollingProxy.pauseAllForTransport(transportId);
+      info.status = 'disconnected';
       await this._stateManager.notifyPortDisconnected(
         transportId,
         info.slaveIds,
         errorType as EConnectionErrorType,
         errorMessage
       );
-      this._pollingProxy.pauseAllForTransport(transportId);
-      info.status = 'disconnected';
       if (error) {
         info.lastError = new Error(error.message);
       }

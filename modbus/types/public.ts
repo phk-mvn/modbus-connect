@@ -4,6 +4,7 @@
 
 import { Logger } from 'pino';
 import type PollingManager from '../polling/manager.js';
+import type RegisterData from '../core/register-data.js';
 
 // ===================================================
 // MODBUS CLIENT
@@ -17,8 +18,8 @@ export interface IModbusClient {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   setSlaveId(newSlaveId: number): Promise<void>;
-  readHoldingRegisters(startAddress: number, quantity: number): Promise<number[]>;
-  readInputRegisters(startAddress: number, quantity: number): Promise<number[]>;
+  readHoldingRegisters(startAddress: number, quantity: number): Promise<RegisterData>;
+  readInputRegisters(startAddress: number, quantity: number): Promise<RegisterData>;
   writeSingleRegister(
     address: number,
     value: number,
@@ -160,7 +161,7 @@ export interface ITransportStatus {
 
 export interface IPollingManager {
   addTask(options: IPollingTaskOptions): void;
-  updateTask(id: string, newOptions: IPollingTaskOptions): void;
+  updateTask(id: string, newOptions: IPollingTaskOptions): Promise<void>;
   removeTask(id: string): void;
   restartTask(id: string): void;
   startTask(id: string): void;
@@ -188,6 +189,30 @@ export interface IPollingManager {
   disableAllLoggers(): void;
 }
 
+// IMP-7: Typed enum for polling actions — can also be used as plain strings
+// e.g. EPollingAction.Start or just 'start' — both work without importing the enum
+export enum EPollingAction {
+  Start = 'start',
+  Stop = 'stop',
+  Pause = 'pause',
+  Resume = 'resume',
+}
+
+export enum EPollingBulkAction {
+  StartAll = 'startAll',
+  StopAll = 'stopAll',
+  PauseAll = 'pauseAll',
+  ResumeAll = 'resumeAll',
+}
+
+export type TPollingAction = EPollingAction | 'start' | 'stop' | 'pause' | 'resume';
+export type TPollingBulkAction =
+  | EPollingBulkAction
+  | 'startAll'
+  | 'stopAll'
+  | 'pauseAll'
+  | 'resumeAll';
+
 export interface IPollingManagerConfig {
   defaultMaxRetries?: number;
   defaultBackoffDelay?: number;
@@ -195,14 +220,15 @@ export interface IPollingManagerConfig {
   interTaskDelay?: number;
   logLevel?: string;
   logger?: Logger;
-  [key: string]: unknown;
 }
 
 export interface IPollingTaskOptions {
   id: string;
   priority?: number;
   interval: number;
-  fn: (() => unknown | Promise<unknown>) | Array<() => unknown | Promise<unknown>>;
+  fn:
+    | ((signal?: AbortSignal) => unknown | Promise<unknown>)
+    | Array<(signal?: AbortSignal) => unknown | Promise<unknown>>;
   onData?: (data: unknown[]) => void;
   onError?: (error: Error, fnIndex: number, retryCount: number) => void;
   onStart?: () => void;
@@ -312,16 +338,9 @@ export interface ITransportController {
     transportId: string,
     taskId: string,
     newOptions: Partial<IPollingTaskOptions>
-  ): void;
-  controlTask(
-    transportId: string,
-    taskId: string,
-    action: 'start' | 'stop' | 'pause' | 'resume'
-  ): void;
-  controlPolling(
-    transportId: string,
-    action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
-  ): void;
+  ): Promise<void>;
+  controlTask(transportId: string, taskId: string, action: TPollingAction): void;
+  controlPolling(transportId: string, action: TPollingBulkAction): void;
   getPollingQueueInfo(transportId: string): IPollingQueueInfo;
 
   executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T>;

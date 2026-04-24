@@ -323,9 +323,10 @@ export default class NodeSerialTransport implements ITransport {
   private _onClose(): void {
     this.logger.info(`Serial port ${this.path} closed`);
     this.isOpen = false;
-    this._notifyPortDisconnected(EConnectionErrorType.PortClosed, 'Port was closed').catch(
-      () => {}
+    this._notifyPortDisconnected(EConnectionErrorType.PortClosed, 'Port was closed').catch(err =>
+      this.logger.error({ err }, 'Error in port disconnect notification')
     );
+    this._connectedSlaveIds.clear();
     this._readBufferCount = 0;
     this._readBufferHead = 0;
     this._readBufferTail = 0;
@@ -544,7 +545,9 @@ export default class NodeSerialTransport implements ITransport {
     this._shouldReconnect = false;
     if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);
     if (this._rejectConnection) this._rejectConnection(new NodeSerialTransportError('Destroyed'));
-    this._releaseAllResources().catch(() => {});
+    this._releaseAllResources().catch(err =>
+      this.logger.error({ err }, 'Error releasing resources during destroy')
+    );
     if (this._wasEverConnected) {
       this._notifyPortDisconnected(EConnectionErrorType.Destroyed, 'Transport destroyed').catch(
         () => {}
@@ -569,7 +572,9 @@ export default class NodeSerialTransport implements ITransport {
     this.isOpen = false;
 
     if (this._wasEverConnected) {
-      this._notifyPortDisconnected(EConnectionErrorType.ConnectionLost, reason).catch(() => {});
+      this._notifyPortDisconnected(EConnectionErrorType.ConnectionLost, reason).catch(err =>
+        this.logger.error({ err }, 'Error in port disconnect notification')
+      );
     }
   }
 

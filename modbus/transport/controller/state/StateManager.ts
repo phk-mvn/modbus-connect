@@ -61,8 +61,14 @@ export class StateManager implements IStateManager {
   public createTrackersForTransport(transportId: string): void {
     const oldDeviceTracker = this._deviceTrackers.get(transportId);
     const oldPortTracker = this._portTrackers.get(transportId);
-    if (oldDeviceTracker) oldDeviceTracker.clear().catch(() => {});
-    if (oldPortTracker) oldPortTracker.clear().catch(() => {});
+    if (oldDeviceTracker)
+      oldDeviceTracker
+        .clear()
+        .catch(e => console.error('[StateManager] Error clearing old device tracker:', e));
+    if (oldPortTracker)
+      oldPortTracker
+        .clear()
+        .catch(e => console.error('[StateManager] Error clearing old port tracker:', e));
 
     this._deviceTrackers.set(transportId, new DeviceConnectionTracker());
     this._portTrackers.set(transportId, new PortConnectionTracker());

@@ -6,6 +6,7 @@ import * as framer from '../protocol/framing.js';
 import * as functions from '../protocol/functions.js';
 import { ModbusProtocol } from './protocol.js';
 import { ModbusExceptionCode, ModbusFunctionCode } from '../constants/modbus.js';
+import RegisterData from './register-data.js';
 import {
   EConnectionErrorType,
   ICustomFunctionHandler,
@@ -426,7 +427,7 @@ class ModbusClient implements IModbusClient {
    * @returns Array of register values (0-65535)
    * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
-  public async readHoldingRegisters(startAddress: number, quantity: number): Promise<number[]> {
+  public async readHoldingRegisters(startAddress: number, quantity: number): Promise<RegisterData> {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
       throw new ModbusInvalidAddressError(startAddress);
     }
@@ -436,7 +437,7 @@ class ModbusClient implements IModbusClient {
 
     const requestPdu = functions.buildReadHoldingRegistersRequest(startAddress, quantity);
     const responsePdu = await this._sendRequest(requestPdu);
-    return functions.parseReadHoldingRegistersResponse(responsePdu);
+    return RegisterData.from(functions.parseReadHoldingRegistersResponse(responsePdu));
   }
 
   /**
@@ -446,7 +447,7 @@ class ModbusClient implements IModbusClient {
    * @returns Array of register values (0-65535)
    * @throws ModbusInvalidAddressError, ModbusInvalidQuantityError
    */
-  public async readInputRegisters(startAddress: number, quantity: number): Promise<number[]> {
+  public async readInputRegisters(startAddress: number, quantity: number): Promise<RegisterData> {
     if (!Number.isInteger(startAddress) || startAddress < 0 || startAddress > 65535) {
       throw new ModbusInvalidAddressError(startAddress);
     }
@@ -456,7 +457,7 @@ class ModbusClient implements IModbusClient {
 
     const requestPdu = functions.buildReadInputRegistersRequest(startAddress, quantity);
     const responsePdu = await this._sendRequest(requestPdu);
-    return functions.parseReadInputRegistersResponse(responsePdu);
+    return RegisterData.from(functions.parseReadInputRegistersResponse(responsePdu));
   }
 
   /**

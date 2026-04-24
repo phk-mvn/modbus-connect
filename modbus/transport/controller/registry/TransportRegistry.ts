@@ -152,6 +152,15 @@ export class TransportRegistry implements ITransportRegistry {
     }
   }
 
+  /**
+   * Removes all transports and clears all slave mappings.
+   * Used during controller shutdown to fully release resources.
+   */
+  public clearAll(): void {
+    this._transports.clear();
+    this._slaveMap.clear();
+  }
+
   private _addToSlaveMap(slaveId: number, transportId: string): void {
     const list = this._slaveMap.get(slaveId) ?? [];
     if (!list.includes(transportId)) {

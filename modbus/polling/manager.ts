@@ -8,8 +8,8 @@ import {
   IPollingTaskState,
   IPollingQueueInfo,
   IPollingSystemStats,
-  ITaskController,
   IPollingManager,
+  EPollingAction,
 } from '../types/public.js';
 import {
   ModbusFlushError,
@@ -19,403 +19,39 @@ import {
   PollingTaskNotFoundError,
   PollingTaskValidationError,
 } from '../core/errors.js';
+import { TaskController } from './task-controller.js';
 
-/**
- * TaskController manages the full lifecycle of a single polling task.
- * It is tightly coupled with a PollingManager instance and handles scheduling,
- * execution with retries, timeouts, backoff logic, and all lifecycle callbacks.
- */
-class TaskController implements ITaskController {
-  public id: string;
-  public priority: number;
-  public name: string | null;
-  public fn: Array<() => unknown | Promise<unknown>>;
-  public interval: number;
-  public onData?: (data: unknown[]) => void;
-  public onError?: (error: Error, fnIndex: number, retryCount: number) => void;
-  public onStart?: () => void;
-  public onStop?: () => void;
-  public onFinish?: (success: boolean, results: unknown[]) => void;
-  public onBeforeEach?: () => void;
-  public onRetry?: (error: Error, fnIndex: number, retryCount: number) => void;
-  public shouldRun?: () => boolean;
-  public onSuccess?: (result: unknown) => void;
-  public onFailure?: (error: Error) => void;
-  public maxRetries: number;
-  public backoffDelay: number;
-  public taskTimeout: number;
-
-  public stopped: boolean;
-  public paused: boolean;
-  public executionInProgress: boolean;
-
-  public logger: Logger;
-
-  private manager: PollingManager;
-  private timerId: NodeJS.Timeout | null = null;
-  private isEnqueued: boolean = false;
-
-  /**
-   * Creates a new TaskController instance.
-   * @param options - Configuration options for this polling task
-   * @param manager - Reference to the parent PollingManager (used for queue operations)
-   */
-  constructor(options: IPollingTaskOptions, manager: PollingManager) {
-    const {
-      id,
-      priority = 0,
-      interval,
-      fn,
-      onData,
-      onError,
-      onStart,
-      onStop,
-      onFinish,
-      onBeforeEach,
-      onRetry,
-      shouldRun,
-      onSuccess,
-      onFailure,
-      name = null,
-      maxRetries = 3,
-      backoffDelay = 1000,
-      taskTimeout = 5000,
-    } = options;
-
-    this.id = id;
-    this.priority = priority;
-    this.name = name;
-    this.fn = Array.isArray(fn) ? fn : [fn];
-    this.interval = interval;
-    this.onData = onData;
-    this.onError = onError;
-    this.onStart = onStart;
-    this.onStop = onStop;
-    this.onFinish = onFinish;
-    this.onBeforeEach = onBeforeEach;
-    this.onRetry = onRetry;
-    this.shouldRun = shouldRun;
-    this.onSuccess = onSuccess;
-    this.onFailure = onFailure;
-    this.maxRetries = maxRetries;
-    this.backoffDelay = backoffDelay;
-    this.taskTimeout = taskTimeout;
-
-    this.stopped = true;
-    this.paused = false;
-    this.executionInProgress = false;
-
-    this.manager = manager;
-
-    this.logger = manager.logger.child({ component: 'Task', taskId: id });
-    this.logger.debug(
-      {
-        id,
-        priority,
-        interval,
-        maxRetries,
-        backoffDelay,
-        taskTimeout,
-      },
-      'TaskController created'
-    );
-  }
-
-  /**
-   * Starts the task.
-   * If the task is already running, does nothing.
-   * Sets the stopped flag to false, calls the `onStart` callback,
-   * and schedules the first execution immediately.
-   */
-  public start(): void {
-    if (!this.stopped) {
-      this.logger.debug('Task already running');
-      return;
-    }
-    this.stopped = false;
-    this.logger.debug('Task started');
-    this.onStart?.();
-    this._scheduleNextRun(true);
-  }
-
-  /**
-   * Completely stops the task.
-   * - Sets the `stopped` flag to true
-   * - Clears any pending timeout
-   * - Removes the task from the execution queue
-   * - Calls the `onStop` callback
-   * After calling `stop()`, the task will no longer be executed automatically.
-   */
-  public stop(): void {
-    if (this.stopped) {
-      this.logger.debug('Task already stopped');
-      return;
-    }
-    this.stopped = true;
-    this.isEnqueued = false;
-
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
-    }
-
-    this.manager.removeFromQueue(this.id);
-    this.logger.info('Task stopped');
-    this.onStop?.();
-  }
-
-  /**
-   * Pauses the task temporarily.
-   * The task remains in the manager's task list but will not execute
-   * until `resume()` is called. Any currently running execution will finish,
-   * but the next scheduled run will be skipped while paused.
-   */
-  public pause(): void {
-    if (this.paused) {
-      this.logger.debug('Task already paused');
-      return;
-    }
-    this.paused = true;
-    this.logger.info('Task paused');
-  }
-
-  /**
-   * Resumes a previously paused task.
-   * If the task is not stopped and is currently paused, it clears the pause flag
-   * and schedules the next execution if no timer is active and execution is not in progress.
-   */
-  public resume(): void {
-    if (!this.stopped && this.paused) {
-      this.paused = false;
-      this.logger.info('Task resumed');
-
-      if (!this.timerId && !this.executionInProgress && !this.isEnqueued) {
-        this._scheduleNextRun(true);
-      }
-    } else {
-      this.logger.debug({ id: this.id }, 'Cannot resume task - not paused or stopped');
-    }
-  }
-
-  /**
-   * Schedules the next execution of this task.
-   * @param immediate - If true, the task will run immediately (delay = 0). Otherwise, it waits for the configured `interval`.
-   * Clears any existing timer before setting a new one.
-   * The task is enqueued through the manager when the timer fires.
-   */
-  private _scheduleNextRun(immediate: boolean = false): void {
-    if (this.stopped) return;
-
-    if (this.timerId) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
-    }
-
-    const delay = immediate ? 0 : this.interval;
-
-    this.timerId = setTimeout(() => {
-      this.timerId = null;
-      if (this.stopped) return;
-      this.isEnqueued = true;
-      this.manager.enqueueTask(this);
-    }, delay);
-  }
-
-  /**
-   * Executes the task's functions with full retry logic, timeouts, and callbacks.
-   * This is the core execution method called by the queue processor.
-   * It handles:
-   * - Checking stopped/paused state and `shouldRun` condition
-   * - Executing each function in sequence
-   * - Retrying failed functions with exponential backoff + jitter
-   * - Special handling for ModbusFlushError (faster retry)
-   * - Timeout protection for each function
-   * - Calling all lifecycle callbacks (`onBeforeEach`, `onData`, `onSuccess`, `onFailure`, `onFinish`, etc.)
-   * After execution completes (success or failure), it always schedules the next run.
-   */
-  public async execute(): Promise<void> {
-    this.isEnqueued = false;
-
-    if (this.stopped || this.paused) {
-      return;
-    }
-
-    if (this.shouldRun && !this.shouldRun()) {
-      this.logger.debug({ id: this.id }, 'Task should not run according to shouldRun function');
-      this._scheduleNextRun();
-      return;
-    }
-
-    this.onBeforeEach?.();
-    this.executionInProgress = true;
-
-    try {
-      let overallSuccess = false;
-      const results: unknown[] = [];
-
-      for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
-        if (this.stopped || this.paused) break;
-
-        let retryCount = 0;
-        let result: unknown = null;
-        let fnSuccess = false;
-
-        while (!this.stopped && !this.paused && retryCount <= this.maxRetries) {
-          try {
-            const fnToExecute = this.fn[fnIndex];
-            if (typeof fnToExecute !== 'function') break;
-
-            const executionResult = fnToExecute();
-            result = await this._withTimeout(Promise.resolve(executionResult), this.taskTimeout);
-
-            if (this.stopped || this.paused) return;
-
-            fnSuccess = true;
-            break;
-          } catch (err: unknown) {
-            if (this.stopped || this.paused) return;
-
-            const error = err instanceof Error ? err : new PollingManagerError(String(err));
-            this._logSpecificError(error, fnIndex, retryCount);
-            retryCount++;
-            this.onRetry?.(error, fnIndex, retryCount);
-
-            if (retryCount > this.maxRetries) {
-              this.onFailure?.(error);
-              this.onError?.(error, fnIndex, retryCount);
-            } else {
-              const isFlushedError = error instanceof ModbusFlushError;
-              const baseDelay = isFlushedError
-                ? 50
-                : this.backoffDelay * Math.pow(2, retryCount - 1);
-              const delay = baseDelay + Math.random() * baseDelay * 0.5;
-
-              await this._sleep(delay);
-            }
-          }
-        }
-        results.push(result);
-        overallSuccess = overallSuccess || fnSuccess;
-      }
-
-      if (this.stopped || this.paused) return;
-
-      if (results.length > 0 && results.some(r => r !== null && r !== undefined)) {
-        this.onData?.(results);
-      }
-
-      if (overallSuccess) {
-        this.onSuccess?.(results);
-      }
-      this.onFinish?.(overallSuccess, results);
-    } catch (err: unknown) {
-      if (!this.stopped && !this.paused) {
-        this.logger.error({ id: this.id, error: (err as any).message }, 'Fatal error in task');
-      }
-    } finally {
-      this.executionInProgress = false;
-      if (!this.stopped && !this.paused) {
-        this._scheduleNextRun();
-      }
-    }
-  }
-
-  /**
-   * Returns whether the task is currently running (not stopped).
-   */
-  public isRunning(): boolean {
-    return !this.stopped;
-  }
-
-  /**
-   * Returns whether the task is currently paused.
-   */
-  public isPaused(): boolean {
-    return this.paused;
-  }
-
-  /**
-   * Updates the interval for this task.
-   * Note: The new interval will take effect on the next scheduling cycle.
-   * @param ms - New interval in milliseconds
-   */
-  public setInterval(ms: number): void {
-    this.interval = ms;
-    this.logger.info('Interval updated');
-  }
-
-  /**
-   * Returns the current state of the task.
-   */
-  public getState(): IPollingTaskState {
-    return {
-      stopped: this.stopped,
-      paused: this.paused,
-      running: !this.stopped,
-      inProgress: this.executionInProgress,
-    };
-  }
-
-  /**
-   * Logs a specific error that occurred during function execution.
-   * @param error - The error that occurred
-   * @param fnIdx - Index of the function in the fn array
-   * @param retry - Current retry count
-   */
-  private _logSpecificError(error: Error, fnIdx: number, retry: number): void {
-    const errorName = error.constructor.name;
-    this.logger.error(`Fail (fn:${fnIdx}, retry:${retry}) -> ${errorName}: ${error.message}`);
-  }
-
-  /**
-   * Helper method that returns a promise which resolves after the specified delay.
-   * @param ms - Delay in milliseconds
-   */
-  private _sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Wraps a promise with a timeout.
-   * If the promise does not settle within the timeout period, it rejects with a `ModbusTimeoutError`.
-   * @param promise - Promise to execute with timeout
-   * @param timeout - Timeout in milliseconds
-   */
-  private _withTimeout<T>(promise: Promise<T>, timeout: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new ModbusTimeoutError('Task timed out')), timeout);
-      promise
-        .then(result => {
-          clearTimeout(timer);
-          resolve(result);
-        })
-        .catch(err => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
-  }
+// RISK-3: Resolved internal config type — no more `as Required<>` cast
+interface ResolvedPollingManagerConfig {
+  defaultMaxRetries: number;
+  defaultBackoffDelay: number;
+  defaultTaskTimeout: number;
+  interTaskDelay: number;
+  logLevel: string;
 }
 
 /**
  * PollingManager is the main class responsible for managing multiple polling tasks.
  * It handles task registration, lifecycle control (start/stop/pause), priority-based queuing,
- * concurrent execution safety via mutex, and comprehensive logging.
+ * concurrent execution safety via per-slave mutex, and comprehensive logging.
+ *
+ * RISK-1 fix: Uses per-slave-id mutex instead of a single global mutex,
+ * allowing concurrent execution for different slave devices on the same transport.
  */
 class PollingManager implements IPollingManager {
-  private config: Required<IPollingManagerConfig>;
+  private config: ResolvedPollingManagerConfig;
   public tasks: Map<string, TaskController>;
   private executionQueue: TaskController[];
-  private mutex: Mutex;
+
+  // RISK-1: Per-slave mutex map for concurrent execution of different slaves
+  private slaveMutexes: Map<string, Mutex>;
+  private defaultMutex: Mutex;
+
   private isProcessing: boolean;
   private paused: boolean;
 
   public logger: Logger;
 
-  /**
-   * Creates a new PollingManager instance.
-   * @param config - Optional configuration for the manager (defaults, log level, etc.)
-   */
   constructor(config: IPollingManagerConfig = {}) {
     this.logger = pino({
       level: config.logLevel || 'info',
@@ -434,18 +70,19 @@ class PollingManager implements IPollingManager {
           : undefined,
     });
 
+    // RISK-3: Explicit resolved config, no unsafe `as Required<>` cast
     this.config = {
-      defaultMaxRetries: 3,
-      defaultBackoffDelay: 1000,
-      defaultTaskTimeout: 5000,
+      defaultMaxRetries: config.defaultMaxRetries ?? 3,
+      defaultBackoffDelay: config.defaultBackoffDelay ?? 1000,
+      defaultTaskTimeout: config.defaultTaskTimeout ?? 5000,
       interTaskDelay: config.interTaskDelay ?? 0,
-      logLevel: 'info',
-      ...config,
-    } as Required<IPollingManagerConfig>;
+      logLevel: config.logLevel ?? 'info',
+    };
 
     this.tasks = new Map();
     this.executionQueue = [];
-    this.mutex = new Mutex();
+    this.slaveMutexes = new Map();
+    this.defaultMutex = new Mutex();
     this.isProcessing = false;
     this.paused = false;
 
@@ -453,9 +90,27 @@ class PollingManager implements IPollingManager {
   }
 
   /**
-   * Validates the options object passed when adding a task.
-   * @throws PollingTaskValidationError if validation fails
+   * Returns (or creates) a mutex for a specific slave ID.
+   * RISK-1: Allows concurrent execution for different slaves.
    */
+  private _getSlaveMutex(slaveId: string | undefined): Mutex {
+    if (slaveId === undefined) return this.defaultMutex;
+    let mutex = this.slaveMutexes.get(slaveId);
+    if (!mutex) {
+      mutex = new Mutex();
+      this.slaveMutexes.set(slaveId, mutex);
+    }
+    return mutex;
+  }
+
+  /**
+   * Determines the slave ID for a task (if any) for mutex selection.
+   * Tasks can optionally declare a `slaveId` in their options.
+   */
+  private _getTaskSlaveId(task: TaskController): string | undefined {
+    return (task as any).slaveId;
+  }
+
   private _validateTaskOptions(options: IPollingTaskOptions): void {
     if (!options || typeof options !== 'object') {
       throw new PollingTaskValidationError('Task options must be an object');
@@ -481,12 +136,6 @@ class PollingManager implements IPollingManager {
     }
   }
 
-  /**
-   * Adds a new polling task to the manager.
-   * @param options - Configuration for the new task
-   * @throws PollingTaskAlreadyExistsError if a task with the same id already exists
-   * @throws PollingTaskValidationError if options are invalid
-   */
   public addTask(options: IPollingTaskOptions): void {
     try {
       this._validateTaskOptions(options);
@@ -497,11 +146,14 @@ class PollingManager implements IPollingManager {
           ...options,
           maxRetries: options.maxRetries ?? this.config.defaultMaxRetries,
           backoffDelay: options.backoffDelay ?? this.config.defaultBackoffDelay,
-          taskTimeout:
-            options.taskTimeout ?? (this.config['defaultTaskTimeout'] as number | undefined),
+          taskTimeout: options.taskTimeout ?? this.config.defaultTaskTimeout,
         },
-        this
+        this.logger
       );
+
+      // Wire up the enqueue/dequeue callbacks (decoupled from direct manager reference)
+      task.enqueueFn = (t: TaskController) => this.enqueueTask(t);
+      task.dequeueFn = (taskId: string) => this.removeFromQueue(taskId);
 
       this.tasks.set(options.id, task);
       this.logger.info(`Task added -> ${options.id}`);
@@ -515,13 +167,10 @@ class PollingManager implements IPollingManager {
   }
 
   /**
-   * Updates an existing task by replacing it with new options.
-   * Preserves the previous running state: if the task was running before update, it will be restarted after the update.
-   * @param id - ID of the task to update
-   * @param newOptions - New options to merge with existing ones
-   * @throws PollingTaskNotFoundError if task with given id does not exist
+   * RISK-6 fix: updateTask now waits for current execution to finish
+   * before destroying and recreating the task.
    */
-  public updateTask(id: string, newOptions: IPollingTaskOptions): void {
+  public async updateTask(id: string, newOptions: IPollingTaskOptions): Promise<void> {
     const oldTask = this.tasks.get(id);
     if (!oldTask) throw new PollingTaskNotFoundError(id);
 
@@ -548,16 +197,18 @@ class PollingManager implements IPollingManager {
 
     const mergedOptions = { ...oldOptions, ...newOptions };
     const wasRunning = oldTask.isRunning();
+
+    // RISK-6: Wait for the current execution to finish before replacing
+    if (oldTask.executionInProgress) {
+      oldTask.pause(); // Stop scheduling new runs
+      await oldTask.waitForCompletion();
+    }
+
     this.removeTask(id);
     this.addTask(mergedOptions);
     if (wasRunning) this.startTask(id);
   }
 
-  /**
-   * Removes a task completely from the manager.
-   * Stops the task first, then deletes it from the tasks map and removes it from the queue.
-   * @param id - ID of the task to remove
-   */
   public removeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
@@ -571,53 +222,33 @@ class PollingManager implements IPollingManager {
   }
 
   /**
-   * Restarts a task (stops it and starts it again with a small delay).
-   * @param id - ID of the task to restart
+   * BUG-1 fix: restartTask calls start() synchronously after stop(),
+   * no unnecessary setTimeout wrapper.
    */
   public restartTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       task.stop();
-      setTimeout(() => {
-        const freshTask = this.tasks.get(id);
-        if (freshTask) freshTask.start();
-      }, 0);
+      task.start();
     }
   }
 
-  /**
-   * Starts a specific task by its ID.
-   * @param id - ID of the task to start
-   * @throws PollingTaskNotFoundError if task does not exist
-   */
   public startTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) task.start();
     else throw new PollingTaskNotFoundError(id);
   }
 
-  /**
-   * Stops a specific task by its ID.
-   * @param id - ID of the task to stop
-   */
   public stopTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) task.stop();
   }
 
-  /**
-   * Pauses a specific task by its ID.
-   * @param id - ID of the task to pause
-   */
   public pauseTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) task.pause();
   }
 
-  /**
-   * Resumes a specific task by its ID.
-   * @param id - ID of the task to resume
-   */
   public resumeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
@@ -626,124 +257,85 @@ class PollingManager implements IPollingManager {
     }
   }
 
-  /**
-   * Changes the polling interval for a specific task.
-   * @param id - ID of the task
-   * @param interval - New interval in milliseconds
-   */
   public setTaskInterval(id: string, interval: number): void {
     const task = this.tasks.get(id);
     if (task) task.setInterval(interval);
   }
 
-  /**
-   * Checks if a task is currently running.
-   * @param id - ID of the task
-   * @returns true if the task exists and is running
-   */
   public isTaskRunning(id: string): boolean {
     const task = this.tasks.get(id);
     return task ? task.isRunning() : false;
   }
 
-  /**
-   * Checks if a task is currently paused.
-   * @param id - ID of the task
-   * @returns true if the task exists and is paused
-   */
   public isTaskPaused(id: string): boolean {
     const task = this.tasks.get(id);
     return task ? task.isPaused() : false;
   }
 
-  /**
-   * Returns the current state of a task.
-   * @param id - ID of the task
-   * @returns Task state object or null if task does not exist
-   */
   public getTaskState(id: string): IPollingTaskState | null {
     const task = this.tasks.get(id);
     return task ? task.getState() : null;
   }
 
-  /**
-   * Checks if a task with the given ID exists.
-   * @param id - Task ID
-   */
   public hasTask(id: string): boolean {
     return this.tasks.has(id);
   }
 
-  /**
-   * Returns an array of all task IDs currently registered.
-   */
   public getTaskIds(): string[] {
     return Array.from(this.tasks.keys());
   }
 
   /**
-   * Removes all tasks from the manager.
-   * Stops every task, clears the task map and execution queue.
+   * RISK-4 fix: clearAll no longer sets paused=true permanently.
+   * After clearing, the manager is ready to accept new tasks.
    */
   public clearAll(): void {
     this.logger.info('Clearing all tasks');
-    this.paused = true;
     this.tasks.forEach(task => task.stop());
     this.tasks.clear();
     this.executionQueue = [];
+    this.isProcessing = false;
+    // RISK-4: Do NOT set paused=true here — the manager should be
+    // ready for new tasks after clearing.
     this.logger.info('All tasks cleared');
   }
 
   /**
-   * Restarts all registered tasks.
+   * BUG-1 fix: restartAllTasks calls start() synchronously, no setTimeout.
    */
   public restartAllTasks(): void {
     Array.from(this.tasks.keys()).forEach(id => {
       const task = this.tasks.get(id);
       if (task) {
         task.stop();
-        setTimeout(() => task.start(), 0);
+        task.start();
       }
     });
   }
 
-  /**
-   * Pauses all tasks.
-   */
   public pauseAllTasks(): void {
     this.paused = true;
     this.tasks.forEach(task => task.pause());
   }
 
-  /**
-   * Resumes all paused tasks and restarts queue processing.
-   */
   public resumeAllTasks(): void {
     this.paused = false;
     this.tasks.forEach(task => task.resume());
     this._processQueue();
   }
 
-  /**
-   * Starts all tasks immediately.
-   */
   public startAllTasks(): void {
     this.paused = false;
     this.tasks.forEach(task => task.start());
   }
 
-  /**
-   * Stops all tasks and clears the execution queue.
-   */
   public stopAllTasks(): void {
-    this.paused = true;
+    // Do NOT set this.paused = true — stopping tasks is different from pausing
+    // the manager. A stopped manager should still accept and process new tasks.
     this.tasks.forEach(task => task.stop());
     this.executionQueue = [];
   }
 
-  /**
-   * Returns information about the current execution queue.
-   */
   public getQueueInfo(): IPollingQueueInfo {
     return {
       queueLength: this.executionQueue.length,
@@ -754,9 +346,6 @@ class PollingManager implements IPollingManager {
     };
   }
 
-  /**
-   * Returns basic system statistics about the polling manager.
-   */
   public getSystemStats(): IPollingSystemStats {
     return {
       totalTasks: this.tasks.size,
@@ -765,42 +354,29 @@ class PollingManager implements IPollingManager {
     };
   }
 
-  /**
-   * Adds a task to the priority-based execution queue.
-   * If the task is not already in the queue, it is added and the queue is sorted by priority (higher first).
-   * Then triggers queue processing.
-   * @param task - TaskController instance to enqueue
-   */
   public enqueueTask(task: TaskController): void {
     if (!this.executionQueue.includes(task)) {
       this.executionQueue.push(task);
       this.executionQueue.sort((a, b) => b.priority - a.priority);
       this.logger.debug({ id: task.id, queueLen: this.executionQueue.length }, 'Enqueued');
-      this._processQueue();
     }
+    // RISK-5: Always call _processQueue; it guards with isProcessing check
+    this._processQueue();
   }
 
-  /**
-   * Removes a task from the execution queue by its ID.
-   * @param taskId - ID of the task to remove from queue
-   */
   public removeFromQueue(taskId: string): void {
     this.executionQueue = this.executionQueue.filter(t => t.id !== taskId);
   }
 
-  /**
-   * Helper method that returns a promise which resolves after the specified delay.
-   * @param ms - Delay in milliseconds
-   */
   private _sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
    * Main queue processing loop.
-   * Processes tasks from the queue one by one with small delays between executions
-   * to prevent overwhelming the system. Uses `isProcessing` flag to avoid concurrent processing loops.
-   * This method is called automatically whenever a task is enqueued.
+   * RISK-1 fix: Uses per-slave mutex so different slaves can execute concurrently.
+   * RISK-5 fix: Removed setTimeout in finally — just call _processQueue directly
+   * which is guarded by isProcessing flag.
    */
   private async _processQueue(): Promise<void> {
     if (this.isProcessing || this.paused || this.executionQueue.length === 0) {
@@ -814,10 +390,17 @@ class PollingManager implements IPollingManager {
         const task = this.executionQueue.shift();
         if (!task) continue;
 
-        this.logger.debug({ id: task.id }, 'Processing task from queue');
+        // RISK-1: Acquire the mutex for this task's specific slave
+        const slaveId = this._getTaskSlaveId(task);
+        const mutex = this._getSlaveMutex(slaveId);
+
+        this.logger.debug(
+          { id: task.id, slaveId: slaveId ?? 'default' },
+          'Processing task from queue'
+        );
 
         try {
-          await this.mutex.runExclusive(async () => {
+          await mutex.runExclusive(async () => {
             if (!task.stopped && !task.paused) {
               await task.execute();
             }
@@ -843,21 +426,21 @@ class PollingManager implements IPollingManager {
     } finally {
       this.isProcessing = false;
 
+      // RISK-5: If new tasks arrived while we were winding down, process them.
+      // Direct call instead of setTimeout — _processQueue guards with isProcessing.
       if (this.executionQueue.length > 0 && !this.paused) {
-        setTimeout(() => this._processQueue(), 0);
+        this._processQueue();
       }
     }
   }
 
   /**
-   * Executes a function immediately with exclusive access using an internal mutex.
+   * Executes a function immediately with exclusive access using the default mutex.
    * This method is intended to be used by ModbusClient or other components
    * that need to ensure atomicity of read/write operations while polling is active.
-   * @param fn - Async function to execute under mutex protection
-   * @returns Result of the executed function
    */
   public async executeImmediate<T>(fn: () => Promise<T>): Promise<T> {
-    const release = await this.mutex.acquire();
+    const release = await this.defaultMutex.acquire();
     try {
       return await fn();
     } finally {
@@ -866,20 +449,27 @@ class PollingManager implements IPollingManager {
   }
 
   /**
-   * Changes the log level for the manager and all its tasks.
-   * @param level - Winston log level
+   * Executes a function immediately with exclusive access for a specific slave.
+   * RISK-1 extension: Allows immediate commands to coexist with polling for other slaves.
    */
+  public async executeImmediateForSlave<T>(slaveId: string, fn: () => Promise<T>): Promise<T> {
+    const mutex = this._getSlaveMutex(slaveId);
+    const release = await mutex.acquire();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   public setLogLevel(level: string): void {
     this.logger.level = level;
     this.tasks.forEach(task => (task.logger.level = level));
   }
 
-  /**
-   * Disables all logging by setting the log level to 'error'.
-   */
   public disableAllLoggers(): void {
     this.setLogLevel('error');
   }
 }
 
-export = PollingManager;
+export default PollingManager;

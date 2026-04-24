@@ -2,10 +2,12 @@
 
 # modbus-connect
 
-[![npm version](https://img.shields.io/npm/v/modbus-connect)](https://www.npmjs.com/package/modbus-connect)
-[![js-standart-style](https://img.shields.io/badge/code%20style-standart-brightgreen.svg?style=flat)](https://standartjs.com/)
-[![License MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensources.org/licenses/MIT)
-![npm downloads](https://img.shields.io/npm/dt/modbus-connect?logo=npm)
+![TypeScript](https://img.shields.io/badge/typescript-%23007acc.svg?style=for-the-badge&logo=typescript&logoColor=white)
+![npm downloads](https://img.shields.io/npm/dt/modbus-connect?logo=npm&style=for-the-badge)
+![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge)
+![Contributors](https://img.shields.io/github/contributors/phk-mvn/modbus-connect?style=for-the-badge)
+[![License MIT](https://img.shields.io/badge/License-MIT-red.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/phk-mvn/modbus-connect?style=for-the-badge)](https://github.com/phk-mvn/modbus-connect/stargazers)
 
 modbus-connect is a [cross-platform]() library for Modbus RTU/TCP communication in both Node.js and modern browsers
 
@@ -473,6 +475,37 @@ controller.addPollingTask('RS485_BUS', {
 
 ```bash
 [14:20:00] INFO: [Polling Manager] Task added -> read-holding
+```
+
+---
+
+`controlTask()` / `controlPolling()`
+
+Starts, stops, pauses, or resumes polling tasks (IMP-7). Accepts plain strings or `EPollingAction`/`EPollingBulkAction` enums. Methods now throw an error if the transport is not found (BUG-5 fix).
+
+**Using plain strings (no import needed)**:
+
+```js
+// Single task control
+controller.controlTask('RS485_BUS', 'read-holding', 'pause');
+controller.controlTask('RS485_BUS', 'read-holding', 'resume');
+controller.controlTask('RS485_BUS', 'read-holding', 'stop');
+controller.controlTask('RS485_BUS', 'read-holding', 'start');
+
+// Bulk control for all tasks on a transport
+controller.controlPolling('RS485_BUS', 'pauseAll');
+controller.controlPolling('RS485_BUS', 'resumeAll');
+controller.controlPolling('RS485_BUS', 'stopAll');
+controller.controlPolling('RS485_BUS', 'startAll');
+```
+
+**Using typed enums (optional, for IDE autocomplete)**:
+
+```js
+const { EPollingAction, EPollingBulkAction } = require('modbus-connect/types');
+
+controller.controlTask('RS485_BUS', 'read-holding', EPollingAction.Pause);
+controller.controlPolling('RS485_BUS', EPollingBulkAction.ResumeAll);
 ```
 
 ---
@@ -1067,11 +1100,11 @@ console.log(inputs);
 
 `readHoldingRegisters(startAddress, quantity) (FC 0x03)`
 
-Reads the Holding registers.
+Reads the Holding registers. Returns a `RegisterData` object (extends `Array<number>`) that supports type conversion and sub-selection.
 
 ```js
 const regs = await client.readHoldingRegisters(10, 2);
-console.log(regs);
+console.log(regs); // [1500, 240] — works like a regular array
 ```
 
 **Expected result**:
@@ -1085,11 +1118,11 @@ console.log(regs);
 
 `readInputRegisters(startAddress, quantity) (FC 0x04)`
 
-Reads the Input registers.
+Reads the Input registers. Returns a `RegisterData` object (extends `Array<number>`) that supports type conversion and sub-selection.
 
 ```js
 const inputs = await client.readInputRegisters(0, 1);
-console.log(inputs);
+console.log(inputs); // [356]
 ```
 
 **Expected result**:
@@ -1098,6 +1131,76 @@ console.log(inputs);
 [ModbusClient][ID:122] Response received 48ms
 [356]
 ```
+
+---
+
+### **RegisterData — Type Conversion & Sub-Selection**
+
+`readHoldingRegisters` and `readInputRegisters` return a `RegisterData` object instead of a plain `number[]`. `RegisterData` extends `Array<number>`, so all existing code (index access, `.length`, `.map`, etc.) continues to work without changes. The new methods allow you to convert raw 16-bit register values into standard numeric types and select specific registers from a block read.
+
+---
+
+#### **Conversion Methods**
+
+| Method                 | Registers/value |  Returns   | Description            |
+| ---------------------- | :-------------: | :--------: | ---------------------- |
+| `asUInt16()`           |        1        | `number[]` | 0–65535 (identity)     |
+| `asInt16()`            |        1        | `number[]` | −32768–32767           |
+| `asUInt32(wordOrder)`  |        2        | `number[]` | 0–4294967295           |
+| `asInt32(wordOrder)`   |        2        | `number[]` | −2147483648–2147483647 |
+| `asFloat32(wordOrder)` |        2        | `number[]` | IEEE 754 single        |
+| `asFloat64(wordOrder)` |        4        | `number[]` | IEEE 754 double        |
+
+All multi-register methods accept an optional `wordOrder` parameter: `'BE'` (default, Big-Endian / standard Modbus) or `'LE'` (Little-Endian / word-swapped). Some devices store 32-bit values with the low word at the lower address — use `'LE'` for those.
+
+**Scalar shortcuts** return a single `number` (the first converted value):
+
+`asUInt16Scalar()`, `asInt16Scalar()`, `asUInt32Scalar(wordOrder)`, `asInt32Scalar(wordOrder)`, `asFloat32Scalar(wordOrder)`, `asFloat64Scalar(wordOrder)`
+
+**Examples**:
+
+```js
+const regs = await client.readHoldingRegisters(0, 2);
+
+// Float32 from 2 registers
+const temp = regs.asFloat32Scalar(); // 23.5
+
+// Int32 with word-swap (LE device)
+const pressure = regs.asInt32Scalar('LE');
+
+// Multiple float32 values from 8 registers
+const block = await client.readHoldingRegisters(0, 8);
+const temps = block.asFloat32(); // [23.5, 1.025, 12.3, -0.5]
+```
+
+---
+
+#### **Sub-Selection — `.sub()` and `.pick()`**
+
+When a device stores different parameters at consecutive addresses in different formats, you can read all registers in **one request** and then extract individual fields:
+
+```js
+// One request for 10 registers, then extract individual fields:
+const block = await client.readHoldingRegisters(0, 10);
+
+const temperature = block.sub(0, 2).asFloat32Scalar(); // registers 0–1 → float
+const pressure = block.sub(2, 2).asFloat32Scalar(); // registers 2–3 → float
+const status = block.sub(4).asUInt16Scalar(); // register 4 → uint16
+const counter = block.sub(5, 2).asInt32Scalar(); // registers 5–6 → int32
+const flow = block.sub(7, 2).asFloat32Scalar(); // registers 7–8 → float
+const errorCode = block.sub(9).asInt16Scalar(); // register 9 → int16
+```
+
+`.sub(offset, count?)` — selects a contiguous range. `count` defaults to 1 if omitted.
+
+`.pick(...indices)` — selects arbitrary registers (non-contiguous):
+
+```js
+// Pick specific registers scattered across the block
+const flags = block.pick(4, 9).asUInt16(); // [1, 0]
+```
+
+> **Important**: When using `.pick()` with multi-register conversions (asUInt32, asInt32, asFloat32, asFloat64), **the order of indices you pass determines the word order**. For example, `block.pick(0, 1).asFloat32()` treats register 0 as the high word and register 1 as the low word (standard BE). But `block.pick(1, 0).asFloat32()` reverses the words — register 1 becomes the high word and register 0 becomes the low word. This is equivalent to applying a word-swap. Use this intentionally when your device stores values in a non-standard word order.
 
 ---
 
@@ -1343,10 +1446,10 @@ manager.addTask({
 
 `updateTask(id, newOptions)`
 
-Updates any task option and restarts it.
+Updates any task option and restarts it. Now **async** — waits for any in-progress execution to complete before replacing the task (RISK-6 fix).
 
 ```js
-manager.updateTask('main-sensor-poll', {
+await manager.updateTask('main-sensor-poll', {
   interval: 5000,
   priority: 100,
   maxRetries: 5,
@@ -1785,23 +1888,23 @@ All interactions in the library are strongly typed. The interfaces are divided i
 
 The primary interface for high-level operations.
 
-| Method                                         | Description                                                     |
-| ---------------------------------------------- | --------------------------------------------------------------- |
-| `readHoldingRegisters(start, qty)`             | Reads holding registers (FC 0x03). Returns `Promise<number[]>`. |
-| `readInputRegisters(start, qty)`               | Reads input registers (FC 0x04). Returns `Promise<number[]>`.   |
-| `writeSingleRegister(addr, val, timeout?)`     | Write a single register (FC 0x06).                              |
-| `writeMultipleRegisters(addr, vals, timeout?)` | Write a group of registers (FC 0x10).                           |
-| `readCoils(start, qty, timeout?)`              | Reads coils (FC 0x01). Returns boolean[].                       |
-| `readDiscreteInputs(start, qty, timeout?)`     | Reads discrete inputs (FC 0x02).                                |
-| `writeSingleCoil(addr, val, timeout?)`         | Writes a single bit (FC 0x05).                                  |
-| `writeMultipleCoils(addr, vals, timeout?)`     | Writes a group of bits (FC 0x0F).                               |
-| `reportSlaveId(timeout?)`                      | Reports the device ID (FC 0x11).                                |
-| `readDeviceIdentification(decoder, timeout?)`  | Reads the device ID (FC 0x2B).                                  |
-| `executeCustomFunction(name, ...args)`         | Calls a plugin function.                                        |
-| `setSlaveId(newId)`                            | Changes the device address for the client.                      |
-| `connect() / disconnect()`                     | Logical state management.                                       |
-| `enableLogger() / disableLogger()`             | Logging control.                                                |
-| `IModbusClientOptions`                         | (Constructor options)                                           |
+| Method                                         | Description                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------- |
+| `readHoldingRegisters(start, qty)`             | Reads holding registers (FC 0x03). Returns `Promise<RegisterData>`. |
+| `readInputRegisters(start, qty)`               | Reads input registers (FC 0x04). Returns `Promise<RegisterData>`.   |
+| `writeSingleRegister(addr, val, timeout?)`     | Write a single register (FC 0x06).                                  |
+| `writeMultipleRegisters(addr, vals, timeout?)` | Write a group of registers (FC 0x10).                               |
+| `readCoils(start, qty, timeout?)`              | Reads coils (FC 0x01). Returns boolean[].                           |
+| `readDiscreteInputs(start, qty, timeout?)`     | Reads discrete inputs (FC 0x02).                                    |
+| `writeSingleCoil(addr, val, timeout?)`         | Writes a single bit (FC 0x05).                                      |
+| `writeMultipleCoils(addr, vals, timeout?)`     | Writes a group of bits (FC 0x0F).                                   |
+| `reportSlaveId(timeout?)`                      | Reports the device ID (FC 0x11).                                    |
+| `readDeviceIdentification(decoder, timeout?)`  | Reads the device ID (FC 0x2B).                                      |
+| `executeCustomFunction(name, ...args)`         | Calls a plugin function.                                            |
+| `setSlaveId(newId)`                            | Changes the device address for the client.                          |
+| `connect() / disconnect()`                     | Logical state management.                                           |
+| `enableLogger() / disableLogger()`             | Logging control.                                                    |
+| `IModbusClientOptions`                         | (Constructor options)                                               |
 
 ```ts
 {
@@ -2084,6 +2187,43 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 
 # <span id="changelog">Changelog</span>
 
+### 4.4.0 (2026-04-24)
+
+- **PollingManager — Critical Bug Fixes**:
+  - **`restartTask` / `restartAllTasks` synchronous restart** — Removed unnecessary `setTimeout(() => task.start(), 0)` wrapper. Tasks now restart synchronously via `stop()` then `start()`, eliminating a race window where the task could be removed between stop and deferred start
+  - **`_withTimeout` now uses `AbortController`** — The original implementation only rejected the outer promise on timeout but left the underlying operation running (e.g., a Modbus write). Now uses `AbortController` to signal cancellation, giving the operation a chance to abort cleanly. Critical for Modbus where an uncancelled write can corrupt the next frame
+  - **`overallSuccess` logic fixed** — Changed `overallSuccess = overallSuccess || fnSuccess` to `&&`. Previously `onSuccess` was called even when some functions in the `fn` array failed. Now `onSuccess` only fires when **all** functions succeed
+  - **`onError`/`onFailure` callback order** — `onError` is now called **before** `onFailure` when max retries are exceeded, matching the expected lifecycle: error notification first, then final failure signal
+  - **`PollingProxy` throws on missing transport** — Methods `removeTask`, `updateTask`, `controlTask`, `controlAll` previously returned silently when the transport ID was not found. Now they throw an `Error`, consistent with `addTask` and `getQueueInfo`
+
+- **PollingManager — Risk Mitigations**:
+  - **Per-slave mutex for concurrent execution** — Replaced the single global `Mutex` with a `Map<slaveId, Mutex>`. Tasks targeting different slave IDs on the same transport now execute concurrently instead of being serialized. Added `executeImmediateForSlave(slaveId, fn)` for per-slave immediate commands
+  - **`isEnqueued` reset on pause/stop** — When a task is paused or stopped, `isEnqueued` is now reset to `false` and the task is removed from the execution queue. Previously, `resume()` would skip rescheduling because `isEnqueued` was still `true`, leaving the task permanently idle
+  - **Removed unsafe `as Required<>` cast** — Replaced the `as Required<IPollingManagerConfig>` type assertion with an explicit `ResolvedPollingManagerConfig` interface. Also removed the `[key: string]: unknown` index signature from `IPollingManagerConfig` which allowed arbitrary keys to pass through without validation
+  - **`clearAll()` no longer sets `paused=true`** — After calling `clearAll()`, the manager stayed in `paused` state permanently, causing any subsequently added tasks to never execute. Now `clearAll()` only stops tasks and clears the queue — the manager is immediately ready for new tasks
+  - **`_processQueue` race condition fixed** — Replaced `setTimeout(() => this._processQueue(), 0)` in the `finally` block with a direct recursive call. The `isProcessing` guard prevents duplicate processing loops, and the direct call eliminates the window where concurrent `enqueueTask` calls could start a second loop
+  - **`updateTask` awaits current execution** — `updateTask` now pauses the old task, waits for any in-progress execution to complete via `waitForCompletion()`, then removes and recreates it. Previously it destroyed the task mid-execution, potentially leaving the Modbus bus in an inconsistent state
+  - **Interruptible sleep in retry loop** — Replaced `_sleep(ms)` (which blocked for the full duration even when stopped) with `_interruptibleSleep(ms, signal)` that checks `stopped`/`paused` flags every 100ms and listens to `AbortSignal`. Now `stop()` and `pause()` take effect within 100ms even during long backoff delays
+
+- **PollingManager — Improvements**:
+  - **`TaskController` extracted to separate module** — Moved from `modbus/polling/manager.ts` to `modbus/polling/task-controller.ts`. Reduces `manager.ts` from ~885 lines to ~280 lines. `TaskController` is now independently testable and uses callback injection (`enqueueFn`/`dequeueFn`) instead of a direct manager reference
+  - **`EPollingAction` / `EPollingBulkAction` enums** — Replaced string union types (`'start' | 'stop' | 'pause' | 'resume'`) with typed enums in `controlTask` and `controlPolling`. Prevents typos and enables IDE autocomplete. Available as `EPollingAction` and `EPollingBulkAction` from the public types module
+
+- **TransportController — Cleanup & Disconnect Bug Fixes**:
+  - **`removeTransport()` threw exception during cleanup** — Method removed transport from registry first, then tried to clear polling via `PollingProxy` which couldn't find the transport. Now follows the same safe order as `_removeTransportInternal`: clears handlers, stops polling directly on `info.pollingManager`, disconnects, clears assignments, then removes from registry last
+  - **Async gap in `_onPortStateChange` left tasks running** — `pauseAllForTransport` was called after `await StateManager.notifyPortDisconnected`, creating a window where polling tasks continued executing after port disconnect. Now pause is called synchronously before the async notification
+  - **`destroy()` didn't clear registry** — After shutdown, transports remained in `TransportRegistry` as ghost entries. Added `TransportRegistry.clearAll()` method and call at the end of `destroy()`
+  - **`disconnectTransport` only paused tasks (zombie tasks)** — Manual disconnect used `pauseAllForTransport`, leaving tasks alive indefinitely if device never reconnects. Added `PollingProxy.stopAllForTransport()` and switched `disconnectTransport` to use stop instead of pause
+
+- **TaskController — Timer Leak Fixes**:
+  - **`_interruptibleSleep` leaked `checkInterval`** — After main `setTimeout` fired naturally, the `setInterval` checker was never cleared due to `resolve` reassignment not affecting the captured reference. Rewritten with `settled` flag and `cleanup()` helper ensuring all timers are always released
+  - **`waitForCompletion` leaked `setTimeout`** — When the `setInterval` check resolved first, the fallback `setTimeout` kept running. Added `settled` flag to guarantee exactly one resolution and cleanup of both timers
+
+- **Transport — State & Error Handling Fixes**:
+  - **`NodeSerialTransport._onClose` didn't clear `_connectedSlaveIds`** — After port close, stale slave IDs persisted, causing `notifyDeviceConnected` to skip re-notification on reconnect (unlike TCP which correctly cleared). Added `this._connectedSlaveIds.clear()`
+  - **`AbortSignal` not passed to polling `fn()`** — TaskController called `fnToExecute()` without the abort signal, making Modbus operations non-interruptible on stop/pause. Now calls `fnToExecute(signal)` so the underlying operation can respond to cancellation
+  - **Errors silently swallowed in disconnect notifications** — `_notifyPortDisconnected` and `_releaseAllResources` used `.catch(() => {})`. Now logs errors via `this.logger.error()` for visibility during debugging
+
 ### 4.3.3 (2026-04-23)
 
 - **Critical — StateManager passes slaveIds to PortTracker**: `notifyPortConnected()` was calling `tracker.notifyConnected()` without forwarding `slaveIds`, so the per-transport PortTracker always stored an empty array. Now correctly forwards the list
@@ -2134,120 +2274,3 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
   - Duplicates have been removed
   - Existing interfaces have been optimized, and types for module classes have been updated
 - The documentation has been **updated**
-
-### 4.2.0 (2026-04-14)
-
-- **Intelligent Traffic Analysis & Sniffing Layer**
-  - **Non-Invasive Monitoring**: Integrated a `TrafficSniffer` module that monitors raw byte streams across all transport types (RTU, TCP, and Emulators) without interfering with the main protocol logic.
-  - **Isomorphic Observer Pattern**: Implemented a dependency-free subscription system (`onPacket` and `onTransaction`) that works identically in Node.js and Browser environments.
-  - **Automatic Transaction Pairing**: Added `onTransaction` method that automatically matches Modbus requests with their corresponding responses, providing a unified view of the exchange and automatic timeout detection.
-  - **Sub-millisecond Diagnostic Metrics**:
-    - **Monotonic RTT Calculation**: Round-trip time (RTT) is now calculated using high-resolution monotonic counters (`performance.now()`), eliminating negative or incorrect durations during system time drift.
-    - **Latency & Transfer Tracking**: Precise measurement of device reaction time (from last byte sent to first byte received) and physical transmission duration.
-    - **Throughput Calculation**: Real-time bitrate calculation (Bytes/sec) for every successful response.
-  - **Improved Time Handling**:
-    - **System Time Synchronization**: All packets now use `Date.now()` for primary timestamps to align with system-level logging.
-  - **Smart Fragment Reassembly**:
-    - **TCP MBAP Engine**: Automatically reassembles fragmented TCP packets by analyzing the length field in the MBAP header.
-    - **RTU CRC Validation**: Real-time reassembly of serial data chunks via continuous CRC16 verification, ensuring only valid ADUs are reported.
-  - **Deep Packet Inspection (DPI)**:
-    - Built-in PDU decoder for standard Modbus functions (0x01-0x06, 0x0F, 0x10).
-    - Automatic identification of Modbus Exception responses with human-readable descriptions.
-  - **Developer Tools**:
-    - **HEX/ASCII Representations**: Every captured packet includes pre-formatted HEX strings and ASCII views with non-printable character filtering.
-    - **Lazy Initialization**: The sniffer only activates if explicitly enabled, ensuring zero overhead in production environments.
-
-### 4.1.7 (2026-04-14)
-
-- **Patch Performance Update: Zero-Copy Transport Architecture**
-  - **Circular Buffer Implementation**: Transitioned all primary transports (`node-rtu`, `node-tcp`, `web-rtu`) from dynamic array reallocation to a **fixed-size pre-allocated circular buffer** system.
-  - **GC Pressure Reduction**: Eliminated hundreds of temporary `Uint8Array` allocations per second by replacing `concatUint8Arrays` and `slice()` with zero-copy `.subarray()` and V8-native `.set()` operations.
-  - **Memory Stability**: Fixed-size buffers are now allocated once during transport initialization, resulting in a "flat" memory consumption profile even during high-frequency (10ms) polling cycles.
-  - **CPU Optimization**: Incoming data processing now uses native memory copying (`memcpy` equivalent), significantly reducing the overhead of the transport layer and freeing up CPU cycles for the main application logic.
-  - **Reliable Wrap-around Logic**: Implemented robust handling for "broken" data packets that span across the end of the physical buffer, ensuring 100% data integrity with minimal performance penalty.
-  - **Web Serial Enhancement**: Reduced UI thread "jank" in browser environments by minimizing the activity of the JavaScript Garbage Collector during continuous serial streaming.
-
-### 4.1.0 (2026-04-11)
-
-- Major Feature: High-Performance Modbus Scanner
-  - **Fast RTU Scanning**: Introduced a algorithm that uses mathematical formulas `(264000 / baud + 5)` to calculate the absolute minimum physical timeout for each speed.
-  - **Scan Lifecycle Management**: Added `pauseScan()`, `resumeScan()`, and `stopScan()` methods to `TransportController` for granular control.
-  - **Smart Filtering**: The scanner now automatically filters duplicate devices if they respond across different parity settings on short lines.
-  - **Enhanced Progress Tracking**: `onProgress` callback now provides real-time metadata (current baud, parity, and slave ID).
-
-### 4.0.8 (2026-04-09)
-
-- TransportController Stability & Concurrency Update
-  - **Deadlock Prevention**: Fixed a critical issue where `removeTransport` and `reloadTransport` could hang indefinitely. Internal event handlers are now forcibly unbound before disconnection to prevent re-entry into the non-reentrant `_registryMutex`.
-  - **Race Condition Protection**: State handlers for ports and devices now use `_registryMutex.runExclusive`, ensuring the transport registry remains consistent during asynchronous updates.
-  - **Thread-safe Routing**: Added mutex protection to the `assignSlaveIdToTransport` method to prevent routing map corruption during simultaneous configuration changes.
-  - **Callback Isolation**: External user-defined handlers are now executed outside of mutex blocks, allowing users to safely call controller methods (e.g., getStatus) within callbacks.
-  - **Memory Leak Prevention**: Enhanced removeTransport to fully clear all internal maps, including trackers and local handler references.
-  - **Robustness**: All external handler calls are now wrapped in try-catch blocks to prevent third-party code errors from interrupting the controller's lifecycle.
-
-- PollingManager Performance & Logic Fixes
-  - **Mutex Synchronization**: The polling queue and `executeImmediate` method now share the same mutex. This eliminates **packet collisions** by ensuring only one request is active on the line at any time.
-  - **Zombie Task Protection**: Enforced strict state checks (stopped/paused) after every await operation. Tasks now terminate immediately upon removal, even if a request was already in progress.
-  - **Data Leak Prevention**: Implemented final state verification before triggering onData and onSuccess callbacks. Results are ignored if the task state changed during the request.
-  - **Resume Logic**: Resolved a race condition in the `resume()` method using a new isEnqueued flag, preventing duplicate execution cycles.
-  - **Performance Optimization**: Removed hardcoded **30ms** and **10ms** delays from the processing loop. Polling now runs at the maximum speed allowed by the hardware.
-  - **Configuration**: Added the `interTaskDelay` parameter to the `IPollingManagerConfig` for fine-tuning communication with slower devices.
-  - **Bug Fix**: Fixed a typo where `defaultTaskTimout` prevented the application of global timeout settings.
-
-- Connection Trackers (Device & Port)
-  - **Deadlock Fixes**: Modified **DeviceConnectionTracker** and **PortConnectionTracker** to execute handlers outside of critical sections. Users can now query tracker states directly from within state-change events.
-  - **Integrity**: All state-reading methods (e.g., getConnectedSlaveIds, getState) now use runExclusive to ensure data consistency.
-  - **Debounce Reliability**: Added "stale event" detection to the debounce logic. Disconnection notifications are **automatically ignored** if a device reconnects before the timer expires.
-  - **Immutability**: Methods now return deep copies of state objects and arrays to protect internal storage from external modification.
-
-- ModbusClient Resilience
-  - **Automatic Sync**: Fixed the "Stale Transport" issue where the client would lose connection after a transport hot-reload. The `_syncProtocol` mechanism now **automatically reconnects** to the new transport instance.
-  - **Lazy Initialization**: The client no longer crashes during construction if the transport is not yet registered. The internal protocol is now initialized upon the first data request.
-  - **Error Handling**: Improved the `_sendRequest` logic to preserve and throw original Error objects with full stack traces, significantly improving debugging.
-  - **Async Disconnect**: The disconnect method now properly awaits the asynchronous removal of Slave ID routing in the controller.
-  - **Refactoring**: Simplified the `readDeviceIdentification` method by removing redundant slave ID state management.
-
-### 4.0.3 (2026-04-08)
-
-- The module's internal clocks were constantly drifting. Now they're using the **system time**.
-- In ModbusClient, the `readDeviceIdentification (0x2B)` method was hardcoded to TextDecoder('windows-1251'). The encoding is now configurable, with options of `windows-1251` and `utf-8` available via the `decoder` parameter of the method.
-- Fixed static code typing in the `modbus/protocol.ts` file
-- Redundant `any` types are removed in the `TransportController` and `tcp-emulator.ts` module's.
-- Modified the types in the `modbus-types.ts` file
-
-### 4.0.2 (2026-04-07)
-
-- **Security**: Now the removal of the Slave ID cannot occur simultaneously with the addition of another transport or reboot
-- **Memory**: The `_stickyMap` card is now cleared as soon as the device is removed. Previously, there were accumulated "dead" bindings
-- **Logic**: A potential error has been removed when **removeTransport** could be called twice for the same ID from different asynchrounous calls
-- Added the `enableLogger()/disableLogger()` method's to the **ModbusClient** and **TransportController** modules. Sets the level to `info`, by default loggers are enabled in both modules
-- The implementation types of module classes have been finalized
-  > **A logger in a WEB environment** functionality has been sent for revision
-
-### 4.0.0 (2026-04-06)
-
-- Improved TCP/IP transport - `'node-tcp'`
-- The frame logic has been redesigned. Now the type of frame for processing and constructing requests is initialized in the constructor of the `ModbusCliet` class, and not at the time of sending the request.
-- The emulator of the slave device has been redesigned. Now it consists of 2 new transports - `'rtu-emulator'` and ``tcp-emulator'`. All their requests go through ModbusClient and TransportController, which simplifies their development by simply creating a certain type of transport and its options.
-- File compilation has been redesigned, now `.d.ts` and `.js.map` files are compiled for each library file, which affect convenient debugging and development
-- The types and interfaces in the `modbus/types/modbus-types.ts` file have been improved
-- Modules such as have been removed from the import (require):
-  - `modbus-connect/logger`, use the `pino` logger yourself
-  - `modbus-connect/slave-emulator`, use special transports instead
-- **ECHO** functionality has been sent for revision
-  > The overall result of the update:
-  > Requests have become faster. For example, previously reading 2 Holding registers took 46-51ms, now it takes 29-31ms ~60% faster. The emulator now runs ~40% faster
-
-### 3.2.0 (2026-03-05)
-
-**Major Feature: Universal Polling Function Support**
-
-- **Enhanced `fn` flexibility** — `PollingManager` now supports any type of function as a task: synchronous arrow functions, multi-line logic blocks, and standard asynchronous functions.
-- **Removed strict Promise requirement** — The execution engine no longer requires `fn` to explicitly return a `Promise`. Synchronous code (like `console.log` or local variable manipulations) now executes correctly within the polling cycle without throwing validation errors.
-- **Improved Type Definitions** — Updated `PollingTaskOptions` and `TaskController` signatures to accept `() => unknown | Promise<unknown>`, providing better IDE support for both sync and async tasks.
-
-**Improvements & Fixes:**
-
-- **Robust Task Validation** — Rewritten `_validateTaskOptions` logic to perform deep validation of the `fn` parameter. If an array of functions is provided, the manager now verifies every single element to ensure it is a valid function before starting the task.
-- **Execution Safety** — Internal task runner now wraps all calls in `Promise.resolve()`, ensuring that even functions returning `undefined` or non-promise values are handled gracefully by the timeout and retry logic.
-- **Arrow Function Support** — Explicitly tested and optimized for arrow functions with multi-line blocks, allowing complex logic directly within the task definition.

@@ -1,27 +1,23 @@
 // modbus/transport/controller/polling/PollingProxy.ts
 
-import type { IPollingTaskOptions, IPollingQueueInfo } from '../../../types/public.js';
+import type {
+  IPollingTaskOptions,
+  IPollingQueueInfo,
+  TPollingAction,
+  TPollingBulkAction,
+} from '../../../types/public.js';
 import type { TransportRegistry } from '../registry/TransportRegistry.js';
 
 /**
  * Proxy class that provides a unified interface for managing polling tasks across multiple transports.
  * It routes commands to the specific PollingManager associated with a Transport ID.
+ *
+ * BUG-5 fix: Methods now throw errors for missing transports instead of silently returning.
+ * IMP-7: Accepts both enum values (EPollingAction.Start) and plain strings ('start').
  */
 export class PollingProxy {
-  /**
-   * Creates an instance of PollingProxy.
-   *
-   * @param {TransportRegistry} _registry - The registry containing all active transports and their managers.
-   */
   constructor(private readonly _registry: TransportRegistry) {}
 
-  /**
-   * Adds a new polling task to a specific transport.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   * @param {IPollingTaskOptions} options - Configuration for the polling task (interval, function, callbacks).
-   * @throws {Error} If the specified transport ID is not found in the registry.
-   */
   public addTask(transportId: string, options: IPollingTaskOptions): void {
     const info = this._registry.get(transportId);
     if (!info) throw new Error(`Transport "${transportId}" not found`);
@@ -29,44 +25,34 @@ export class PollingProxy {
   }
 
   /**
-   * Removes a specific polling task from a transport's queue.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   * @param {string} taskId - The unique identifier of the task to remove.
+   * BUG-5 fix: Throws error if transport not found instead of silently returning.
    */
   public removeTask(transportId: string, taskId: string): void {
     const info = this._registry.get(transportId);
-    if (!info) return;
+    if (!info) throw new Error(`Transport "${transportId}" not found for task removal`);
     info.pollingManager.removeTask(taskId);
   }
 
   /**
-   * Updates the configuration of an existing polling task.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   * @param {string} taskId - The ID of the task to update.
-   * @param {IPollingTaskOptions} options - The new configuration options.
+   * BUG-5 fix: Throws error if transport not found.
    */
-  public updateTask(transportId: string, taskId: string, options: IPollingTaskOptions): void {
+  public async updateTask(
+    transportId: string,
+    taskId: string,
+    options: IPollingTaskOptions
+  ): Promise<void> {
     const info = this._registry.get(transportId);
-    if (!info) return;
-    info.pollingManager.updateTask(taskId, options);
+    if (!info) throw new Error(`Transport "${transportId}" not found for task update`);
+    await info.pollingManager.updateTask(taskId, options);
   }
 
   /**
-   * Controls the execution state of a specific polling task.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   * @param {string} taskId - The ID of the task to control.
-   * @param {'start' | 'stop' | 'pause' | 'resume'} action - The state transition to perform.
+   * IMP-7: Accepts EPollingAction enum or plain string ('start'|'stop'|'pause'|'resume').
+   * BUG-5 fix: Throws error if transport not found.
    */
-  public controlTask(
-    transportId: string,
-    taskId: string,
-    action: 'start' | 'stop' | 'pause' | 'resume'
-  ): void {
+  public controlTask(transportId: string, taskId: string, action: TPollingAction): void {
     const info = this._registry.get(transportId);
-    if (!info) return;
+    if (!info) throw new Error(`Transport "${transportId}" not found for task control`);
 
     switch (action) {
       case 'start':
@@ -85,17 +71,12 @@ export class PollingProxy {
   }
 
   /**
-   * Performs a bulk state control action on all tasks within a specific transport.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   * @param {'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'} action - The action to apply to all tasks.
+   * IMP-7: Accepts EPollingBulkAction enum or plain string ('startAll'|'stopAll'|'pauseAll'|'resumeAll').
+   * BUG-5 fix: Throws error if transport not found.
    */
-  public controlAll(
-    transportId: string,
-    action: 'startAll' | 'stopAll' | 'pauseAll' | 'resumeAll'
-  ): void {
+  public controlAll(transportId: string, action: TPollingBulkAction): void {
     const info = this._registry.get(transportId);
-    if (!info) return;
+    if (!info) throw new Error(`Transport "${transportId}" not found for bulk control`);
 
     switch (action) {
       case 'startAll':
@@ -113,63 +94,39 @@ export class PollingProxy {
     }
   }
 
-  /**
-   * Retrieves information about the polling queue for a specific transport.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   * @returns {IPollingQueueInfo} Metadata about queue length and current task states.
-   * @throws {Error} If the specified transport ID is not found.
-   */
   public getQueueInfo(transportId: string): IPollingQueueInfo {
     const info = this._registry.get(transportId);
     if (!info) throw new Error(`Transport "${transportId}" not found`);
     return info.pollingManager.getQueueInfo();
   }
 
-  /**
-   * Executes an asynchronous function immediately, bypassing the standard polling interval
-   * but still respecting the transport's internal queue lock/concurrency.
-   *
-   * @template T
-   * @param {string} transportId - The unique identifier of the transport.
-   * @param {() => Promise<T>} fn - The asynchronous function to execute (e.g., a manual Modbus request).
-   * @returns {Promise<T>} The result of the executed function.
-   * @throws {Error} If the transport is not found.
-   */
   public async executeImmediate<T>(transportId: string, fn: () => Promise<T>): Promise<T> {
     const info = this._registry.get(transportId);
     if (!info) throw new Error(`Transport "${transportId}" not found`);
     return info.pollingManager.executeImmediate(fn);
   }
 
-  /**
-   * Pauses all polling tasks for a specific transport.
-   * Useful during temporary device maintenance or connection reconfigurations.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   */
   public pauseAllForTransport(transportId: string): void {
     const info = this._registry.get(transportId);
-    if (info) info.pollingManager.pauseAllTasks();
+    if (!info) throw new Error(`Transport "${transportId}" not found`);
+    info.pollingManager.pauseAllTasks();
   }
 
-  /**
-   * Resumes all previously paused polling tasks for a specific transport.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   */
   public resumeAllForTransport(transportId: string): void {
     const info = this._registry.get(transportId);
-    if (info) info.pollingManager.resumeAllTasks();
+    if (!info) throw new Error(`Transport "${transportId}" not found`);
+    info.pollingManager.resumeAllTasks();
   }
 
-  /**
-   * Clears the entire polling queue and removes all tasks for a specific transport.
-   *
-   * @param {string} transportId - The unique identifier of the transport.
-   */
   public clearAllForTransport(transportId: string): void {
     const info = this._registry.get(transportId);
-    if (info) info.pollingManager.clearAll();
+    if (!info) throw new Error(`Transport "${transportId}" not found`);
+    info.pollingManager.clearAll();
+  }
+
+  public stopAllForTransport(transportId: string): void {
+    const info = this._registry.get(transportId);
+    if (!info) throw new Error(`Transport "${transportId}" not found`);
+    info.pollingManager.stopAllTasks();
   }
 }
