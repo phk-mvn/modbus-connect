@@ -148,7 +148,7 @@ export class ModbusScanner {
   ): Promise<IScanReport> {
     const opts = resolveOptions(options);
     const results: IScanResult[] = [];
-    const foundIds = new Set<number>();
+    const foundKeys = new Set<string>();
     const pdu = buildReadHoldingRegistersRequest(opts.registerAddress ?? 0, 1);
 
     const stats: IScanStats = {
@@ -216,7 +216,7 @@ export class ModbusScanner {
                 await protocol.exchange(slaveId, pdu, timeout);
                 this._addRtu(
                   results,
-                  foundIds,
+                  foundKeys,
                   transportType,
                   slaveId,
                   baud,
@@ -230,7 +230,7 @@ export class ModbusScanner {
                   stats.exceptionResponses++;
                   this._addRtu(
                     results,
-                    foundIds,
+                    foundKeys,
                     transportType,
                     slaveId,
                     baud,
@@ -361,7 +361,7 @@ export class ModbusScanner {
    */
   private _addRtu(
     res: IScanResult[],
-    set: Set<number>,
+    set: Set<string>,
     type: 'node-rtu' | 'web-rtu',
     sid: number,
     baud: number,
@@ -369,8 +369,11 @@ export class ModbusScanner {
     stopBits: 1 | 2,
     opts: ReturnType<typeof resolveOptions>
   ) {
-    if (!opts.multiBaud && set.has(sid)) return;
-    set.add(sid);
+    const key = opts.multiBaud
+      ? `${sid}:${baud}:${parity}:${stopBits}`
+      : `${sid}:${parity}:${stopBits}`;
+    if (set.has(key)) return;
+    set.add(key);
 
     const device: IScanResult = {
       type,

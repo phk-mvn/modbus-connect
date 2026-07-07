@@ -971,7 +971,7 @@ Unlike standard logging, the `TrafficSniffer`:
 
 Constructor Parameters:
 
-- `transportController': An instance of `TransportController` through which the client finds the desired port.
+- `transportController`: An instance of `TransportController` through which the client finds the desired port.
 - `SlaveID`: Device address (0-255). The default is 1.
 - `options`: Configuration object.
 
@@ -1080,7 +1080,7 @@ console.log(coils);
 
 ---
 
-``readDiscreteInputs(startAddress, quantity, timeout?) (FC 0x02)`
+`readDiscreteInputs(startAddress, quantity, timeout?) (FC 0x02)`
 
 Reads the values of the digital inputs.
 
@@ -1288,7 +1288,7 @@ console.log(id.objects);
 
 ---
 
-### **Plugins and custom features\***
+### **Plugins and custom features**
 
 The library allows you to extend the standard Modbus with manufacturer-specific functions.
 
@@ -1697,7 +1697,7 @@ await controller.addTransport('SIM_TCP', 'tcp-emulator', {
 [10:00:00] INFO: [Transport Controller] Transport "SIM_RTU" added with PollingManager
 ```
 
-### **Emulator Data Management\***
+### **Emulator Data Management**
 
 To interact with the emulator's internal memory and behavior, you must access its core via the transport's `getCore()` method.
 
@@ -2186,6 +2186,11 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 <br>
 
 # <span id="changelog">Changelog</span>
+
+### 4.4.2 (2026-07-07)
+
+- **Scanner — Multi-Parity Deduplication Fix**:
+  - Fixed `_addRtu` using a `Set<number>` keyed only by `slaveId`, causing devices found with different parity settings (e.g. `none` then `even`) to be silently dropped. The Set now uses a composite key `"<slaveId>:<parity>:<stopBits>"` (or `"<slaveId>:<baud>:<parity>:<stopBits>"` when `multiBaud: true`), so devices are correctly reported for every unique combination of parameters that yields a response.
 
 ### 4.4.0 (2026-04-24)
 
