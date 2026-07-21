@@ -659,27 +659,29 @@ The scanner uses a reactive callback system to provide real-time feedback, makin
   - `info`: Object containing current scan parameters (RTU: `{ baud, parity, stopBits, slaveId }`, TCP: `{ host, port, unitId }`).
 - `onFinish(results)`: Triggered when the entire scan process is complete. Returns an array of all discovered IScanResult objects.
 - `onStats(stats)`: Triggered when scan finishes with detailed statistics (`durationMs`, `probesSent`, `timeouts`, `crcErrors`, `exceptionResponses`).
+- `onRegisterRead(slaveId, registerAddress, value)`: Triggered on every successful register read during scanning. Returns the slave ID, the register address being probed, and the raw 16-bit value read from the device. Only fires on successful responses — timeouts, CRC errors, and exception responses do not trigger this callback.
 
 ---
 
 ### **Scanning Options (`IScanOptions`)**
 
-| Property          | Type                            | Description                                                                  |
-| ----------------- | ------------------------------- | ---------------------------------------------------------------------------- |
-| `profile`         | `'quick' \| 'deep' \| 'custom'` | **Required**. Scan profile that provides default values.                     |
-| `path`            | `string or IWebSerialPort`      | Serial port path (Node) or SerialPort object (Web).                          |
-| `bauds`           | `number[]`                      | List of baud rates to check. Overridden by profile defaults unless `custom`. |
-| `parities`        | `TParityType[]`                 | List of parities to check. Overridden by profile defaults unless `custom`.   |
-| `slaveIds`        | `number[]`                      | Range of Slave IDs to check (1-247).                                         |
-| `unitIds`         | `number[]`                      | Range of Unit IDs to check for TCP scan.                                     |
-| `registerAddress` | `number`                        | The register address to read for verification. Default: `0`.                 |
-| `controller`      | `ScanController`                | An instance of `ScanController` to manage the scan externally.               |
-| `concurrency`     | `number`                        | TCP parallel request count. Default from profile.                            |
-| `tcpTimeout`      | `number`                        | TCP response timeout in ms. Default from profile.                            |
-| `multiBaud`       | `boolean`                       | Report devices on multiple baud rates (default: `false`, dedup by slaveId).  |
-| `signal`          | `AbortSignal`                   | Standard `AbortSignal` for external scan cancellation.                       |
-| `stopBitsList`    | `(1 or 2)[]`                    | List of stop bits to scan (RTU only). Default from profile: `[1, 2]`.        |
-| `padding`         | `number`                        | Extra ms padding for RTU timeout. Default from profile.                      |
+| Property          | Type                                        | Description                                                                            |
+| ----------------- | ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `profile`         | `'quick' \| 'deep' \| 'custom'`             | **Required**. Scan profile that provides default values.                               |
+| `path`            | `string or IWebSerialPort`                  | Serial port path (Node) or SerialPort object (Web).                                    |
+| `bauds`           | `number[]`                                  | List of baud rates to check. Overridden by profile defaults unless `custom`.           |
+| `parities`        | `TParityType[]`                             | List of parities to check. Overridden by profile defaults unless `custom`.             |
+| `slaveIds`        | `number[]`                                  | Range of Slave IDs to check (1-247).                                                   |
+| `unitIds`         | `number[]`                                  | Range of Unit IDs to check for TCP scan.                                               |
+| `registerAddress` | `number`                                    | The register address to read for verification. Default: `0`.                           |
+| `controller`      | `ScanController`                            | An instance of `ScanController` to manage the scan externally.                         |
+| `concurrency`     | `number`                                    | TCP parallel request count. Default from profile.                                      |
+| `tcpTimeout`      | `number`                                    | TCP response timeout in ms. Default from profile.                                      |
+| `multiBaud`       | `boolean`                                   | Report devices on multiple baud rates (default: `false`, dedup by slaveId).            |
+| `signal`          | `AbortSignal`                               | Standard `AbortSignal` for external scan cancellation.                                 |
+| `stopBitsList`    | `(1 or 2)[]`                                | List of stop bits to scan (RTU only). Default from profile: `[1, 2]`.                  |
+| `padding`         | `number`                                    | Extra ms padding for RTU timeout. Default from profile.                                |
+| `onRegisterRead`  | `(slaveId, registerAddress, value) => void` | Callback fired on each successful register read during scan. Returns raw 16-bit value. |
 
 ---
 
@@ -712,6 +714,10 @@ const report = await controller.scanRtuPort({
 
   onFinish: allDevices => {
     console.log(`\nScan complete. Total devices found: ${allDevices.length}`);
+  },
+
+  onRegisterRead: (slaveId, registerAddress, value) => {
+    console.log(`Register read: slaveId=${slaveId} addr=${registerAddress} value=${value}`);
   },
 });
 
@@ -2187,6 +2193,12 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 
 # <span id="changelog">Changelog</span>
 
+### 4.5.0 (2026-07-21)
+
+- **Scanner — `onRegisterRead` callback**:
+  - Added new `onRegisterRead(slaveId, registerAddress, value)` callback to `IScanOptions`. Fires on every successful register read during RTU and TCP scanning, returning the raw 16-bit value from the device response. Timeouts, CRC errors, and exception responses do not trigger this callback.
+  - Internally captures the return value of `protocol.exchange()` and parses it with `parseReadHoldingRegistersResponse` to extract the register value before passing it to the callback.
+
 ### 4.4.2 (2026-07-07)
 
 - **Scanner — Multi-Parity Deduplication Fix**:
@@ -2242,40 +2254,3 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 - **Fix — removeDeviceState targets specific transport**: Iterated all trackers instead of the one owning the slave. New signature `removeDeviceState(slaveId, transportId?)` with backwards-compatible fallback
 - **Fix — TrafficSniffer bytesPerSecond when transfer=0**: When `recordRxStart` wasn't called, `bytesPerSecond` used `1ms` as divisor producing inflated values (e.g. 8000 B/s for 8 bytes). Now returns `0` when transfer time is unavailable
 - **Fix — TrafficSniffer handler error catching**: `_emitTransaction` and `_notify` used `Promise.resolve().then()` without `.catch()`, causing unhandled rejections when user handlers throw. Now wrapped in try/catch with error logging
-
-### 4.3.2 (2026-04-22)
-
-- **Scanner Overhaul — Critical Bug Fixes**:
-  - **Fixed stopBits not being passed to transport**: Scanner always used `stopBits=1` (serialport default) regardless of parity, causing devices to be found with wrong connection parameters (e.g. `parity:even, stopBits:2` when actual connection was `8E1`)
-  - **Added stopBits enumeration**: Scanner now iterates over `stopBitsList` (default `[1, 2]`), checking all valid combinations: 8N1, 8N2, 8E1, 8E2, 8O1, 8O2, etc.
-  - **Fixed stopBits in scan report**: `_addRtu` was incorrectly computing `stopBits = parity === 'none' ? 1 : 2` instead of using the actual connection parameter. Now reports the real `stopBits` used during the probe
-  - **Added `stopBitsList` option**: Replaced `IScanOptions.stopBits` with `stopBitsList: (1 | 2)[]` for full control over which stop bits to scan
-  - **Added `stopBits` to `IScanProgressRtu`**: Progress callback now includes the current stopBits being scanned
-  - Fixed `ScanController` sync issue between `TransportController` and `ScanService` — `stop()`/`resume()` now correctly operate on the same controller instance
-  - Added parallel scan protection — `ScanService` now throws an error if a scan is already in progress instead of silently overwriting the active controller
-  - `ScanController.isStopped` is now reversible via new `reset()` method, allowing controller reuse
-  - Removed hardcoded TCP concurrency (50) and timeout (250ms) — both are now configurable via `IScanOptions.concurrency` and `IScanOptions.tcpTimeout`
-  - Fixed race condition between `pause` and `stop` — scan now checks `isStopped` immediately after exiting the pause loop
-  - Wrapped `TransportFactory.create` + `connect` in try/catch per baud rate — a failed port opening no longer kills the entire scan, it skips to the next speed
-  - Fixed unsafe type detection in `ScanService._detectRtuTransportType` — now checks for `IWebSerialPort` interface instead of `typeof path !== 'string'`
-  - Replaced `any` types in `IScanResult.port` and `IScanOptions.path` with proper `string` and `IWebSerialPort` types
-- **Scanner Overhaul — New Features**:
-  - **Scan Profiles** (`TScanProfile`): Mandatory `profile` parameter (`'quick'`, `'deep'`, `'custom'`) that presets baud rates, parities, concurrency, timeouts, and padding. User-provided options override profile defaults.
-  - **Scan Report** (`IScanReport`): Both `scanRtuPort` and `scanTcpPort` now return `IScanReport` containing `results: IScanResult[]` and `stats: IScanStats` instead of just `IScanResult[]`
-  - **Scan Statistics** (`IScanStats`): Tracks `durationMs`, `probesSent`, `timeouts`, `crcErrors`, and `exceptionResponses`. Available via `report.stats` or `onStats` callback.
-  - **Discovery Timestamp**: Every `IScanResult` now includes `discoveredAt: number` (Unix timestamp of when the device was found)
-  - **AbortController Integration**: Added `signal?: AbortSignal` to `IScanOptions` for standard external scan cancellation
-  - **Multi-Baud Discovery**: Added `multiBaud?: boolean` to `IScanOptions` — when `true`, devices responding on multiple baud rates are reported separately (default: `false`, deduplicates by slaveId)
-  - **Traffic Sniffer Integration**: When sniffer is enabled on `TransportController`, scan traffic is automatically captured for analysis
-  - **Per-Unit TCP Progress**: TCP scan now reports `onProgress` for each individual Unit ID (`{ host, port, unitId }`) instead of only per batch
-  - **Typed Progress Callbacks**: `onProgress` info is now typed as `IScanProgressRtu` or `IScanProgressTcp` instead of `any`
-
-### 4.3.0 (2026-04-21)
-
-- The library's **file system architecture** has been **redesigned**
-- Fixed an issue where the port for the `WEB transport` (**WEB Serial API**) was not actually closed
-- The balancing system in `TransportController` has been **removed**
-- **All typing has been fixed**:
-  - Duplicates have been removed
-  - Existing interfaces have been optimized, and types for module classes have been updated
-- The documentation has been **updated**

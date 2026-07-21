@@ -4,7 +4,10 @@ import { Logger } from 'pino';
 import { TransportFactory } from '../transport/factory.js';
 import { ModbusProtocol } from '../core/protocol.js';
 import { RtuFramer, TcpFramer } from '../protocol/framing.js';
-import { buildReadHoldingRegistersRequest } from '../protocol/functions.js';
+import {
+  buildReadHoldingRegistersRequest,
+  parseReadHoldingRegistersResponse,
+} from '../protocol/functions.js';
 import {
   IScanOptions,
   IScanResult,
@@ -213,7 +216,10 @@ export class ModbusScanner {
 
               try {
                 stats.probesSent++;
-                await protocol.exchange(slaveId, pdu, timeout);
+                const responsePdu = await protocol.exchange(slaveId, pdu, timeout);
+                const registers = parseReadHoldingRegistersResponse(responsePdu);
+                opts.onRegisterRead?.(slaveId, opts.registerAddress ?? 0, registers[0]);
+
                 this._addRtu(
                   results,
                   foundKeys,
@@ -323,7 +329,11 @@ export class ModbusScanner {
               chunk.map(async unitId => {
                 try {
                   stats.probesSent++;
-                  await protocol.exchange(unitId, pdu, tcpTimeout);
+
+                  const responsePdu = await protocol.exchange(unitId, pdu, tcpTimeout);
+                  const registers = parseReadHoldingRegistersResponse(responsePdu);
+                  opts.onRegisterRead?.(unitId, opts.registerAddress ?? 0, registers[0]);
+
                   this._addTcp(results, unitId, host, port, opts);
                 } catch (err: any) {
                   stats.probesSent++;

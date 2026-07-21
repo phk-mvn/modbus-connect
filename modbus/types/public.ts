@@ -442,6 +442,7 @@ export interface IScanOptions {
   onDeviceFound?: (device: IScanResult) => void;
   onFinish?: (results: IScanResult[]) => void;
   onStats?: (stats: IScanStats) => void;
+  onRegisterRead?: (slaveId: number, registerAddress: number, value: number) => void;
 }
 
 // ===================================================
