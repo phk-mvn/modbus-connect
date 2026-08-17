@@ -124,7 +124,7 @@ class ModbusClient implements IModbusClient {
 
     const transport = this._effectiveTransport;
     if (transport) {
-      this._protocol = new ModbusProtocol(transport, this._framing);
+      this._protocol = new ModbusProtocol(transport, this._framing, options.echo ?? false);
     }
 
     if (options.plugins && Array.isArray(options.plugins)) {
@@ -325,7 +325,7 @@ class ModbusClient implements IModbusClient {
         },
         'Syncing protocol with transport instance'
       );
-      this._protocol = new ModbusProtocol(transport, this._framing);
+      this._protocol = new ModbusProtocol(transport, this._framing, this.options.echo ?? false);
     }
 
     return this._protocol;

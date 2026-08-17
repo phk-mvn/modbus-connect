@@ -66,7 +66,7 @@ export interface IModbusClientOptions {
   timeout?: number;
   retryCount?: number;
   retryDelay?: number;
-  echoEnabled?: boolean;
+  echo?: boolean;
   plugins?: TPluginConstructor[];
 }
 

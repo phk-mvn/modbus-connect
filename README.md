@@ -990,6 +990,7 @@ Full list of options options:
 | `timeout`    | `number`                             | Waiting time for a response from the device (ms). Default: 1000.                   |
 | `retryCount` | `number`                             | How many times to repeat the request in case of a communication error. Default: 0. |
 | `retryDelay` | `number`                             | Delay between retries (ms). Default: 100.                                          |
+| `echo`       | `boolean`                            | Clear echo bytes after write (for RS485 half-duplex). Default: `false`.            |
 | `plugins`    | `TPluginConstructor[]`               | An array of plugin classes that will be initialized immediately.                   |
 
 Example of initialization with all parameters:
@@ -1919,7 +1920,7 @@ The primary interface for high-level operations.
     timeout?: number; // Request timeout (ms)
     retryCount?: number; // Number of retries if communication error occurs
     retryDelay?: number; // Delay between retries (ms)
-    echoEnabled?: boolean; // Clear echo bytes (for RS485)
+    echo?: boolean; // Clear echo bytes after write (for RS485 half-duplex)
     plugins?: TPluginConstructor[]; // List of plugin classes
 }
 ```
@@ -2193,6 +2194,14 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 
 # <span id="changelog">Changelog</span>
 
+### 4.6.0 (2026-08-17)
+
+- **ModbusClient — RS-485 Echo Support**:
+  - Added `echo` option to `IModbusClientOptions`. When set to `true`, the protocol layer reads and discards the echo bytes returned by the RS-485 bus after each write, before waiting for the actual device response. Default: `false` (no echo handling).
+  - Echo handling is implemented in `ModbusProtocol.exchange()` at the protocol layer.
+  - Zero overhead when disabled — a single boolean check per exchange.
+  - Renamed from the `echoEnabled` to `echo`.
+
 ### 4.5.0 (2026-07-21)
 
 - **Scanner — `onRegisterRead` callback**:
@@ -2240,17 +2249,3 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
   - **`NodeSerialTransport._onClose` didn't clear `_connectedSlaveIds`** — After port close, stale slave IDs persisted, causing `notifyDeviceConnected` to skip re-notification on reconnect (unlike TCP which correctly cleared). Added `this._connectedSlaveIds.clear()`
   - **`AbortSignal` not passed to polling `fn()`** — TaskController called `fnToExecute()` without the abort signal, making Modbus operations non-interruptible on stop/pause. Now calls `fnToExecute(signal)` so the underlying operation can respond to cancellation
   - **Errors silently swallowed in disconnect notifications** — `_notifyPortDisconnected` and `_releaseAllResources` used `.catch(() => {})`. Now logs errors via `this.logger.error()` for visibility during debugging
-
-### 4.3.3 (2026-04-23)
-
-- **Critical — StateManager passes slaveIds to PortTracker**: `notifyPortConnected()` was calling `tracker.notifyConnected()` without forwarding `slaveIds`, so the per-transport PortTracker always stored an empty array. Now correctly forwards the list
-- **Critical — ITransportController async signatures**: `assignSlaveIdToTransport()` and `removeSlaveIdFromTransport()` were declared as `void` in the interface but implemented as `async`. Fixed to `Promise<void>` — callers must now `await` these methods
-- **Critical — RTU Emulator handlers**: All handler methods (`setDeviceStateHandler`, `setPortStateHandler`, `notifyDeviceConnected`, `notifyDeviceDisconnected`, etc.) were empty stubs. Now properly store and invoke handlers on `connect()`/`disconnect()` — device and port tracking works for RTU emulator
-- **Critical — TCP Emulator device disconnect**: `disconnect()` only called the port handler, not the device handler. DeviceConnectionTracker left slaves in `connected` state forever. Now emits `ManualDisconnect` for both device and port
-- **Fix — Debounce unhandled rejection**: `_doNotifyDisconnected` in both `DeviceConnectionTracker` and `PortConnectionTracker` is `async` but was called from `setTimeout` without `.catch()`. Now wrapped to prevent unhandled promise rejections
-- **Fix — PortTracker type safety**: `setHandler` used `error as any` cast. Replaced with proper type narrowing `{ type: EConnectionErrorType; message: string } | undefined`
-- **Fix — createTrackersForTransport leaks**: `reloadTransport()` called `createTrackersForTransport()` for existing transportId without clearing old trackers, leaking debounce timers and handlers. Now clears old trackers before creating new ones
-- **Fix — NodeSerial passes connectedSlaveIds on disconnect**: `_notifyPortDisconnected()` always passed `[]` instead of `Array.from(this._connectedSlaveIds)`. Now correctly reports affected devices
-- **Fix — removeDeviceState targets specific transport**: Iterated all trackers instead of the one owning the slave. New signature `removeDeviceState(slaveId, transportId?)` with backwards-compatible fallback
-- **Fix — TrafficSniffer bytesPerSecond when transfer=0**: When `recordRxStart` wasn't called, `bytesPerSecond` used `1ms` as divisor producing inflated values (e.g. 8000 B/s for 8 bytes). Now returns `0` when transfer time is unavailable
-- **Fix — TrafficSniffer handler error catching**: `_emitTransaction` and `_notify` used `Promise.resolve().then()` without `.catch()`, causing unhandled rejections when user handlers throw. Now wrapped in try/catch with error logging

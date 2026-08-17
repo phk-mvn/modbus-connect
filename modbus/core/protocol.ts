@@ -20,7 +20,8 @@ export class ModbusProtocol implements IModbusProtocol {
    */
   constructor(
     private _transport: ITransport,
-    private _framerClass: typeof framer.RtuFramer | typeof framer.TcpFramer
+    private _framerClass: typeof framer.RtuFramer | typeof framer.TcpFramer,
+    private _echo: boolean = false
   ) {
     // Minimum ADU length required before attempting to parse:
     // - RTU: at least 4 bytes (slaveId + functionCode + CRC)
@@ -61,6 +62,14 @@ export class ModbusProtocol implements IModbusProtocol {
 
     if (this._transport.flush) await this._transport.flush();
     await this._transport.write(aduRequest);
+
+    if (this._echo) {
+      const echoLen = aduRequest.length;
+      const elapsed = Date.now() - startTime;
+      if (elapsed < timeout) {
+        await this._transport.read(echoLen, timeout - elapsed);
+      }
+    }
 
     let buffer: Uint8Array = new Uint8Array(0);
 
