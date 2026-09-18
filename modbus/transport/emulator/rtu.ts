@@ -43,7 +43,10 @@ export default class NodeRtuEmulatorTransport implements ITransport {
    */
   constructor(options: IRtuEmulatorTransportOptions = {}) {
     const slaveId = options.slaveId ?? 1;
-    this.core = new ModbusSlaveCore(slaveId, { loggerEnabled: options.loggerEnabled ?? true });
+    this.core = new ModbusSlaveCore(slaveId, {
+      loggerEnabled: options.loggerEnabled ?? true,
+      deviceIdentification: options.deviceIdentification,
+    });
 
     this.responseLatencyMs = options.responseLatencyMs ?? 30;
 

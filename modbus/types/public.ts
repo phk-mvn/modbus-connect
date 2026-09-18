@@ -525,6 +525,7 @@ export interface IModbusSlaveCoreEmulator {
 export interface IRtuEmulatorTransportOptions {
   slaveId?: number;
   loggerEnabled?: boolean;
+  deviceIdentification?: Record<number, string>;
   initialRegisters?: any;
   responseLatencyMs?: number;
 }
@@ -533,6 +534,7 @@ export interface ITcpEmulatorTransportOptions {
   slaveId?: number;
   responseLatencyMs?: number;
   loggerEnabled?: boolean;
+  deviceIdentification?: Record<number, string>;
   initialRegisters?: any;
   RSMode?: TRSMode;
 }

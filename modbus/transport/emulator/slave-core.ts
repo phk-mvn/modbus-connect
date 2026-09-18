@@ -37,6 +37,9 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   private holdingRegisters: Map<number, number> = new Map();
   private inputRegisters: Map<number, number> = new Map();
 
+  private identification: Map<number, Uint8Array> = new Map();
+  private conformityLevel: number = 0x83;
+
   private exceptions: Map<string, number> = new Map();
   private _infinityTasks: Map<string, ReturnType<typeof setInterval>> = new Map();
 
@@ -51,13 +54,23 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
    * @param options.loggerEnabled - Whether to enable logging (default: false). Note: logger is always created, but output depends on this flag and environment.
    * @throws {ModbusInvalidAddressError} If slaveId is invalid.
    */
-  constructor(slaveId: number = 1, options: { loggerEnabled?: boolean } = {}) {
+  constructor(
+    slaveId: number = 1,
+    options: { loggerEnabled?: boolean; deviceIdentification?: Record<number, string> } = {}
+  ) {
     if (typeof slaveId !== 'number' || !Number.isInteger(slaveId) || slaveId < 0 || slaveId > 247) {
       throw new ModbusInvalidAddressError(slaveId);
     }
 
     this.slaveId = slaveId;
     this.loggerEnabled = !!options.loggerEnabled;
+
+    if (options.deviceIdentification) {
+      const enc = new TextEncoder();
+      for (const [id, value] of Object.entries(options.deviceIdentification)) {
+        this.identification.set(Number(id), enc.encode(value));
+      }
+    }
 
     this.logger = pino({
       level: 'info',
@@ -96,6 +109,8 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
     try {
       switch (functionCode) {
+        case ModbusFunctionCode.READ_DEVICE_IDENTIFICATION:
+          return this.handleReadDeviceIdentification(pdu);
         case ModbusFunctionCode.READ_COILS:
           return this.handleReadCoils(pdu);
         case ModbusFunctionCode.READ_DISCRETE_INPUTS:
@@ -130,6 +145,67 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
       // By default, we return Illegal Function
       return new Uint8Array([functionCode | 0x80, 0x01]);
     }
+  }
+
+  /**
+   * Handles Modbus function code 0x2b - Read device identification.
+   * @private
+   */
+  private handleReadDeviceIdentification(pdu: Uint8Array): Uint8Array {
+    if (pdu[1] !== 0x0e) {
+      throw new ModbusExceptionError(ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 0x03);
+    }
+
+    const category = pdu[2];
+    const objectId = pdu[3];
+
+    if (category < 0x01 || category > 0x04 || this.identification.size === 0) {
+      throw new ModbusExceptionError(ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 0x03);
+    }
+
+    const enc = new TextEncoder();
+    const collected: Array<[number, Uint8Array]> = [];
+    const collect = (id: number): boolean => {
+      const value = this.identification.get(id);
+      if (!value) return false;
+      collected.push([id, value]);
+      return true;
+    };
+
+    if (category === 0x04) {
+      if (!collect(objectId)) {
+        throw new ModbusExceptionError(ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 0x03);
+      }
+    } else {
+      const maxId = category === 0x01 ? 0x02 : category === 0x02 ? 0x06 : 0xff;
+      for (let id = objectId; id <= maxId; id++) {
+        if (!collect(id)) break;
+      }
+      if (collected.length === 0) {
+        throw new ModbusExceptionError(ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 0x03);
+      }
+    }
+
+    const bodyLength = collected.reduce((sum, [, v]) => sum + 2 + v.length, 0);
+    const response = new Uint8Array(7 + bodyLength);
+
+    response[0] = ModbusFunctionCode.READ_DEVICE_IDENTIFICATION;
+    response[1] = 0x0e;
+    response[2] = category;
+    response[3] = this.conformityLevel;
+    response[4] = 0x00; // moreFollows
+    response[5] = 0x00; // newObjectId
+    response[6] = collected.length;
+
+    let offset = 7;
+    for (const [id, value] of collected) {
+      response[offset] = id;
+      response[offset + 1] = value.length;
+      response.set(value, offset + 2);
+      offset += 2 + value.length;
+    }
+
+    return response;
   }
 
   /**

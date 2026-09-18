@@ -215,6 +215,7 @@ export class RtuEmulatorFactory extends TransportFactoryBase<
       slaveId: options.slaveId ?? 1,
       responseLatencyMs: options.responseLatencyMs ?? 5,
       loggerEnabled: options.loggerEnabled !== false,
+      deviceIdentification: options.deviceIdentification,
       initialRegisters: options.initialRegisters,
     });
   }
@@ -240,6 +241,7 @@ export class TcpEmulatorFactory extends TransportFactoryBase<
       slaveId: options.slaveId ?? 1,
       responseLatencyMs: options.responseLatencyMs ?? 0,
       loggerEnabled: options.loggerEnabled !== false,
+      deviceIdentification: options.deviceIdentification,
       initialRegisters: options.initialRegisters,
       RSMode: options.RSMode ?? 'TCP/IP',
     });

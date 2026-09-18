@@ -1662,6 +1662,7 @@ Emulators are registered as regular transports using `addTransport`.
 | `slaveId`           | `number`   | Modbus Unit ID of the emulator (0-247). Defaults to 1.           |
 | `responseLatencyMs` | `number`   | Artificial response delay in ms (simulates line speed).          |
 | `initialRegisters`  | `object`   | An object with initial data for memory.                          |
+| `deviceIdentification` | `object` | Device identification objects (FC `0x2B`/`0x0E`): `{ [objectId]: string }`. |
 | `loggerEnabled`     | `boolean`  | Enable/disable internal logging. Defaults to `true`.             |
 | `slaveIds`          | `number[]` | List of IDs that the controller should forward to this emulator. |
 | `RSMode`            | `string`   | For `tcp-emulator` only: operating mode (default: 'TCP/IP').     |
@@ -1735,6 +1736,39 @@ core.addRegisters({
 ```bash
 [10:05:00] INFO: [ModbusSlaveCore] Registers added successfully: {"coils":2,"discrete":1,"holding":2,"input":1}
 ```
+
+---
+
+`deviceIdentification`
+
+Emulators support the standard Read Device Identification function (FC `0x2B` / MEI `0x0E`). Data is filled manually via the `deviceIdentification` option — no extra code is required, you only set the transport type (`rtu-emulator` / `tcp-emulator`) and the client method `readDeviceIdentification()` works as with a real device.
+
+Object IDs (standard): `0x00` VendorName, `0x01` ProductCode, `0x02` MajorMinorRevision, `0x03` VendorUrl, `0x04` ProductName, `0x05` ModelName, `0x06` UserApplicationName.
+
+**Example**:
+
+```js
+await controller.addTransport('SIM_TCP', 'tcp-emulator', {
+  slaveId: 122,
+  deviceIdentification: {
+    0: 'MyVendor',
+    1: 'MY-100',
+    2: 'v1.2.3',
+    3: 'https://my-site.com',
+    4: 'MyProduct',
+    5: 'SLV-100',
+    6: 'Test Slave',
+  },
+  slaveIds: [122],
+});
+
+const client = new ModbusClient(controller, 122, { framing: 'tcp', timeout: 2000 });
+const id = await client.readDeviceIdentification('utf-8');
+console.log(id.objects);
+// { 0: 'MyVendor', 1: 'MY-100', 2: 'v1.2.3' } — Basic (0x01): objectId 0..2
+```
+
+The emulator answers all read categories: Basic (`0x01`), Regular (`0x02`), Extended (`0x03`) and Individual (`0x04`). If `deviceIdentification` is not set, the slave responds with exception `0x03` (Illegal Data Value).
 
 ---
 

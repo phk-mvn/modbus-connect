@@ -45,7 +45,10 @@ export default class NodeTcpEmulatorTransport implements ITransport {
   constructor(options: ITcpEmulatorTransportOptions = {}) {
     const slaveId = options.slaveId ?? 1;
 
-    this.core = new ModbusSlaveCore(slaveId, { loggerEnabled: options.loggerEnabled ?? true });
+    this.core = new ModbusSlaveCore(slaveId, {
+      loggerEnabled: options.loggerEnabled ?? true,
+      deviceIdentification: options.deviceIdentification,
+    });
     this.responseLatencyMs = options.responseLatencyMs ?? 5;
 
     this.logger = pino({
