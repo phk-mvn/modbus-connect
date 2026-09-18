@@ -2228,6 +2228,14 @@ All custom errors in the library inherit from the `ModbusError` base class, whic
 
 # <span id="changelog">Changelog</span>
 
+### 4.7.0 (2026-09-18)
+
+- **Modbus Emulators (RTU & TCP) — Read Device Identification (`FC 0x2B` / MEI `0x0E`)**:
+  - Added support for the standard `0x2B`/`0x0E` function to `ModbusSlaveCore`, so `rtu-emulator` and `tcp-emulator` now answer identification requests like a real device.
+  - Identification data is filled manually via the new `deviceIdentification?: Record<number, string>` option on `IRtuEmulatorTransportOptions` / `ITcpEmulatorTransportOptions`, passed through `addTransport(...)`. No additional code is required — you only set the transport type and `client.readDeviceIdentification()` works as usual.
+  - The emulator responds to all read categories: Basic (`0x01`), Regular (`0x02`), Extended (`0x03`) and Individual (`0x04`), with conformity level `0x83` (Extended + stream access).
+  - If `deviceIdentification` is not set, the slave responds with exception `0x03` (Illegal Data Value).
+
 ### 4.6.0 (2026-08-17)
 
 - **ModbusClient — RS-485 Echo Support**:
