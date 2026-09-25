@@ -2,7 +2,8 @@
 
 import * as net from 'net';
 import { Mutex } from 'async-mutex';
-import { pino, Logger } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
+import { createTsLogger } from '../../utils/logger.js';
 
 import {
   NodeSerialWriteError,
@@ -36,7 +37,7 @@ const NODE_TCP_CONSTANTS = {
  */
 export default class NodeTcpTransport implements ITransport {
   public isOpen: boolean = false;
-  public logger: Logger;
+  public logger: Logger<ILogObj>;
 
   private host: string;
   private port: number;
@@ -65,9 +66,15 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Creates an instance of NodeTcpTransport.
+   *
    * @param host - The IP address or hostname of the Modbus device/gateway.
    * @param port - The TCP port (defaults to 502).
    * @param options - Configuration for timeouts, buffer sizes, and reconnection.
+   * @param options.readTimeout - Maximum time to wait for data during read operations in ms (default: 4000).
+   * @param options.writeTimeout - Maximum time to wait for write operations in ms (default: 3000).
+   * @param options.maxBufferSize - Maximum size of the internal circular read buffer in bytes (default: 8192).
+   * @param options.reconnectInterval - Delay between automatic reconnection attempts in ms (default: 3000).
+   * @param options.maxReconnectAttempts - Maximum number of reconnection attempts before giving up (default: Infinity).
    */
   constructor(
     host: string,
@@ -87,28 +94,18 @@ export default class NodeTcpTransport implements ITransport {
 
     this._readBuffer = new Uint8Array(this.options.maxBufferSize);
 
-    this.logger = pino({
-      level: 'info',
-      base: { component: 'Node TCP', host: this.host, port: this.port },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component,host,port',
-                messageFormat: '[{component}] {msg}',
-              },
-            }
-          : undefined,
+    this.logger = createTsLogger({
+      name: 'Node TCP',
+      bindings: { host: this.host, port: this.port },
     });
   }
 
   /**
    * Attaches a TrafficSniffer instance to monitor and analyze raw TCP traffic.
    * This allows for sub-millisecond latency tracking and real-time MBAP/PDU inspection.
+   *
    * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   * @returns void
    */
   public setSniffer(sniffer: TrafficSniffer): void {
     this._sniffer = sniffer;
@@ -116,6 +113,7 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Returns the transport protocol mode.
+   *
    * @returns Always returns 'TCP/IP'.
    */
   public getRSMode(): TRSMode {
@@ -124,7 +122,9 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Sets the callback for device (slave) state changes.
+   *
    * @param handler - Function to call when a device connects or disconnects.
+   * @returns void
    */
   public setDeviceStateHandler(handler: TDeviceStateHandler): void {
     this._deviceStateHandler = handler;
@@ -132,7 +132,9 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Sets the callback for port (socket) state changes.
+   *
    * @param handler - Function to call when the TCP connection state changes.
+   * @returns void
    */
   public setPortStateHandler(handler: TPortStateHandler): void {
     this._portStateHandler = handler;
@@ -140,6 +142,8 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Removes the device state handler and stops device tracking.
+   *
+   * @returns Promise resolving when device tracking is disabled.
    */
   public async disableDeviceTracking(): Promise<void> {
     this._deviceStateHandler = null;
@@ -147,7 +151,9 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Enables device tracking and optionally sets a new handler.
+   *
    * @param handler - Optional device state handler.
+   * @returns Promise resolving when device tracking is enabled.
    */
   public async enableDeviceTracking(handler?: TDeviceStateHandler): Promise<void> {
     if (handler) this._deviceStateHandler = handler;
@@ -156,7 +162,9 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Flags a specific Slave ID as connected and notifies the handler.
    * Typically called by the Client after a successful response.
+   *
    * @param slaveId - The Modbus unit identifier.
+   * @returns void
    */
   public notifyDeviceConnected(slaveId: number): void {
     if (this._connectedSlaveIds.has(slaveId)) return;
@@ -169,9 +177,11 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Flags a specific Slave ID as disconnected and notifies the handler.
+   *
    * @param slaveId - The Modbus unit identifier.
    * @param errorType - The reason for disconnection.
    * @param errorMessage - Detailed error description.
+   * @returns void
    */
   public notifyDeviceDisconnected(
     slaveId: number,
@@ -188,7 +198,9 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Establishes the TCP connection to the host and port.
    * Sets up event listeners for socket data, errors, and closure.
+   *
    * @returns A promise that resolves when the connection is established.
+   * @throws {ModbusTimeoutError} If TCP connection times out after 10 seconds.
    */
   public async connect(): Promise<void> {
     if (this._isConnecting || this.isOpen) return;
@@ -231,7 +243,10 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Internal handler for incoming socket data.
    * Implements filtering for non-Modbus text noise and manages the read buffer.
+   *
    * @param data - Raw buffer received from the socket.
+   * @returns void
+   * @private
    */
   private _onData(data: Buffer): void {
     if (this._sniffer && this._waitingForResponse && this._readBufferCount === 0) {
@@ -262,7 +277,10 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Internal handler for socket errors.
    * Triggers connection loss logic if the socket was previously open.
+   *
    * @param err - The Error object from the socket.
+   * @returns void
+   * @private
    */
   private _onError(err: Error): void {
     this.logger.error(`Socket error: ${err.message}`);
@@ -274,6 +292,9 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Internal handler for the socket 'close' event.
    * Updates state, notifies handlers, and schedules reconnection if applicable.
+   *
+   * @returns void
+   * @private
    */
   private _onClose(): void {
     const wasOpen = this.isOpen;
@@ -302,6 +323,9 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Schedules a reconnection attempt based on the configured interval.
+   *
+   * @returns void
+   * @private
    */
   private _scheduleReconnect(): void {
     if (this._reconnectTimeout || this._reconnectAttempts >= this.options.maxReconnectAttempts)
@@ -315,6 +339,9 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Notifies the port state handler that a connection has been established.
+   *
+   * @returns void
+   * @private
    */
   private _notifyPortConnected(): void {
     if (this._portStateHandler) {
@@ -324,9 +351,12 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Notifies the port state handler about a disconnection.
+   *
    * @param errorType - The category of the connection error.
    * @param errorMessage - Descriptive text of the error.
    * @param slaveIds - List of slave IDs that are now unreachable.
+   * @returns void
+   * @private
    */
   private _notifyPortDisconnected(
     errorType: EConnectionErrorType,
@@ -340,7 +370,10 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Logic for handling unexpected connection loss.
+   *
    * @param reason - Text description of why the connection was lost.
+   * @returns void
+   * @private
    */
   private _handleConnectionLoss(reason: string): void {
     const affectedSlaves = Array.from(this._connectedSlaveIds);
@@ -350,8 +383,10 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Writes a byte buffer to the TCP socket.
    * Operation is protected by a mutex to ensure sequential access.
+   *
    * @param buffer - Data to be sent.
-   * @throws NodeSerialWriteError if the socket is closed or writing fails.
+   * @returns Promise resolving when write completes.
+   * @throws {NodeSerialWriteError} If the socket is closed or writing fails.
    */
   public async write(buffer: Uint8Array): Promise<void> {
     if (!this.isOpen || !this.socket) throw new NodeSerialWriteError('Socket is closed');
@@ -377,10 +412,13 @@ export default class NodeTcpTransport implements ITransport {
   /**
    * Reads a specific number of bytes from the internal buffer.
    * Polls the buffer until the required length is met or the timeout expires.
+   *
    * @param length - Number of bytes to read.
-   * @param timeout - Maximum time to wait for data (defaults to transport options).
+   * @param timeout - Maximum time to wait for data in milliseconds (defaults to transport options).
    * @returns A promise resolving to the Uint8Array data.
-   * @throws ModbusTimeoutError if data is not received within the specified time.
+   * @throws {ModbusDataConversionError} If length is not positive.
+   * @throws {Error} If transport closes during read.
+   * @throws {ModbusTimeoutError} If data is not received within the specified time.
    */
   public async read(
     length: number,
@@ -434,6 +472,8 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Gracefully closes the TCP connection and stops reconnection attempts.
+   *
+   * @returns Promise resolving when disconnection completes.
    */
   public async disconnect(): Promise<void> {
     this._shouldReconnect = false;
@@ -464,6 +504,8 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Clears the current read buffer.
+   *
+   * @returns Promise resolving when buffer is flushed.
    */
   public async flush(): Promise<void> {
     this._readBufferHead = 0;
@@ -473,6 +515,8 @@ export default class NodeTcpTransport implements ITransport {
 
   /**
    * Forcefully destroys the transport, closing sockets and clearing all timeouts.
+   *
+   * @returns void
    */
   destroy(): void {
     this._shouldReconnect = false;

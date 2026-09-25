@@ -1,12 +1,10 @@
-.claude/
-.vscode/
 modbus/
 node_modules/
+docs/
 .gitignore
 .npmignore
 .prettierrc.json
 eslint.config.js
 test.js
-sgm130-plugins.js
 tsconfig.json
 tsconfig.tsbuildinfo

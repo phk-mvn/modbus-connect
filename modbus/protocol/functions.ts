@@ -1,5 +1,7 @@
 // modbus/protocol/functions.ts
 
+import { ModbusInsufficientDataError, ModbusUnexpectedFunctionCodeError } from '../core/errors.js';
+
 // ====================== READ COILS (0x01) ======================
 
 /**
@@ -27,10 +29,12 @@ export const buildReadCoilsRequest = (startAddress: number, quantity: number): U
  * @param {Uint8Array} pdu - The received response PDU.
  * @param {number} expectedQuantity - The number of coils requested (to trim padding bits).
  * @returns {boolean[]} Array of boolean values representing coil states.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseReadCoilsResponse = (pdu: Uint8Array, expectedQuantity: number): boolean[] => {
-  if (pdu.length < 2 || pdu[0] !== 0x01) throw new Error('Invalid ReadCoils PDU');
+  if (pdu.length < 2) throw new ModbusInsufficientDataError(pdu.length, 2);
+  if (pdu[0] !== 0x01) throw new ModbusUnexpectedFunctionCodeError(0x01, pdu[0]!);
   const byteCount = pdu[1]!;
   const result: boolean[] = new Array(expectedQuantity);
   let bitIndex = 0;
@@ -73,13 +77,15 @@ export const buildReadDiscreteInputsRequest = (
  * @param {Uint8Array} pdu - The received response PDU.
  * @param {number} expectedQuantity - The number of inputs requested.
  * @returns {boolean[]} Array of boolean values.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseReadDiscreteInputsResponse = (
   pdu: Uint8Array,
   expectedQuantity: number
 ): boolean[] => {
-  if (pdu.length < 2 || pdu[0] !== 0x02) throw new Error('Invalid ReadDiscreteInputs PDU');
+  if (pdu.length < 2) throw new ModbusInsufficientDataError(pdu.length, 2);
+  if (pdu[0] !== 0x02) throw new ModbusUnexpectedFunctionCodeError(0x02, pdu[0]!);
   const byteCount = pdu[1]!;
   const result: boolean[] = new Array(expectedQuantity);
   let bitIndex = 0;
@@ -122,10 +128,12 @@ export const buildReadHoldingRegistersRequest = (
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {number[]} Array of 16-bit register values.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseReadHoldingRegistersResponse = (pdu: Uint8Array): number[] => {
-  if (pdu.length < 2 || pdu[0] !== 0x03) throw new Error('Invalid ReadHoldingRegisters PDU');
+  if (pdu.length < 2) throw new ModbusInsufficientDataError(pdu.length, 2);
+  if (pdu[0] !== 0x03) throw new ModbusUnexpectedFunctionCodeError(0x03, pdu[0]!);
   const byteCount = pdu[1]!;
   const regCount = Math.floor(byteCount / 2);
   const result: number[] = new Array(regCount);
@@ -164,10 +172,12 @@ export const buildReadInputRegistersRequest = (
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {number[]} Array of 16-bit register values.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseReadInputRegistersResponse = (pdu: Uint8Array): number[] => {
-  if (pdu.length < 2 || pdu[0] !== 0x04) throw new Error('Invalid ReadInputRegisters PDU');
+  if (pdu.length < 2) throw new ModbusInsufficientDataError(pdu.length, 2);
+  if (pdu[0] !== 0x04) throw new ModbusUnexpectedFunctionCodeError(0x04, pdu[0]!);
   const byteCount = pdu[1]!;
   const regCount = Math.floor(byteCount / 2);
   const result: number[] = new Array(regCount);
@@ -204,12 +214,14 @@ export const buildWriteSingleCoilRequest = (address: number, value: boolean): Ui
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {{ startAddress: number; value: boolean }} The address and value written.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseWriteSingleCoilResponse = (
   pdu: Uint8Array
 ): { startAddress: number; value: boolean } => {
-  if (pdu.length < 5 || pdu[0] !== 0x05) throw new Error('Invalid WriteSingleCoil PDU');
+  if (pdu.length < 5) throw new ModbusInsufficientDataError(pdu.length, 5);
+  if (pdu[0] !== 0x05) throw new ModbusUnexpectedFunctionCodeError(0x05, pdu[0]!);
   return {
     startAddress: (pdu[1]! << 8) | pdu[2]!,
     value: ((pdu[3]! << 8) | pdu[4]!) === 0xff00,
@@ -240,12 +252,14 @@ export const buildWriteSingleRegisterRequest = (address: number, value: number):
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {{ startAddress: number; value: number }} The address and value written.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseWriteSingleRegisterResponse = (
   pdu: Uint8Array
 ): { startAddress: number; value: number } => {
-  if (pdu.length < 5 || pdu[0] !== 0x06) throw new Error('Invalid WriteSingleRegister PDU');
+  if (pdu.length < 5) throw new ModbusInsufficientDataError(pdu.length, 5);
+  if (pdu[0] !== 0x06) throw new ModbusUnexpectedFunctionCodeError(0x06, pdu[0]!);
   return {
     startAddress: (pdu[1]! << 8) | pdu[2]!,
     value: (pdu[3]! << 8) | pdu[4]!,
@@ -287,12 +301,14 @@ export const buildWriteMultipleCoilsRequest = (address: number, values: boolean[
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {{ startAddress: number; quantity: number }} Confirmation of written address and quantity.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseWriteMultipleCoilsResponse = (
   pdu: Uint8Array
 ): { startAddress: number; quantity: number } => {
-  if (pdu.length < 5 || pdu[0] !== 0x0f) throw new Error('Invalid WriteMultipleCoils PDU');
+  if (pdu.length < 5) throw new ModbusInsufficientDataError(pdu.length, 5);
+  if (pdu[0] !== 0x0f) throw new ModbusUnexpectedFunctionCodeError(0x0f, pdu[0]!);
   return {
     startAddress: (pdu[1]! << 8) | pdu[2]!,
     quantity: (pdu[3]! << 8) | pdu[4]!,
@@ -336,12 +352,14 @@ export const buildWriteMultipleRegistersRequest = (
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {{ startAddress: number; quantity: number }} Confirmation of written address and quantity.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseWriteMultipleRegistersResponse = (
   pdu: Uint8Array
 ): { startAddress: number; quantity: number } => {
-  if (pdu.length < 5 || pdu[0] !== 0x10) throw new Error('Invalid WriteMultipleRegisters PDU');
+  if (pdu.length < 5) throw new ModbusInsufficientDataError(pdu.length, 5);
+  if (pdu[0] !== 0x10) throw new ModbusUnexpectedFunctionCodeError(0x10, pdu[0]!);
   return {
     startAddress: (pdu[1]! << 8) | pdu[2]!,
     quantity: (pdu[3]! << 8) | pdu[4]!,
@@ -364,12 +382,14 @@ export const buildReportSlaveIdRequest = (): Uint8Array => {
  *
  * @param {Uint8Array} pdu - The received response PDU.
  * @returns {{ slaveId: number; isRunning: boolean; data: Uint8Array }} Slave information.
- * @throws {Error} If PDU is invalid or function code mismatch.
+ * @throws {ModbusInsufficientDataError} If the PDU is shorter than the minimum for this function code.
+ * @throws {ModbusUnexpectedFunctionCodeError} If the response function code differs from the requested one.
  */
 export const parseReportSlaveIdResponse = (
   pdu: Uint8Array
 ): { slaveId: number; isRunning: boolean; data: Uint8Array } => {
-  if (pdu.length < 4 || pdu[0] !== 0x11) throw new Error('Invalid ReportSlaveID PDU');
+  if (pdu.length < 4) throw new ModbusInsufficientDataError(pdu.length, 4);
+  if (pdu[0] !== 0x11) throw new ModbusUnexpectedFunctionCodeError(0x11, pdu[0]!);
   const byteCount = pdu[1]!;
   return {
     slaveId: pdu[2]!,

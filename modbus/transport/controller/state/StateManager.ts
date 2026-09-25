@@ -2,7 +2,7 @@
 
 import { Mutex } from 'async-mutex';
 import { DeviceConnectionTracker } from '../../trackers/device-tracker.js';
-import { PortConnectionTracker } from '../../trackers/port-tracker.js';
+import type { PortConnectionTracker } from '../../trackers/port-tracker.js';
 import type {
   TDeviceStateHandler,
   TPortStateHandler,
@@ -11,6 +11,10 @@ import type {
 
 /**
  * Interface for the State Manager.
+ *
+ * Since the port tracker now lives inside the port session (PortSession owns it),
+ * the port-level methods take the tracker instance explicitly. The StateManager only
+ * aggregates: it keeps the device trackers and fans events out to the global handlers.
  */
 export interface IStateManager {
   setDeviceHandler(handler: TDeviceStateHandler): void;
@@ -24,23 +28,23 @@ export interface IStateManager {
   ): Promise<void>;
 
   setPortHandler(handler: TPortStateHandler): void;
-  setPortHandlerForTransport(transportId: string, handler: TPortStateHandler): Promise<void>;
-  notifyPortConnected(transportId: string, slaveIds: number[]): Promise<void>;
+  setPortTrackerHandler(tracker: PortConnectionTracker, handler: TPortStateHandler): Promise<void>;
+  notifyPortConnected(tracker: PortConnectionTracker, slaveIds: number[]): Promise<void>;
   notifyPortDisconnected(
-    transportId: string,
+    tracker: PortConnectionTracker,
     slaveIds: number[],
     errorType: EConnectionErrorType,
     message: string
   ): Promise<void>;
 
-  createTrackersForTransport(transportId: string): void;
+  createDeviceTrackerForTransport(transportId: string): void;
   clearTransport(transportId: string): Promise<void>;
   removeDeviceState(slaveId: number, transportId?: string): void;
 }
 
 /**
- * Manages connection states and event propagation for devices (Slave IDs) and ports (Transports).
- * It aggregates local transport trackers into global state handlers.
+ * Manages connection states and event propagation for devices (Slave IDs).
+ * It aggregates per-transport device trackers into the global state handlers.
  */
 export class StateManager implements IStateManager {
   private readonly _mutex = new Mutex();
@@ -49,29 +53,20 @@ export class StateManager implements IStateManager {
   private _globalPortHandler: TPortStateHandler | null = null;
 
   private readonly _deviceTrackers = new Map<string, DeviceConnectionTracker>();
-  private readonly _portTrackers = new Map<string, PortConnectionTracker>();
-
   private readonly _deviceHandlers = new Map<string, TDeviceStateHandler>();
-  private readonly _portHandlers = new Map<string, TPortStateHandler>();
 
   /**
-   * Initializes internal trackers for a newly created transport.
+   * Initializes the device tracker for a newly created transport.
    * @param {string} transportId - The transport identifier.
    */
-  public createTrackersForTransport(transportId: string): void {
+  public createDeviceTrackerForTransport(transportId: string): void {
     const oldDeviceTracker = this._deviceTrackers.get(transportId);
-    const oldPortTracker = this._portTrackers.get(transportId);
     if (oldDeviceTracker)
       oldDeviceTracker
         .clear()
         .catch(e => console.error('[StateManager] Error clearing old device tracker:', e));
-    if (oldPortTracker)
-      oldPortTracker
-        .clear()
-        .catch(e => console.error('[StateManager] Error clearing old port tracker:', e));
 
     this._deviceTrackers.set(transportId, new DeviceConnectionTracker());
-    this._portTrackers.set(transportId, new PortConnectionTracker());
   }
 
   /**
@@ -143,53 +138,54 @@ export class StateManager implements IStateManager {
   }
 
   /**
-   * Sets a port handler for a specific transport.
+   * Registers a per-transport port handler on the tracker owned by the port session.
+   * @param {PortConnectionTracker} tracker - Tracker owned by the port session.
+   * @param {TPortStateHandler} handler - Callback for events from this port.
    */
-  public async setPortHandlerForTransport(
-    transportId: string,
+  public async setPortTrackerHandler(
+    tracker: PortConnectionTracker,
     handler: TPortStateHandler
   ): Promise<void> {
-    const tracker = this._portTrackers.get(transportId);
-    if (!tracker) {
-      throw new Error(`No port tracker for transport "${transportId}"`);
-    }
     await tracker.setHandler(handler);
-    this._portHandlers.set(transportId, handler);
   }
 
   /**
-   * Notifies that a port (transport) is successfully connected.
+   * Notifies that a port (transport) has been connected.
+   * @param tracker The PortConnectionTracker instance for the port session.
+   * @param slaveIds The list of Slave IDs that are currently connected on this port.
+   * @returns {Promise<void>} A promise that resolves when the notification has been processed.
    */
-  public async notifyPortConnected(transportId: string, slaveIds: number[]): Promise<void> {
-    const tracker = this._portTrackers.get(transportId);
-    if (tracker) {
-      await tracker.notifyConnected(slaveIds);
-    }
-
+  public async notifyPortConnected(
+    tracker: PortConnectionTracker,
+    slaveIds: number[]
+  ): Promise<void> {
+    await tracker.notifyConnected(slaveIds);
     this._emitPortState(true, slaveIds, undefined);
   }
 
   /**
-   * Notifies that a port (transport) has been disconnected or failed.
+   * Notifies that a port (transport) has been disconnected.
+   * @param tracker The PortConnectionTracker instance for the port session.
+   * @param slaveIds The list of Slave IDs that were connected on this port before disconnection.
+   * @param errorType The type of error that caused the disconnection.
+   * @param message A descriptive message about the disconnection.
+   * @returns {Promise<void>} A promise that resolves when the notification has been processed.
    */
   public async notifyPortDisconnected(
-    transportId: string,
+    tracker: PortConnectionTracker,
     slaveIds: number[],
     errorType: EConnectionErrorType,
     message: string
   ): Promise<void> {
-    const tracker = this._portTrackers.get(transportId);
-    if (tracker) {
-      tracker.notifyDisconnected(errorType, message, slaveIds);
-    }
-
+    tracker.notifyDisconnected(errorType, message, slaveIds);
     this._emitPortState(false, slaveIds, { type: errorType, message });
   }
 
   /**
-   * Cleans up stored state for a specific slave.
-   * @param {number} slaveId - The slave ID to remove.
-   * @param {string} [transportId] - Optional transport ID to limit the scope.
+   * Removes the state of a specific device (Slave ID) from the tracker of a given transport.
+   * @param slaveId The Slave ID whose state should be removed.
+   * @param transportId Optional transport ID to target a specific tracker. If omitted, the state will be removed from all trackers.
+   * @returns {void}
    */
   public removeDeviceState(slaveId: number, transportId?: string): void {
     if (transportId) {
@@ -203,9 +199,9 @@ export class StateManager implements IStateManager {
   }
 
   /**
-   * Completely removes a transport and all its associated trackers and handlers.
-   * This is a thread-safe operation.
-   * @param {string} transportId - The transport ID to clear.
+   * Clears the device tracker and associated handlers for a specific transport.
+   * @param transportId The transport ID whose device tracker should be cleared.
+   * @returns {Promise<void>} A promise that resolves when the tracker has been cleared.
    */
   public async clearTransport(transportId: string): Promise<void> {
     await this._mutex.runExclusive(async () => {
@@ -215,19 +211,16 @@ export class StateManager implements IStateManager {
         this._deviceTrackers.delete(transportId);
       }
 
-      const portTracker = this._portTrackers.get(transportId);
-      if (portTracker) {
-        await portTracker.clear();
-        this._portTrackers.delete(transportId);
-      }
-
       this._deviceHandlers.delete(transportId);
-      this._portHandlers.delete(transportId);
     });
   }
 
   /**
    * Internal helper to propagate events to the global device handler.
+   * @param slaveId The Slave ID for which to emit state.
+   * @param connected Whether the device is connected (true) or disconnected (false).
+   * @param error Optional error information if the device is disconnected.
+   * @returns {void}
    * @private
    */
   private _emitDeviceState(
@@ -246,6 +239,10 @@ export class StateManager implements IStateManager {
 
   /**
    * Internal helper to propagate events to the global port handler.
+   * @param connected Whether the port is connected (true) or disconnected (false).
+   * @param slaveIds The list of Slave IDs associated with the port.
+   * @param error Optional error information if the port is disconnected.
+   * @returns {void}
    * @private
    */
   private _emitPortState(

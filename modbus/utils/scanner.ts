@@ -1,6 +1,12 @@
 // modbus/utils/scanner.ts
 
-import { Logger } from 'pino';
+/**
+ * Modbus network and serial bus discovery scanner.
+ * Probes baud rates, parities, and unit IDs on RTU and TCP buses
+ * to discover connected devices without prior knowledge of communication parameters.
+ */
+
+import { Logger, type ILogObj } from 'tslog';
 import { TransportFactory } from '../transport/factory.js';
 import { ModbusProtocol } from '../core/protocol.js';
 import { RtuFramer, TcpFramer } from '../protocol/framing.js';
@@ -14,14 +20,18 @@ import {
   IScanController,
   IScanStats,
   IScanReport,
-  IScanProgressRtu,
-  IScanProgressTcp,
   TScanProfile,
   TParityType,
 } from '../types/public.js';
 import { ModbusExceptionError, ModbusCRCError } from '../core/errors.js';
 import { TrafficSniffer } from '../transport/trackers/traffic-sniffer.js';
 
+/**
+ * Predefined scanning parameter presets.
+ * - 'quick': Standard baud rates, common parities, short timeouts.
+ * - 'deep': Broad sweep covering low baud rates down to 1200, all parity combinations, longer timeouts.
+ * - 'custom': Empty preset requiring explicit option definitions.
+ */
 const SCAN_PROFILES: Record<TScanProfile, Partial<IScanOptions>> = {
   quick: {
     bauds: [115200, 57600, 38400, 19200, 9600],
@@ -46,6 +56,12 @@ const SCAN_PROFILES: Record<TScanProfile, Partial<IScanOptions>> = {
   custom: {},
 };
 
+/**
+ * Resolves user-supplied scan options with profile defaults and fallback values.
+ *
+ * @param options - Incomplete or user-customized scan options.
+ * @returns Fully populated scan options object with guaranteed default values.
+ */
 function resolveOptions(
   options: IScanOptions
 ): Required<
@@ -77,45 +93,76 @@ function resolveOptions(
   };
 }
 
+/**
+ * Checks whether the scan process has been halted via the controller or an AbortSignal.
+ *
+ * @param ctrl - Scan controller instance.
+ * @param signal - Optional AbortSignal.
+ * @returns True if scan has been stopped or aborted, false otherwise.
+ */
 function isScanStopped(ctrl: IScanController, signal?: AbortSignal): boolean {
   return ctrl.isStopped || (signal?.aborted ?? false);
 }
 
 /**
- * Controller class to manage the execution state of a scanning process.
- * Provides methods to pause, resume, or stop active scans.
+ * Controller class to manage the execution state of an active scanning process.
+ * Provides methods to pause, resume, or abort ongoing scans.
  */
 export class ScanController implements IScanController {
   private _isPaused: boolean = false;
   private _isStopped: boolean = false;
 
-  /** Pauses the current scan. Probes will wait until resume is called. */
+  /**
+   * Pauses the current scan. Probe requests will pause before the next attempt until resumed.
+   *
+   * @returns void
+   */
   public pause(): void {
     this._isPaused = true;
   }
 
-  /** Resumes a previously paused scan. */
+  /**
+   * Resumes a previously paused scan operation.
+   *
+   * @returns void
+   */
   public resume(): void {
     this._isPaused = false;
   }
 
-  /** Stops the scan immediately. */
+  /**
+   * Immediately terminates the scanning process.
+   *
+   * @returns void
+   */
   public stop(): void {
     this._isStopped = true;
   }
 
-  /** Resets the controller state to initial (not paused, not stopped). */
+  /**
+   * Resets the controller flags back to default (not paused, not stopped).
+   *
+   * @returns void
+   */
   public reset(): void {
     this._isPaused = false;
     this._isStopped = false;
   }
 
-  /** Gets whether the scan is currently paused. */
+  /**
+   * Indicates whether the scan is currently paused.
+   *
+   * @returns True if paused, false otherwise.
+   */
   get isPaused(): boolean {
     return this._isPaused;
   }
 
-  /** Gets whether the scan has been stopped. */
+  /**
+   * Indicates whether the scan has been aborted or stopped.
+   *
+   * @returns True if stopped, false otherwise.
+   */
   get isStopped(): boolean {
     return this._isStopped;
   }
@@ -123,26 +170,28 @@ export class ScanController implements IScanController {
 
 /**
  * Core utility class for discovering Modbus devices on Serial (RTU) and TCP networks.
- * It performs brute-force probing based on defined profiles.
+ * Performs systematic probing using configurable profiles and reports verified devices.
  */
 export class ModbusScanner {
   /**
-   * @param {Logger} logger - Pino logger for scan activity.
-   * @param {TrafficSniffer} [_sniffer] - Optional traffic sniffer for debugging.
+   * Creates an instance of ModbusScanner.
+   *
+   * @param logger - tslog Logger instance for reporting scan activities.
+   * @param _sniffer - Optional TrafficSniffer to monitor scan requests and responses.
    */
   constructor(
-    private logger: Logger,
+    private logger: Logger<ILogObj>,
     private _sniffer?: TrafficSniffer
   ) {}
 
   /**
-   * Scans a physical Serial port or WebSerial port for Modbus RTU devices.
+   * Scans a physical serial or WebSerial port for Modbus RTU devices.
    * Iterates through combinations of Baud Rate, Parity, Stop Bits, and Slave IDs.
    *
-   * @param {IScanOptions} options - Scanning parameters and callbacks.
-   * @param {'node-rtu' | 'web-rtu'} transportType - Environment-specific transport type.
-   * @param {IScanController} ctrl - Controller to manage scan state.
-   * @returns {Promise<IScanReport>} Final report containing found devices and performance stats.
+   * @param options - Scanning parameters, callbacks, and profile configuration.
+   * @param transportType - Environment-specific transport driver ('node-rtu' or 'web-rtu').
+   * @param ctrl - Controller to manage execution state (pause/resume/stop).
+   * @returns A Promise resolving to an IScanReport containing discovered devices and statistics.
    */
   public async scanRtu(
     options: IScanOptions,
@@ -173,7 +222,7 @@ export class ModbusScanner {
 
           const timeout = Math.ceil(264000 / baud + opts.padding!);
 
-          let transport: any = null;
+          let transport: any;
           try {
             const transportOpts: any = {
               port: opts.path,
@@ -266,12 +315,12 @@ export class ModbusScanner {
   }
 
   /**
-   * Scans Modbus TCP unit IDs over a network connection.
-   * Uses concurrency to probe multiple Unit IDs simultaneously.
+   * Scans Modbus TCP unit IDs over an Ethernet/IP network connection.
+   * Utilizes configurable concurrency to probe multiple Unit IDs simultaneously.
    *
-   * @param {IScanOptions} options - Scanning parameters and callbacks.
-   * @param {IScanController} ctrl - Controller to manage scan state.
-   * @returns {Promise<IScanReport>} Final report of found TCP devices.
+   * @param options - Scanning parameters and callbacks.
+   * @param ctrl - Controller to manage execution state (pause/resume/stop).
+   * @returns A Promise resolving to an IScanReport containing discovered devices and statistics.
    */
   public async scanTcp(options: IScanOptions, ctrl: IScanController): Promise<IScanReport> {
     const opts = resolveOptions(options);
@@ -299,7 +348,7 @@ export class ModbusScanner {
       for (const port of ports) {
         if (isScanStopped(ctrl, opts.signal)) break;
 
-        let transport: any = null;
+        let transport: any;
         try {
           transport = await TransportFactory.create(
             'node-tcp',
@@ -366,7 +415,17 @@ export class ModbusScanner {
   }
 
   /**
-   * Internal helper to add an identified RTU device to results.
+   * Internal helper to record an identified RTU device into the results collection.
+   *
+   * @param res - Target results array.
+   * @param set - Set tracking deduplication keys.
+   * @param type - Transport type ('node-rtu' or 'web-rtu').
+   * @param sid - Slave unit ID.
+   * @param baud - Baud rate.
+   * @param parity - Parity mode.
+   * @param stopBits - Stop bits count.
+   * @param opts - Resolved scan options.
+   * @returns void
    * @private
    */
   private _addRtu(
@@ -378,7 +437,7 @@ export class ModbusScanner {
     parity: TParityType,
     stopBits: 1 | 2,
     opts: ReturnType<typeof resolveOptions>
-  ) {
+  ): void {
     const key = opts.multiBaud
       ? `${sid}:${baud}:${parity}:${stopBits}`
       : `${sid}:${parity}:${stopBits}`;
@@ -399,7 +458,14 @@ export class ModbusScanner {
   }
 
   /**
-   * Internal helper to add an identified TCP device to results.
+   * Internal helper to record an identified TCP device into the results collection.
+   *
+   * @param res - Target results array.
+   * @param sid - Slave unit ID.
+   * @param host - Remote host IP address.
+   * @param port - Remote TCP port number.
+   * @param opts - Resolved scan options.
+   * @returns void
    * @private
    */
   private _addTcp(
@@ -408,7 +474,7 @@ export class ModbusScanner {
     host: string,
     port: number,
     opts: ReturnType<typeof resolveOptions>
-  ) {
+  ): void {
     const device: IScanResult = {
       type: 'node-tcp',
       slaveId: sid,

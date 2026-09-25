@@ -1,5 +1,8 @@
 // modbus/constants/modbus.ts
 
+/**
+ * CRC16 lookup table for Modbus protocol.
+ */
 export const CRC16_MODBUS_TABLE = new Uint16Array([
   0x0000, 0xc0c1, 0xc181, 0x0140, 0xc301, 0x03c0, 0x0280, 0xc241, 0xc601, 0x06c0, 0x0780, 0xc741,
   0x0500, 0xc5c1, 0xc481, 0x0440, 0xcc01, 0x0cc0, 0x0d80, 0xcd41, 0x0f00, 0xcfc1, 0xce81, 0x0e40,
@@ -25,6 +28,9 @@ export const CRC16_MODBUS_TABLE = new Uint16Array([
   0x4100, 0x81c1, 0x8081, 0x4040,
 ]);
 
+/**
+ * Modbus function codes as per the Modbus protocol specification.
+ */
 export enum ModbusFunctionCode {
   READ_COILS = 0x01,
   READ_DISCRETE_INPUTS = 0x02,
@@ -38,6 +44,9 @@ export enum ModbusFunctionCode {
   READ_DEVICE_IDENTIFICATION = 0x2b,
 }
 
+/**
+ * Modbus exception codes as per the Modbus protocol specification.
+ */
 export enum ModbusExceptionCode {
   ILLEGAL_FUNCTION = 0x01,
   ILLEGAL_DATA_ADDRESS = 0x02,
@@ -50,6 +59,9 @@ export enum ModbusExceptionCode {
   GATEWAY_TARGET_DEVICE_FAILED = 0x0b,
 }
 
+/**
+ * Mapping of Modbus exception codes to their corresponding error messages.
+ */
 export const MODBUS_EXCEPTION_MESSAGES: Record<ModbusExceptionCode, string> = {
   [ModbusExceptionCode.ILLEGAL_FUNCTION]: 'Illegal Function',
   [ModbusExceptionCode.ILLEGAL_DATA_ADDRESS]: 'Illegal Data Address',

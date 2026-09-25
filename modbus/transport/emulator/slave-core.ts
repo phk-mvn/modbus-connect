@@ -1,6 +1,7 @@
 // modbus/transport/emulator/slave-core.ts
 
-import { Logger, pino } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
+import { createTsLogger } from '../../utils/logger.js';
 import {
   ModbusDataConversionError,
   ModbusExceptionError,
@@ -43,15 +44,16 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   private exceptions: Map<string, number> = new Map();
   private _infinityTasks: Map<string, ReturnType<typeof setInterval>> = new Map();
 
-  public readonly logger: Logger;
+  public readonly logger: Logger<ILogObj>;
   private readonly loggerEnabled: boolean;
 
   /**
    * Creates a new Modbus Slave Core instance.
    *
    * @param slaveId - Modbus slave address (Unit ID). Must be an integer between 0 and 247 (default: 1).
-   * @param options - Configuration options
+   * @param options - Configuration options for the slave core.
    * @param options.loggerEnabled - Whether to enable logging (default: false). Note: logger is always created, but output depends on this flag and environment.
+   * @param options.deviceIdentification - Optional initial mapping of object IDs to string values for device identification.
    * @throws {ModbusInvalidAddressError} If slaveId is invalid.
    */
   constructor(
@@ -72,21 +74,9 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
       }
     }
 
-    this.logger = pino({
-      level: 'info',
-      base: { component: 'ModbusSlaveCore', slaveId: this.slaveId },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component,slaveId',
-                messageFormat: '[{component}] {msg}',
-              },
-            }
-          : undefined,
+    this.logger = createTsLogger({
+      name: 'ModbusSlaveCore',
+      bindings: { slaveId: this.slaveId },
     });
 
     this.logger.info(`ModbusSlaveCore initialized successfully (Slave ID: ${slaveId})`);
@@ -95,10 +85,11 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   /**
    * Central method for processing incoming Modbus PDU.
    * This is the main entry point used by transport layers (RTU, TCP, etc.).
-   * @param unitId - Received Unit ID (slave address)
-   * @param pdu - Modbus Protocol Data Unit (function code + data)
-   * @returns Response PDU (normal response or exception response)
-   * @throws {Error} If unitId does not match this slave (unless unitId === 0 for broadcast)
+   *
+   * @param unitId - Received Unit ID (slave address).
+   * @param pdu - Modbus Protocol Data Unit (function code + data).
+   * @returns Response PDU (normal response or exception response).
+   * @throws {Error} If unitId does not match this slave (unless unitId === 0 for broadcast).
    */
   public async processRequest(unitId: number, pdu: Uint8Array): Promise<Uint8Array> {
     if (unitId !== 0 && unitId !== this.slaveId) {
@@ -148,7 +139,11 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   }
 
   /**
-   * Handles Modbus function code 0x2b - Read device identification.
+   * Handles Modbus function code 0x2B - Read Device Identification.
+   *
+   * @param pdu - Incoming Modbus PDU containing function code 0x2B and MEI parameters.
+   * @returns Response PDU containing device identification objects and conformity level.
+   * @throws {ModbusExceptionError} If MEI type is invalid, category is out of range, or requested object is not found.
    * @private
    */
   private handleReadDeviceIdentification(pdu: Uint8Array): Uint8Array {
@@ -163,7 +158,6 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
       throw new ModbusExceptionError(ModbusFunctionCode.READ_DEVICE_IDENTIFICATION, 0x03);
     }
 
-    const enc = new TextEncoder();
     const collected: Array<[number, Uint8Array]> = [];
     const collect = (id: number): boolean => {
       const value = this.identification.get(id);
@@ -210,6 +204,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x01 - Read Coils.
+   *
+   * @param pdu - Incoming Modbus PDU containing starting address (bytes 1-2) and quantity (bytes 3-4).
+   * @returns Response PDU containing function code 0x01, byte count, and packed coil status bits.
+   * @throws {ModbusInvalidAddressError} If starting address is invalid.
+   * @throws {ModbusInvalidQuantityError} If coil quantity is outside 1..2000.
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If a configured exception triggers on any address in the range.
    * @private
    */
   private handleReadCoils(pdu: Uint8Array): Uint8Array {
@@ -247,6 +248,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x02 - Read Discrete Inputs.
+   *
+   * @param pdu - Incoming Modbus PDU containing starting address (bytes 1-2) and quantity (bytes 3-4).
+   * @returns Response PDU containing function code 0x02, byte count, and packed discrete input status bits.
+   * @throws {ModbusInvalidAddressError} If starting address is invalid.
+   * @throws {ModbusInvalidQuantityError} If input quantity is outside 1..2000.
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If a configured exception triggers on any address in the range.
    * @private
    */
   private handleReadDiscreteInputs(pdu: Uint8Array): Uint8Array {
@@ -284,6 +292,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x03 - Read Holding Registers.
+   *
+   * @param pdu - Incoming Modbus PDU containing starting address (bytes 1-2) and quantity (bytes 3-4).
+   * @returns Response PDU containing function code 0x03, byte count, and register values as big-endian 16-bit words.
+   * @throws {ModbusInvalidAddressError} If starting address is invalid.
+   * @throws {ModbusInvalidQuantityError} If register quantity is outside 1..125.
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If a configured exception triggers on any address in the range.
    * @private
    */
   private handleReadHoldingRegisters(pdu: Uint8Array): Uint8Array {
@@ -318,6 +333,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x04 - Read Input Registers.
+   *
+   * @param pdu - Incoming Modbus PDU containing starting address (bytes 1-2) and quantity (bytes 3-4).
+   * @returns Response PDU containing function code 0x04, byte count, and register values as big-endian 16-bit words.
+   * @throws {ModbusInvalidAddressError} If starting address is invalid.
+   * @throws {ModbusInvalidQuantityError} If register quantity is outside 1..125.
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If a configured exception triggers on any address in the range.
    * @private
    */
   private handleReadInputRegisters(pdu: Uint8Array): Uint8Array {
@@ -352,6 +374,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x05 - Write Single Coil.
+   *
+   * @param pdu - Incoming Modbus PDU containing coil address (bytes 1-2) and ON/OFF constant (bytes 3-4).
+   * @returns Echo response PDU matching the request.
+   * @throws {ModbusInvalidAddressError} If coil address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is invalid.
+   * @throws {ModbusExceptionError} If an exception is configured for this address.
    * @private
    */
   private handleWriteSingleCoil(pdu: Uint8Array): Uint8Array {
@@ -364,6 +392,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x06 - Write Single Register.
+   *
+   * @param pdu - Incoming Modbus PDU containing register address (bytes 1-2) and 16-bit value (bytes 3-4).
+   * @returns Echo response PDU matching the request.
+   * @throws {ModbusInvalidAddressError} If register address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not a valid 16-bit integer.
+   * @throws {ModbusExceptionError} If an exception is configured for this address.
    * @private
    */
   private handleWriteSingleRegister(pdu: Uint8Array): Uint8Array {
@@ -376,12 +410,19 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x0F - Write Multiple Coils.
+   *
+   * @param pdu - Incoming Modbus PDU containing start address, quantity, byte count, and coil value bits.
+   * @returns Response PDU containing function code 0x0F, start address, and quantity of coils written.
+   * @throws {ModbusInvalidAddressError} If starting address is invalid.
+   * @throws {ModbusInvalidQuantityError} If coil quantity is outside 1..1968.
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusIllegalDataValueError} If any coil value is invalid.
+   * @throws {ModbusExceptionError} If an exception is configured for any target address.
    * @private
    */
   private handleWriteMultipleCoils(pdu: Uint8Array): Uint8Array {
     const startAddress = (pdu[1] << 8) | pdu[2];
     const quantity = (pdu[3] << 8) | pdu[4];
-    const byteCount = pdu[5];
 
     this._validateAddress(startAddress);
     this._validateQuantity(quantity, 1968);
@@ -416,12 +457,19 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Handles Modbus function code 0x10 - Write Multiple Registers.
+   *
+   * @param pdu - Incoming Modbus PDU containing start address, quantity, byte count, and register values.
+   * @returns Response PDU containing function code 0x10, start address, and quantity of registers written.
+   * @throws {ModbusInvalidAddressError} If starting address is invalid.
+   * @throws {ModbusInvalidQuantityError} If register quantity is outside 1..123.
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusIllegalDataValueError} If any register value is not a valid 16-bit integer.
+   * @throws {ModbusExceptionError} If an exception is configured for any target address.
    * @private
    */
   private handleWriteMultipleRegisters(pdu: Uint8Array): Uint8Array {
     const startAddress = (pdu[1] << 8) | pdu[2];
     const quantity = (pdu[3] << 8) | pdu[4];
-    const byteCount = pdu[5];
 
     this._validateAddress(startAddress);
     this._validateQuantity(quantity, 123);
@@ -451,13 +499,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   /**
    * Reads multiple coils (function code 0x01).
    *
-   * @param startAddress - Starting address of the coils to read (0..65535)
-   * @param quantity - Number of coils to read (1..2000)
-   * @returns Array of boolean values representing coil states
-   * @throws {ModbusInvalidAddressError} If address is invalid
-   * @throws {ModbusInvalidQuantityError} If quantity is out of valid range
-   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF
-   * @throws {ModbusExceptionError} If an exception was configured for any address in the range
+   * @param startAddress - Starting address of the coils to read (0..65535).
+   * @param quantity - Number of coils to read (1..2000).
+   * @returns Array of boolean values representing coil states.
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusInvalidQuantityError} If quantity is out of valid range (1..2000).
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If an exception was configured for any address in the range.
    */
   public readCoils(startAddress: number, quantity: number): boolean[] {
     this._validateAddress(startAddress);
@@ -480,10 +528,14 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Reads multiple discrete inputs (function code 0x02).
-   * @param startAddress - Starting address of the discrete inputs (0..65535)
-   * @param quantity - Number of inputs to read (1..2000)
-   * @returns Array of boolean values
-   * @throws Same exceptions as {@link readCoils}
+   *
+   * @param startAddress - Starting address of the discrete inputs to read (0..65535).
+   * @param quantity - Number of inputs to read (1..2000).
+   * @returns Array of boolean values representing discrete input states.
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusInvalidQuantityError} If quantity is out of valid range (1..2000).
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If an exception was configured for any address in the range.
    */
   public readDiscreteInputs(startAddress: number, quantity: number): boolean[] {
     this._validateAddress(startAddress);
@@ -506,10 +558,14 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Reads multiple holding registers (function code 0x03).
-   * @param startAddress - Starting address (0..65535)
-   * @param quantity - Number of registers to read (1..125)
-   * @returns Array of 16-bit unsigned integer values (0..65535)
-   * @throws Same exceptions as {@link readCoils}
+   *
+   * @param startAddress - Starting address of the holding registers to read (0..65535).
+   * @param quantity - Number of registers to read (1..125).
+   * @returns Array of 16-bit unsigned integer values (0..65535).
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusInvalidQuantityError} If quantity is out of valid range (1..125).
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If an exception was configured for any address in the range.
    */
   public readHoldingRegisters(startAddress: number, quantity: number): number[] {
     this._validateAddress(startAddress);
@@ -532,10 +588,14 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Reads multiple input registers (function code 0x04).
-   * @param startAddress - Starting address (0..65535)
-   * @param quantity - Number of registers to read (1..125)
-   * @returns Array of 16-bit unsigned integer values
-   * @throws Same exceptions as {@link readCoils}
+   *
+   * @param startAddress - Starting address of the input registers to read (0..65535).
+   * @param quantity - Number of registers to read (1..125).
+   * @returns Array of 16-bit unsigned integer values (0..65535).
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusInvalidQuantityError} If quantity is out of valid range (1..125).
+   * @throws {ModbusIllegalDataAddressError} If address range exceeds 0xFFFF.
+   * @throws {ModbusExceptionError} If an exception was configured for any address in the range.
    */
   public readInputRegisters(startAddress: number, quantity: number): number[] {
     this._validateAddress(startAddress);
@@ -558,11 +618,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Writes a single coil (function code 0x05).
-   * @param address - Coil address (0..65535)
-   * @param value - New coil value (true = ON, false = OFF)
-   * @throws {ModbusInvalidAddressError}
-   * @throws {ModbusIllegalDataValueError} If value is not boolean
-   * @throws {ModbusExceptionError} If exception is configured for this address
+   *
+   * @param address - Coil address (0..65535).
+   * @param value - New coil value (true = ON, false = OFF).
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If coil address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not boolean.
+   * @throws {ModbusExceptionError} If exception is configured for this address.
    */
   public writeSingleCoil(address: number, value: boolean): void {
     this._validateAddress(address);
@@ -573,11 +635,13 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Writes a single holding register (function code 0x06).
-   * @param address - Register address (0..65535)
-   * @param value - New register value (0..65535)
-   * @throws {ModbusInvalidAddressError}
-   * @throws {ModbusIllegalDataValueError} If value is not a valid 16-bit integer
-   * @throws {ModbusExceptionError}
+   *
+   * @param address - Register address (0..65535).
+   * @param value - New register value (0..65535).
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If register address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not a valid 16-bit integer.
+   * @throws {ModbusExceptionError} If exception is configured for this address.
    */
   public writeSingleRegister(address: number, value: number): void {
     this._validateAddress(address);
@@ -588,8 +652,10 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Bulk adds initial values for multiple registers and coils.
-   * @param definitions - Object containing arrays of {start, value} for each memory type
-   * @throws {ModbusDataConversionError} If definitions format is invalid
+   *
+   * @param definitions - Object containing arrays of {start, value} for each memory type.
+   * @returns void
+   * @throws {ModbusDataConversionError} If definitions format is invalid.
    */
   public addRegisters(definitions: IRegisterDefinitions): void {
     if (!definitions || typeof definitions !== 'object') {
@@ -637,8 +703,14 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   /**
    * Starts an infinite random value change task for a specific register/coil.
    * Useful for simulating changing sensor values or dynamic data.
-   * @param params - Parameters for the infinite change task
-   * @throws {ModbusDataConversionError} If parameters are invalid
+   *
+   * @param params - Parameters for the infinite change task.
+   * @param params.typeRegister - Type of register ('Holding', 'Input', 'Coil', or 'Discrete').
+   * @param params.register - Address of the register or coil.
+   * @param params.range - Tuple of [min, max] values for generated numbers.
+   * @param params.interval - Update interval in milliseconds.
+   * @returns void
+   * @throws {ModbusDataConversionError} If parameters are invalid or min > max.
    */
   public infinityChange(params: IInfinityChangeParams): void {
     const { typeRegister, register, range, interval } = params;
@@ -698,7 +770,11 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Stops an active infinite change task for a specific register.
-   * @param params - Parameters identifying the task to stop
+   *
+   * @param params - Parameters identifying the task to stop.
+   * @param params.typeRegister - Type of register ('Holding', 'Input', 'Coil', or 'Discrete').
+   * @param params.register - Address of the register or coil.
+   * @returns void
    */
   public stopInfinityChange(params: IStopInfinityChangeParams): void {
     const key = `${params.typeRegister}:${params.register}`;
@@ -713,10 +789,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Configures a custom Modbus exception for a specific function code and address.
-   * @param functionCode - Modbus function code
-   * @param address - Address to trigger the exception on
-   * @param exceptionCode - Exception code to return (1..4 typically)
-   * @throws {ModbusInvalidAddressError} If address is invalid
+   *
+   * @param functionCode - Modbus function code.
+   * @param address - Address to trigger the exception on (0..65535).
+   * @param exceptionCode - Exception code to return (1..4 typically).
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If address is invalid.
    */
   public setException(functionCode: number, address: number, exceptionCode: number): void {
     this._validateAddress(address);
@@ -728,6 +806,8 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Clears all registers, configured exceptions, and stops all infinity change tasks.
+   *
+   * @returns void
    */
   public clearAll(): void {
     this.coils.clear();
@@ -746,8 +826,11 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Validates that the address is a valid 16-bit unsigned integer (0..0xFFFF).
+   *
+   * @param address - Address number to validate.
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If address is not an integer between 0 and 0xFFFF.
    * @private
-   * @throws {ModbusInvalidAddressError}
    */
   private _validateAddress(address: number): void {
     if (
@@ -762,8 +845,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Validates quantity according to Modbus specification limits for the given function.
+   *
+   * @param quantity - Number of items to validate.
+   * @param max - Maximum allowed quantity for this function (default: 125).
+   * @returns void
+   * @throws {ModbusInvalidQuantityError} If quantity is not an integer or outside 1..max.
    * @private
-   * @throws {ModbusInvalidQuantityError}
    */
   private _validateQuantity(quantity: number, max: number = 125): void {
     if (
@@ -778,8 +865,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Validates the value being written to a coil or register.
+   *
+   * @param value - Value to validate (boolean for coil, 16-bit integer for register).
+   * @param isRegister - Whether the value is destined for a register (true) or a coil (false).
+   * @returns void
+   * @throws {ModbusIllegalDataValueError} If value does not match the expected type or range.
    * @private
-   * @throws {ModbusIllegalDataValueError}
    */
   private _validateValue(value: unknown, isRegister: boolean = false): void {
     if (isRegister) {
@@ -796,6 +887,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
   /**
    * Checks if an exception is configured for the given function code and address.
    * If yes — throws the corresponding ModbusExceptionError.
+   *
+   * @param functionCode - Modbus function code to check.
+   * @param address - Register or coil address to check.
+   * @returns void
+   * @throws {ModbusExceptionError} If an exception is configured for this function code and address.
+   * @throws {ModbusInvalidAddressError} If address is invalid.
    * @private
    */
   private _checkException(functionCode: number, address: number): void {
@@ -812,6 +909,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to set a coil value.
+   *
+   * @param address - Coil address (0..65535).
+   * @param value - New boolean state of the coil.
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not boolean.
    * @private
    */
   private _setCoil(address: number, value: boolean): void {
@@ -822,6 +925,10 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to get a coil value.
+   *
+   * @param address - Coil address (0..65535).
+   * @returns Current boolean state of the coil (false if not set).
+   * @throws {ModbusInvalidAddressError} If address is invalid.
    * @private
    */
   private _getCoil(address: number): boolean {
@@ -831,6 +938,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to set a discrete input value.
+   *
+   * @param address - Discrete input address (0..65535).
+   * @param value - New boolean state of the discrete input.
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not boolean.
    * @private
    */
   private _setDiscreteInput(address: number, value: boolean): void {
@@ -841,6 +954,10 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to get a discrete input value.
+   *
+   * @param address - Discrete input address (0..65535).
+   * @returns Current boolean state of the discrete input (false if not set).
+   * @throws {ModbusInvalidAddressError} If address is invalid.
    * @private
    */
   private _getDiscreteInput(address: number): boolean {
@@ -850,6 +967,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to set a holding register value.
+   *
+   * @param address - Holding register address (0..65535).
+   * @param value - 16-bit register value (0..65535).
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not a valid 16-bit integer.
    * @private
    */
   private _setHoldingRegister(address: number, value: number): void {
@@ -861,6 +984,10 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to get a holding register value.
+   *
+   * @param address - Holding register address (0..65535).
+   * @returns Current 16-bit integer value of the holding register (0 if not set).
+   * @throws {ModbusInvalidAddressError} If address is invalid.
    * @private
    */
   private _getHoldingRegister(address: number): number {
@@ -870,6 +997,12 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to set an input register value.
+   *
+   * @param address - Input register address (0..65535).
+   * @param value - 16-bit register value (0..65535).
+   * @returns void
+   * @throws {ModbusInvalidAddressError} If address is invalid.
+   * @throws {ModbusIllegalDataValueError} If value is not a valid 16-bit integer.
    * @private
    */
   private _setInputRegister(address: number, value: number): void {
@@ -881,6 +1014,10 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
   /**
    * Internal method to get an input register value.
+   *
+   * @param address - Input register address (0..65535).
+   * @returns Current 16-bit integer value of the input register (0 if not set).
+   * @throws {ModbusInvalidAddressError} If address is invalid.
    * @private
    */
   private _getInputRegister(address: number): number {

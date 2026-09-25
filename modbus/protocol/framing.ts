@@ -1,6 +1,7 @@
 // modbus/protocol/framing.ts
 
 import { CRC16_MODBUS_TABLE } from '../constants/modbus.js';
+import type { TModbusProtocolType, TRSMode } from '../types/public.js';
 
 /**
  * Calculates the CRC16 checksum for Modbus RTU packets.
@@ -16,6 +17,52 @@ function calculateCrc16(data: Uint8Array): Uint8Array {
     crc = (crc >>> 8) ^ CRC16_MODBUS_TABLE[index]!;
   }
   return new Uint8Array([crc & 0xff, (crc >>> 8) & 0xff]);
+}
+
+// ====================== SHARED RESPONSE LENGTH LOGIC ======================
+
+/**
+ * The length of the response PDU that the device will return for this request (excluding transport headers:
+ * unitId/CRC for RTU and MBAP for TCP).
+ *
+ * This is the single location where Modbus response length rules are defined. Previously, this switch
+ * was duplicated in RtuFramer and TcpFramer, meaning changes (such as handling short exception
+ * responses) had to be made in two places—making it easy for them to get out of sync.
+ *
+ * @param {Uint8Array} pdu - The request PDU.
+ * @returns {number | null} The length of the response PDU in bytes, or null if it cannot be predicted.
+ */
+function expectedResponsePduLength(pdu: Uint8Array): number | null {
+  if (pdu.length === 0) return null;
+  const fc = pdu[0];
+  let expectedPduLen = -1;
+
+  switch (fc) {
+    case 0x01:
+    case 0x02:
+      if (pdu.length >= 5) {
+        const bits = (pdu[3]! << 8) | pdu[4]!;
+        expectedPduLen = 2 + Math.ceil(bits / 8);
+      }
+      break;
+    case 0x03:
+    case 0x04:
+      if (pdu.length >= 5) {
+        const regs = (pdu[3]! << 8) | pdu[4]!;
+        expectedPduLen = 2 + regs * 2;
+      }
+      break;
+    case 0x05:
+    case 0x06:
+    case 0x0f:
+    case 0x10:
+      expectedPduLen = 5;
+      break;
+    default:
+      return null;
+  }
+
+  return expectedPduLen >= 0 ? expectedPduLen : null;
 }
 
 // ====================== RTU FRAMER ======================
@@ -63,6 +110,19 @@ export class RtuFramer {
     return { unitId: packet[0]!, pdu: packet.slice(1, -2) };
   }
 
+  /** RTU transport frames in the response: unitId (1) + CRC (2) = 3 bytes.
+   * This is the overhead added to the PDU length to get the total ADU length.
+   */
+  private static readonly RESPONSE_OVERHEAD = 3;
+
+  /**
+   * Exception response length: unitId + (FC | 0x80) + error code + CRC = 5 bytes.
+   * The device responds this way to an invalid address or function; one must not
+   * wait for the full length of a successful response in this case, or a timeout
+   * will occur instead of an error.
+   */
+  public static readonly exceptionResponseLength = 5;
+
   /**
    * Predicts the total expected length of an RTU response based on the request PDU.
    * Useful for knowing how many bytes to read from a serial stream.
@@ -71,35 +131,8 @@ export class RtuFramer {
    * @returns {number | null} The expected length of the full ADU in bytes, or null if unknown.
    */
   public static getExpectedResponseLength(pdu: Uint8Array): number | null {
-    if (pdu.length === 0) return null;
-    const fc = pdu[0];
-    let expectedPduLen = -1;
-
-    switch (fc) {
-      case 0x01:
-      case 0x02:
-        if (pdu.length >= 5) {
-          const bits = (pdu[3]! << 8) | pdu[4]!;
-          expectedPduLen = 2 + Math.ceil(bits / 8);
-        }
-        break;
-      case 0x03:
-      case 0x04:
-        if (pdu.length >= 5) {
-          const regs = (pdu[3]! << 8) | pdu[4]!;
-          expectedPduLen = 2 + regs * 2;
-        }
-        break;
-      case 0x05:
-      case 0x06:
-      case 0x0f:
-      case 0x10:
-        expectedPduLen = 5;
-        break;
-      default:
-        return null;
-    }
-    return expectedPduLen >= 0 ? expectedPduLen + 3 : null;
+    const pduLen = expectedResponsePduLength(pdu);
+    return pduLen === null ? null : pduLen + RtuFramer.RESPONSE_OVERHEAD;
   }
 }
 
@@ -170,6 +203,19 @@ export class TcpFramer {
   }
 
   /**
+   * TCP transport frames in the response: MBAP header (7 bytes).
+   * This includes Transaction ID (2), Protocol ID (2), Length (2), and Unit ID (1).
+   */
+  private static readonly RESPONSE_OVERHEAD = 7;
+
+  /** Exception response length: MBAP header (7) + (FC | 0x80) + error code = 9 bytes.
+   * The device responds this way to an invalid address or function; one must not
+   * wait for the full length of a successful response in this case, or a timeout
+   * will occur instead of an error.
+   */
+  public static readonly exceptionResponseLength = 9;
+
+  /**
    * Predicts the total expected length of a TCP response based on the request PDU.
    * Includes the 7-byte MBAP header.
    *
@@ -177,39 +223,23 @@ export class TcpFramer {
    * @returns {number | null} The expected length of the full ADU in bytes, or null if unknown.
    */
   public static getExpectedResponseLength(pdu: Uint8Array): number | null {
-    if (pdu.length === 0) return null;
-    const fc = pdu[0];
-    let expectedPduLen = -1;
-
-    switch (fc) {
-      case 0x01:
-      case 0x02:
-        if (pdu.length >= 5) {
-          const bits = (pdu[3]! << 8) | pdu[4]!;
-          expectedPduLen = 2 + Math.ceil(bits / 8);
-        }
-        break;
-      case 0x03:
-      case 0x04:
-        if (pdu.length >= 5) {
-          const regs = (pdu[3]! << 8) | pdu[4]!;
-          expectedPduLen = 2 + regs * 2;
-        }
-        break;
-      case 0x05:
-      case 0x06:
-      case 0x0f:
-      case 0x10:
-        expectedPduLen = 5;
-        break;
-      default:
-        return null;
-    }
-    return expectedPduLen >= 0 ? expectedPduLen + 7 : null;
+    const pduLen = expectedResponsePduLength(pdu);
+    return pduLen === null ? null : pduLen + TcpFramer.RESPONSE_OVERHEAD;
   }
+}
+
+/**
+ * Maps a physical port mode to the Modbus framing it implies.
+ * RS485/RS232 -> RTU, TCP/IP -> TCP. Single source of truth for client framing.
+ *
+ * @param rsMode - RS mode reported by the port transport.
+ */
+export function rsModeToFraming(rsMode: TRSMode): TModbusProtocolType {
+  return rsMode === 'TCP/IP' ? 'tcp' : 'rtu';
 }
 
 export default {
   RtuFramer,
   TcpFramer,
+  rsModeToFraming,
 };

@@ -1,20 +1,26 @@
 // modbus/core/client.ts
 
-import { Mutex } from 'async-mutex';
-import { pino, Logger } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
+import { createTsLogger } from '../utils/logger.js';
 import * as framer from '../protocol/framing.js';
 import * as functions from '../protocol/functions.js';
 import { ModbusProtocol } from './protocol.js';
 import { ModbusExceptionCode, ModbusFunctionCode } from '../constants/modbus.js';
 import RegisterData from './register-data.js';
+import { DeviceConnectionTracker } from '../transport/trackers/device-tracker.js';
+import { runWithRetries } from '../utils/retry.js';
 import {
   EConnectionErrorType,
   ICustomFunctionHandler,
   IModbusClient,
   IModbusClientOptions,
   IModbusPlugin,
+  IClientContext,
+  IPortSession,
   ITransport,
   ITransportController,
+  TDeviceStateHandler,
+  TModbusClientLogLevel,
   TRSMode,
 } from '../types/public.js';
 import {
@@ -24,9 +30,17 @@ import {
   ModbusIllegalDataValueError,
   ModbusInvalidAddressError,
   ModbusInvalidQuantityError,
+  ModbusBufferUnderrunError,
   ModbusNotConnectedError,
   ModbusTimeoutError,
+  ModbusOperationTimeoutError,
+  ModbusQueueOverflowError,
+  ModbusReentrancyError,
+  ModbusScanActiveError,
 } from '../core/errors.js';
+
+/** Queue priority of manual client requests (lower number runs earlier). */
+const REQUEST_PRIORITY = 1;
 
 /**
  * ModbusClient is the main high-level interface for communicating with Modbus devices.
@@ -35,22 +49,42 @@ import {
  * All public methods are thread-safe thanks to an internal mutex.
  */
 class ModbusClient implements IModbusClient {
+  /** Transport controller that manages physical connections. */
   private transportController: ITransportController;
+  /** Modbus slave address (1-255). */
   private slaveId: number;
+  /** Configuration options for timeout, retries, framing, plugins, etc. */
   private options: IModbusClientOptions;
+  /** RS mode (RS485, RS232, TCP/IP) used for framing and transport selection. */
   private RSMode: TRSMode;
+  /** Default timeout for requests (ms). */
   private defaultTimeout: number;
+  /** Number of retry attempts for failed requests. */
   private retryCount: number;
+  /** Delay between retry attempts (ms). */
   private retryDelay: number;
-  private _mutex: Mutex;
+  /** Total budget of one call (ms), retries and delays included; 0 = disabled. */
+  private totalTimeout: number;
+  /** Isolated device tracker: this client's own view of its slave's connection state. */
+  private readonly _deviceTracker: DeviceConnectionTracker;
+  /** Controller-registered client id (undefined for legacy, self-created clients). */
+  private _clientId?: string;
+  /** Explicit session binding injected by the controller for managed clients. */
+  private _session: IPortSession | null = null;
+  /** True once the controller has unregistered this client (binding is dropped). */
+  private _detached = false;
+  /** Framing class (RtuFramer or TcpFramer) used for this client. */
   private _framing: typeof framer.RtuFramer | typeof framer.TcpFramer;
+  /** Protocol instance used for sending/receiving Modbus PDUs. */
   private _protocol?: ModbusProtocol;
-
+  /** Registered plugins that extend functionality with custom function codes and handlers. */
   private _plugins: IModbusPlugin[] = [];
+  /** Registered custom function handlers keyed by function name. */
   private _customFunctions: Map<string, ICustomFunctionHandler> = new Map();
+  /** Logger instance for this client, with slaveId bound to every record. */
+  private logger: Logger<ILogObj>;
 
-  private logger: Logger;
-
+  /** Mapping of Modbus function codes to their corresponding enum values. */
   private static readonly FUNCTION_CODE_MAP = new Map<number, ModbusFunctionCode>([
     [0x01, ModbusFunctionCode.READ_COILS],
     [0x02, ModbusFunctionCode.READ_DISCRETE_INPUTS],
@@ -64,6 +98,7 @@ class ModbusClient implements IModbusClient {
     [0x2b, ModbusFunctionCode.READ_DEVICE_IDENTIFICATION],
   ]);
 
+  /** Mapping of Modbus exception codes to their corresponding enum values. */
   private static readonly EXCEPTION_CODE_MAP = new Map<number, ModbusExceptionCode>([
     [1, ModbusExceptionCode.ILLEGAL_FUNCTION],
     [2, ModbusExceptionCode.ILLEGAL_DATA_ADDRESS],
@@ -81,35 +116,20 @@ class ModbusClient implements IModbusClient {
    * @param transportController - Transport controller that manages physical connections
    * @param slaveId - Modbus slave address (1-255)
    * @param options - Configuration options for timeout, retries, framing, plugins, etc.
+   * @param context - Managed-client context injected by controller.createClient(); when
+   *   present, the session binding and the framing (derived from the port RS mode) are
+   *   taken from it instead of being resolved through the router.
    * @throws ModbusInvalidAddressError if slaveId is invalid
    */
   constructor(
     transportController: ITransportController,
     slaveId: number = 1,
-    options: IModbusClientOptions = {}
+    options: IModbusClientOptions = {},
+    context?: IClientContext
   ) {
     if (!Number.isInteger(slaveId) || slaveId < 0 || slaveId > 255) {
       throw new ModbusInvalidAddressError(slaveId);
     }
-
-    this.logger = pino({
-      level: 'info',
-      base: { component: 'ModbusClient', slaveId: slaveId },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component,slaveId,funcCode,ms',
-                messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
-              },
-            }
-          : undefined,
-    });
-
-    this.logger.debug('Modbus Client initialized');
 
     this.transportController = transportController;
     this.slaveId = slaveId;
@@ -117,14 +137,27 @@ class ModbusClient implements IModbusClient {
     this.defaultTimeout = options.timeout ?? 1000;
     this.retryCount = options.retryCount ?? 0;
     this.retryDelay = options.retryDelay ?? 100;
-    this._mutex = new Mutex();
+    this.totalTimeout = options.totalTimeout ?? 0;
+    this._deviceTracker = new DeviceConnectionTracker();
+    this.logger = this._createLogger(options.logLevel ?? 'info');
 
-    this._framing = options.framing === 'tcp' ? framer.TcpFramer : framer.RtuFramer;
-    this.RSMode = options.RSMode || (options.framing === 'tcp' ? 'TCP/IP' : 'RS485');
+    this._clientId = context?.clientId;
+    this._session = context?.session ?? null;
+
+    // Managed clients never choose their framing: it is derived from the port RS mode.
+    this._framing =
+      (context?.framing ?? options.framing) === 'tcp' ? framer.TcpFramer : framer.RtuFramer;
+    this.RSMode =
+      context?.rsMode ?? options.RSMode ?? (options.framing === 'tcp' ? 'TCP/IP' : 'RS485');
 
     const transport = this._effectiveTransport;
     if (transport) {
-      this._protocol = new ModbusProtocol(transport, this._framing, options.echo ?? false);
+      this._protocol = new ModbusProtocol(
+        transport,
+        this._framing,
+        options.echo ?? false,
+        this.logger
+      );
     }
 
     if (options.plugins && Array.isArray(options.plugins)) {
@@ -135,47 +168,111 @@ class ModbusClient implements IModbusClient {
   }
 
   /**
+   * Builds the tslog logger for this client. `slaveId` is bound into every record so that
+   * protocol-level and polling logs can be correlated per device. `'silent'` drops output
+   * entirely (tslog has no silent level, we use `type: 'hidden'` instead).
+   */
+  private _createLogger(level: TModbusClientLogLevel = 'info'): Logger<ILogObj> {
+    return createTsLogger({
+      name: 'ModbusClient',
+      level,
+      bindings: { slaveId: this.slaveId },
+    });
+  }
+
+  /**
    * Returns the currently active transport for this slave and RS mode.
    * Used internally by all communication methods.
    */
   private get _effectiveTransport(): ITransport | null {
-    return this.transportController.getTransportForSlave(this.slaveId, this.RSMode);
+    return this._effectiveSession?.transport ?? null;
+  }
+
+  /**
+   * Returns the port session that owns the transport this client must use.
+   * Managed clients keep the binding injected at creation; legacy clients resolve it
+   * through the controller router on every access.
+   */
+  private get _effectiveSession(): IPortSession | null {
+    if (this._detached) return null;
+    return this._session ?? this.transportController.getSessionForSlave(this.slaveId, this.RSMode);
+  }
+
+  /** Controller-registered id of this client (undefined for self-created clients). */
+  public get clientId(): string | undefined {
+    return this._clientId;
+  }
+
+  /** Clears the client's isolated device state (used when the controller drops it). */
+  public async clearDeviceState(): Promise<void> {
+    await this._deviceTracker.clear();
+  }
+
+  /**
+   * Changes the slave address without touching the controller roster.
+   * Called by the controller (`reassignClient`) and by `setSlaveId()` for unmanaged clients.
+   */
+  public applySlaveId(newSlaveId: number): void {
+    const old = this.slaveId;
+    this.slaveId = newSlaveId;
+    // The previous slave's connection state does not belong to this client any more.
+    void this._deviceTracker.removeState(old);
+  }
+
+  /**
+   * Sends an arbitrary PDU and returns the response PDU.
+   *
+   * Low-level escape hatch for vendor/custom function codes and diagnostics: the port queue,
+   * device notifications and retries still apply, so it is safe to mix with normal calls.
+   *
+   * @param pdu - Ready protocol data unit (function code + data).
+   * @param timeout - Optional exchange budget in ms.
+   * @throws ModbusBufferUnderrunError when the PDU is empty.
+   */
+  public async rawExchange(pdu: Uint8Array, timeout?: number): Promise<Uint8Array> {
+    if (!(pdu instanceof Uint8Array) || pdu.length === 0) {
+      throw new ModbusBufferUnderrunError(0, 1);
+    }
+    return await this._sendRequest(pdu, timeout);
+  }
+
+  /**
+   * Drops the session binding and the client id. The controller calls this when the client
+   * leaves the roster, so a stale reference can no longer reach a removed port.
+   */
+  public detachSession(): void {
+    this._session = null;
+    this._clientId = undefined;
+    this._detached = true;
+  }
+
+  /**
+   * Registers a handler for this client's isolated device connection state.
+   * @param handler - Callback `(slaveId, connected, error?) => void`.
+   */
+  public async setDeviceStateHandler(handler: TDeviceStateHandler): Promise<void> {
+    await this._deviceTracker.setHandler(handler);
   }
 
   /**
    * Disables all logging output.
-   * Re-initializes the pino instance with the 'silent' level to stop any log emission.
+   * Replaces the internal logger with a `type: 'hidden'` tslog instance.
    */
   public disableLogger(): void {
-    this.logger = pino({
-      level: 'silent',
-    });
+    this.logger = this._createLogger('silent');
+    // The protocol may hold the previous instance: keep them in sync.
+    this._protocol?.setLogger(this.logger);
   }
 
   /**
    * Enables and configures the logger.
    *
-   * Sets the default log level to 'info' and attaches metadata (component name and slave ID).
-   * If the environment is not 'production', it enables `pino-pretty` transport
-   * with custom message formatting for better developer experience.
+   * Sets the default log level to 'info'; name and slave ID are attached to every record.
+   * In non-production environments the output is pretty-printed.
    */
   public enableLogger(): void {
-    this.logger = pino({
-      level: 'info',
-      base: { component: 'ModbusClient', slaveId: this.slaveId },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component,slaveId,funcCode,ms',
-                messageFormat: '[{component}][ID:{slaveId}] {msg} {ms}ms',
-              },
-            }
-          : undefined,
-    });
+    this.logger = this._createLogger('info');
+    this._protocol?.setLogger(this.logger);
   }
 
   /**
@@ -238,21 +335,19 @@ class ModbusClient implements IModbusClient {
    * @throws ModbusNotConnectedError if transport is not available or not open
    */
   public async connect(): Promise<void> {
-    await this._mutex.runExclusive(async () => {
-      const transport = this._effectiveTransport;
+    const transport = this._effectiveTransport;
 
-      if (!transport || !transport.isOpen) {
-        throw new ModbusNotConnectedError();
-      }
+    if (!transport || !transport.isOpen) {
+      throw new ModbusNotConnectedError();
+    }
 
-      this.logger.info(
-        {
-          slaveId: this.slaveId,
-          transport: transport.constructor.name,
-        },
-        'Client is ready. Transport is connected and available'
-      );
-    });
+    this.logger.info(
+      {
+        slaveId: this.slaveId,
+        transport: transport.constructor.name,
+      },
+      'Client is ready. Transport is connected and available'
+    );
   }
 
   /**
@@ -262,19 +357,27 @@ class ModbusClient implements IModbusClient {
    * Mainly used for logging and consistency with connect().
    */
   public async disconnect(): Promise<void> {
-    await this._mutex.runExclusive(async () => {
-      const transport = this._effectiveTransport;
+    // Managed clients delegate to the controller so the client roster stays authoritative
+    // (no double unregistration and no accidental removal of an empty transport).
+    if (this._clientId && this.transportController.getClient(this._clientId) === this) {
+      await this.transportController.removeClient(this._clientId);
+      this.logger.info('Client removed from controller registry');
+      return;
+    }
 
-      const transportInfo = this.transportController
-        .listTransports()
-        .find(t => t.transport === transport);
+    const transport = this._effectiveTransport;
 
-      if (transportInfo) {
-        await this.transportController.removeSlaveIdFromTransport(transportInfo.id, this.slaveId);
-      }
+    const transportInfo = this.transportController
+      .listTransports()
+      .find(t => t.transport === transport);
 
-      this.logger.info('Client disconnected and unregistered from transport');
-    });
+    if (transportInfo) {
+      await this.transportController.removeSlaveIdFromTransport(transportInfo.id, this.slaveId);
+    }
+
+    await this._deviceTracker.clear();
+
+    this.logger.info('Client disconnected and unregistered from transport');
   }
 
   /**
@@ -296,8 +399,19 @@ class ModbusClient implements IModbusClient {
     if (!Number.isInteger(newSlaveId) || newSlaveId < 1 || newSlaveId > 255)
       throw new ModbusInvalidAddressError(newSlaveId);
 
+    // The managed client rebinds the controller: it maintains the registry and port inventory;
+    // otherwise, the inventory would drift out of sync with reality.
+    if (
+      this._clientId &&
+      typeof this.transportController.reassignClient === 'function' &&
+      this.transportController.getClient(this._clientId) === this
+    ) {
+      await this.transportController.reassignClient(this._clientId, newSlaveId);
+      return;
+    }
+
     const old = this.slaveId;
-    this.slaveId = newSlaveId;
+    this.applySlaveId(newSlaveId);
     this.logger.info(
       {
         transport: this._effectiveTransport?.constructor.name,
@@ -325,7 +439,12 @@ class ModbusClient implements IModbusClient {
         },
         'Syncing protocol with transport instance'
       );
-      this._protocol = new ModbusProtocol(transport, this._framing, this.options.echo ?? false);
+      this._protocol = new ModbusProtocol(
+        transport,
+        this._framing,
+        this.options.echo ?? false,
+        this.logger
+      );
     }
 
     return this._protocol;
@@ -346,78 +465,152 @@ class ModbusClient implements IModbusClient {
     timeout: number = this.defaultTimeout,
     ignoreNoResponse: boolean = false
   ): Promise<Uint8Array> {
-    return await this._mutex.runExclusive(async () => {
-      const funcCode = pdu[0];
-      const slaveId = this.slaveId;
-      const startTime = Date.now();
-      let lastError: unknown;
+    const funcCode = pdu[0];
+    const slaveId = this.slaveId;
+    const startTime = Date.now();
 
-      for (let attempt = 0; attempt <= this.retryCount; attempt++) {
-        try {
-          const protocol = this._syncProtocol();
-          const transport = protocol.transport;
+    // `timeout` — the budget for a single attempt: measured from the moment transmission begins and excluding
+    // time spent waiting in the queue. `totalTimeout` — the budget for the entire call, including pauses and retries
+    // (0 = disabled). When the budget is exhausted, the call is rejected with a ModbusOperationTimeoutError.
+    const deadline = this.totalTimeout > 0 ? startTime + this.totalTimeout : 0;
+    const remainingMs = (): number =>
+      deadline === 0 ? Number.POSITIVE_INFINITY : deadline - Date.now();
 
-          const attemptStart = Date.now();
-          const timeLeft = timeout - (attemptStart - startTime);
+    // The retry policy is shared with polling tasks (modbus/utils/retry.ts)
+    // Client-specifics: fixed pause (retryDelay; 50 ms for flush errors),
+    // and exception responses are not retried—this indicates a logical device error rather than a line failure.
+    return await runWithRetries<Uint8Array>(
+      async attemptNumber => {
+        if (deadline !== 0 && remainingMs() <= 0) {
+          throw new ModbusOperationTimeoutError(this.totalTimeout, slaveId);
+        }
 
-          if (timeLeft <= 0) {
-            throw new ModbusTimeoutError('Timeout before request started');
-          }
+        this.logger.debug({ slaveId, funcCode, attempt: attemptNumber }, 'Exchange start');
 
-          this.logger.debug({ slaveId, funcCode, attempt: attempt + 1 }, 'Exchange start');
+        // Each retry attempt is submitted as its own port-queue job: the queue keeps every
+        // flush -> write -> read exchange atomic, while the port breathes between attempts.
+        // `timeout` is the budget of the EXCHANGE itself and is measured from the moment the
+        // job really starts on the wire. Waiting in the port queue behind another device must
+        // not eat that budget, otherwise a healthy request would fail without being sent.
+        // An attempt cannot exceed the total budget: its timeout is capped at the remaining amount.
+        const attemptTimeout = Math.max(1, Math.min(timeout, remainingMs()));
+        const responsePdu = await this._enqueueExchange(
+          slaveId,
+          pdu,
+          attemptTimeout,
+          ignoreNoResponse
+        );
 
-          if (ignoreNoResponse) {
-            await transport.write(this._framing.buildAdu(slaveId, pdu));
-            return new Uint8Array(0);
-          }
+        if (ignoreNoResponse) {
+          return new Uint8Array(0);
+        }
 
-          const responsePdu = await protocol.exchange(slaveId, pdu, timeLeft);
+        // Device-state notifications run outside the port queue (they use the tracker's own
+        // mutex). The transport-level notification is kept while the legacy path still exists.
+        const transport = this._effectiveTransport;
+        if (transport?.notifyDeviceConnected) {
+          transport.notifyDeviceConnected(this.slaveId);
+        }
+        await this._deviceTracker.notifyConnected(slaveId);
 
-          if (transport.notifyDeviceConnected) {
-            transport.notifyDeviceConnected(this.slaveId);
-          }
+        if ((responsePdu[0]! & 0x80) !== 0) {
+          const excCode = responsePdu[1]!;
+          const modbusExc = ModbusClient.EXCEPTION_CODE_MAP.get(excCode) ?? excCode;
+          throw new ModbusExceptionError(responsePdu[0]! & 0x7f, modbusExc as number);
+        }
 
-          if ((responsePdu[0]! & 0x80) !== 0) {
-            const excCode = responsePdu[1]!;
-            const modbusExc = ModbusClient.EXCEPTION_CODE_MAP.get(excCode) ?? excCode;
-            throw new ModbusExceptionError(responsePdu[0]! & 0x7f, modbusExc as number);
-          }
+        this.logger.info(
+          `Response received slaveId=${slaveId} funcCode=${funcCode} ${Date.now() - startTime}ms`
+        );
 
-          this.logger.info({ slaveId, funcCode, ms: Date.now() - startTime }, 'Response received');
-
-          return responsePdu;
-        } catch (err: unknown) {
-          lastError = err;
-
+        return responsePdu;
+      },
+      {
+        maxRetries: this.retryCount,
+        // An exception response—such as a device logic error or queue overflow—is not a line fault:
+        // neither requires a retry (retrying would only exacerbate port congestion).
+        shouldRetry: error =>
+          !(error instanceof ModbusExceptionError) && !(error instanceof ModbusQueueOverflowError),
+        // Pause before retry also counts towards the total call budget.
+        getDelayMs: error => {
+          const base = error instanceof ModbusFlushError ? 50 : this.retryDelay;
+          return Math.max(0, Math.min(base, remainingMs()));
+        },
+        // The client owns its device tracker: connection quality to its slave is judged here.
+        onAttemptFailed: (error, attemptNumber) => {
           this.logger.warn(
-            { slaveId, funcCode, attempt: attempt + 1, err: (err as any).message },
+            { slaveId, funcCode, attempt: attemptNumber, err: (error as any).message },
             'Attempt failed'
           );
 
+          if (error instanceof ModbusExceptionError) return;
+
+          // Infrastructure errors (port queue, scan, reentrancy) — not the device's fault:
+          // connection state is not switched for them.
+          if (
+            error instanceof ModbusQueueOverflowError ||
+            error instanceof ModbusScanActiveError ||
+            error instanceof ModbusReentrancyError
+          ) {
+            return;
+          }
+
+          let errorType = EConnectionErrorType.UnknownError;
+          if (error instanceof ModbusTimeoutError) errorType = EConnectionErrorType.Timeout;
+          else if (error instanceof ModbusCRCError) errorType = EConnectionErrorType.CRCError;
+
+          const errorMessage = error instanceof Error ? error.message : String(error);
+
           const transport = this._effectiveTransport;
-          if (transport && !(err instanceof ModbusExceptionError)) {
-            if (transport.notifyDeviceDisconnected) {
-              let errorType = EConnectionErrorType.UnknownError;
-              if (err instanceof ModbusTimeoutError) errorType = EConnectionErrorType.Timeout;
-              else if (err instanceof ModbusCRCError) errorType = EConnectionErrorType.CRCError;
-
-              transport.notifyDeviceDisconnected(
-                this.slaveId,
-                errorType,
-                err instanceof Error ? err.message : String(err)
-              );
-            }
+          if (transport?.notifyDeviceDisconnected) {
+            transport.notifyDeviceDisconnected(this.slaveId, errorType, errorMessage);
           }
 
-          if (attempt < this.retryCount) {
-            const delay = err instanceof ModbusFlushError ? 50 : this.retryDelay;
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-        }
+          // The client owns its device tracker: connection quality to its slave is judged here.
+          this._deviceTracker.notifyDisconnected(slaveId, errorType, errorMessage);
+        },
       }
+    );
+  }
+  /**
+   * Submits one exchange attempt to the port session queue.
+   * The job performs the whole atomic exchange (flush -> write -> read) so that no other
+   * client or polling task can interleave inside it.
+   *
+   * @param slaveId - Target slave id.
+   * @param pdu - Protocol Data Unit to send.
+   * @param timeout - Remaining time budget for this attempt.
+   * @param ignoreNoResponse - When true only the frame is written.
+   */
+  private async _enqueueExchange(
+    slaveId: number,
+    pdu: Uint8Array,
+    timeout: number,
+    ignoreNoResponse: boolean
+  ): Promise<Uint8Array> {
+    const session = this._effectiveSession;
 
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
-    });
+    if (!session) {
+      throw new ModbusNotConnectedError();
+    }
+
+    /**
+     * The port queue is the only place where the transport is guaranteed to be free for this slave and RS mode.
+     * The queue is shared with polling tasks, so the exchange is atomic.
+     */
+    return session.queue.enqueue(
+      async () => {
+        const protocol = this._syncProtocol();
+
+        if (ignoreNoResponse) {
+          await protocol.transport.write(this._framing.buildAdu(slaveId, pdu));
+          return new Uint8Array(0);
+        }
+
+        return protocol.exchange(slaveId, pdu, timeout);
+      },
+      { priority: REQUEST_PRIORITY, immediate: true }
+    );
   }
 
   /**
@@ -580,8 +773,9 @@ class ModbusClient implements IModbusClient {
     if (!Number.isInteger(address) || address < 0 || address > 65535) {
       throw new ModbusInvalidAddressError(address);
     }
-    if (typeof value === 'number' && value !== 0 && value !== 1) {
-      throw new ModbusIllegalDataValueError(value, 'boolean or 0/1');
+    const rawCoilValue = value as unknown as boolean | number;
+    if (typeof rawCoilValue !== 'boolean' && rawCoilValue !== 0 && rawCoilValue !== 1) {
+      throw new ModbusIllegalDataValueError(rawCoilValue as unknown as number, 'boolean or 0/1');
     }
 
     const pdu = functions.buildWriteSingleCoilRequest(address, value);
@@ -607,6 +801,12 @@ class ModbusClient implements IModbusClient {
     }
     if (!Array.isArray(values) || values.length < 1 || values.length > 1968) {
       throw new ModbusInvalidQuantityError(values.length, 1, 1968);
+    }
+
+    const rawCoilValues = values as unknown as Array<boolean | number>;
+    const badCoilValue = rawCoilValues.find(v => typeof v !== 'boolean' && v !== 0 && v !== 1);
+    if (badCoilValue !== undefined) {
+      throw new ModbusIllegalDataValueError(badCoilValue as unknown as number, 'boolean or 0/1');
     }
 
     const pdu = functions.buildWriteMultipleCoilsRequest(address, values);
@@ -637,7 +837,27 @@ class ModbusClient implements IModbusClient {
     timeout?: number
   ) {
     const pdu = functions.buildReadDeviceIdentificationRequest(0x01, 0x00);
-    const responsePdu = await this._sendRequest(pdu, timeout);
+
+    // The response length (0x2B) is not known in advance (expectedResponsePduLength returns null),
+    // so the RTU reads it byte-by-byte. The first request after (re)connection often
+    // encounters interference or an incomplete transmission, and a single failed attempt
+    // guarantees a timeout without a retry. We perform one short retry for line-related
+    // errors (internal to this call; invisible to the user). If retryCount/totalTimeout
+    // are specified, we do not consume their budget.
+    const responsePdu: Uint8Array =
+      this.totalTimeout > 0 || this.retryCount >= 1
+        ? await this._sendRequest(pdu, timeout)
+        : await runWithRetries<Uint8Array>(() => this._sendRequest(pdu, timeout), {
+            maxRetries: 1,
+            shouldRetry: error =>
+              error instanceof ModbusTimeoutError || error instanceof ModbusCRCError,
+            getDelayMs: () => 100,
+            onAttemptFailed: (error, attemptNumber) =>
+              this.logger.warn(
+                { attempt: attemptNumber, err: (error as Error).message },
+                'Identification read failed, retrying'
+              ),
+          });
 
     const rawResponse = functions.parseReadDeviceIdentificationResponse(responsePdu);
 
@@ -654,7 +874,12 @@ class ModbusClient implements IModbusClient {
       for (const [key, value] of Object.entries(rawResponse.objects)) {
         const id = parseInt(key, 10);
         const bytes = value instanceof Uint8Array ? value : new Uint8Array(value as any);
-        formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
+        try {
+          formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
+        } catch {
+          // A malformed identification object must not cause the entire request to fail.
+          formattedObjects[id] = '';
+        }
       }
     }
 

@@ -1,7 +1,8 @@
 // modbus/transport/web/serial.ts
 
 import { Mutex } from 'async-mutex';
-import { pino, Logger } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
+import { createTsLogger } from '../../utils/logger.js';
 import {
   EConnectionErrorType,
   ITransport,
@@ -18,7 +19,6 @@ import {
   ModbusConfigError,
   ModbusDataConversionError,
   ModbusFlushError,
-  ModbusInsufficientDataError,
   ModbusTimeoutError,
   WebSerialConnectionError,
   WebSerialReadError,
@@ -45,7 +45,7 @@ const WEB_SERIAL_CONSTANTS = {
  */
 export default class WebSerialTransport implements ITransport {
   public isOpen: boolean = false;
-  public logger: Logger;
+  public logger: Logger<ILogObj>;
 
   private portFactory: () => Promise<IWebSerialPort>;
   private port: IWebSerialPort | null = null;
@@ -90,8 +90,20 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Creates an instance of WebSerialTransport.
-   * @param portFactory A function that returns a Promise for an IWebSerialPort instance.
-   * @param options Configuration options for the serial port and transport behavior.
+   *
+   * @param portFactory - A function that returns a Promise for an IWebSerialPort instance.
+   * @param options - Configuration options for the serial port and transport behavior.
+   * @param options.baudRate - Communication baud rate (default: 9600).
+   * @param options.dataBits - Number of data bits per character (default: 8).
+   * @param options.stopBits - Number of stop bits (default: 1).
+   * @param options.parity - Parity check mode ('none', 'even', 'odd', etc.) (default: 'none').
+   * @param options.readTimeout - Read operation timeout in milliseconds (default: 1000).
+   * @param options.writeTimeout - Write operation timeout in milliseconds (default: 1000).
+   * @param options.reconnectInterval - Delay between reconnection attempts in milliseconds (default: 3000).
+   * @param options.maxReconnectAttempts - Maximum reconnection attempts before giving up (default: Infinity).
+   * @param options.maxEmptyReadsBeforeReconnect - Number of consecutive empty reads before triggering reconnect (default: 10).
+   * @param options.RSMode - RS mode standard ('RS485' or 'RS232') (default: 'RS485').
+   * @throws {WebSerialTransportError} If portFactory is not a function.
    */
   constructor(
     portFactory: () => Promise<IWebSerialPort>,
@@ -121,21 +133,9 @@ export default class WebSerialTransport implements ITransport {
     this._readBuffer = new Uint8Array(WEB_SERIAL_CONSTANTS.MAX_READ_BUFFER_SIZE);
     this._operationMutex = new Mutex();
 
-    this.logger = pino({
+    this.logger = createTsLogger({
+      name: 'WEB RTU',
       level: 'debug',
-      base: { component: 'WEB RTU' },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component',
-                messageFormat: '[{component}] {msg}',
-              },
-            }
-          : undefined,
     });
 
     this.logger.debug('Transport instance created');
@@ -144,7 +144,9 @@ export default class WebSerialTransport implements ITransport {
   /**
    * Attaches a TrafficSniffer instance to monitor and analyze raw Web Serial traffic.
    * This allows for sub-millisecond latency tracking and real-time protocol inspection.
+   *
    * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   * @returns void
    */
   public setSniffer(sniffer: TrafficSniffer): void {
     this._sniffer = sniffer;
@@ -152,7 +154,8 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Gets the current RS Mode (e.g., RS485 or RS232).
-   * @returns The TRSMode value.
+   *
+   * @returns The configured TRSMode value.
    */
   public getRSMode(): TRSMode {
     return this.options.RSMode;
@@ -160,15 +163,19 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Sets the callback handler for tracking device connection states.
-   * @param handler A function to be called when a device connection status changes.
+   *
+   * @param handler - A function to be called when a device connection status changes.
+   * @returns void
    */
   public setDeviceStateHandler(handler: TDeviceStateHandler): void {
     this._deviceStateHandler = handler;
   }
 
   /**
-   * Sets the callback handler for the serial port status changes.
-   * @param handler A function to be called when the port is connected or disconnected.
+   * Sets the callback handler for serial port status changes.
+   *
+   * @param handler - A function to be called when the port is connected or disconnected.
+   * @returns void
    */
   public setPortStateHandler(handler: TPortStateHandler): void {
     this._portStateHandler = handler;
@@ -176,6 +183,8 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Disables tracking of connected Modbus slave devices.
+   *
+   * @returns Promise resolving when device tracking has been disabled.
    */
   public async disableDeviceTracking(): Promise<void> {
     this._deviceStateHandler = null;
@@ -184,7 +193,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Enables tracking of connected Modbus slave devices.
-   * @param handler Optional new handler for device state updates.
+   *
+   * @param handler - Optional new handler for device state updates.
+   * @returns Promise resolving when device tracking has been enabled.
    */
   public async enableDeviceTracking(handler?: TDeviceStateHandler): Promise<void> {
     if (handler) {
@@ -195,7 +206,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Notifies the transport that a specific slave device is connected.
-   * @param slaveId The ID of the Modbus slave device.
+   *
+   * @param slaveId - The ID of the Modbus slave device.
+   * @returns void
    */
   public notifyDeviceConnected(slaveId: number): void {
     if (this._connectedSlaveIds.has(slaveId)) {
@@ -209,9 +222,11 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Notifies the transport that a specific slave device has disconnected.
-   * @param slaveId The ID of the Modbus slave device.
-   * @param errorType The category of the connection error.
-   * @param errorMessage A descriptive error message.
+   *
+   * @param slaveId - The ID of the Modbus slave device.
+   * @param errorType - The category of the connection error.
+   * @param errorMessage - A descriptive error message.
+   * @returns void
    */
   public notifyDeviceDisconnected(
     slaveId: number,
@@ -229,7 +244,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Manually removes a device from the internal connected devices set.
-   * @param slaveId The ID of the Modbus slave device to remove.
+   *
+   * @param slaveId - The ID of the Modbus slave device to remove.
+   * @returns void
    */
   public removeConnectedDevice(slaveId: number): void {
     if (this._connectedSlaveIds.has(slaveId)) {
@@ -240,7 +257,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Internal check to determine if the port is open and ready for I/O operations.
-   * @returns True if the port is open and the writer is initialized.
+   *
+   * @returns True if the port is open, ready, and the writer is initialized.
+   * @private
    */
   private isPortReady(): boolean {
     const ready = this.isOpen && this._isPortReady && this.writer !== null;
@@ -249,6 +268,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Internal helper to trigger the port connection notification handler.
+   *
+   * @returns Promise resolving after notifying the port handler.
+   * @private
    */
   private async _notifyPortConnected(): Promise<void> {
     this._wasEverConnected = true;
@@ -259,8 +281,11 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Internal helper to trigger the port disconnection notification handler.
-   * @param errorType The reason for disconnection.
-   * @param errorMessage Details regarding the disconnection.
+   *
+   * @param errorType - The reason for disconnection (default: UnknownError).
+   * @param errorMessage - Details regarding the disconnection.
+   * @returns Promise resolving after notifying the port handler.
+   * @private
    */
   private async _notifyPortDisconnected(
     errorType: EConnectionErrorType = EConnectionErrorType.UnknownError,
@@ -278,6 +303,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Handles the low-level physical closure of the serial port.
+   *
+   * @returns void
+   * @private
    */
   private _handlerPortClose(): void {
     this.logger.info('WebSerial port physically closed (via close())');
@@ -290,6 +318,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Monitors the closure promise to trigger cleanup when the port closes.
+   *
+   * @returns void
+   * @private
    */
   private _watchForPortClose(): void {
     if (!this._portClosePromise) return;
@@ -299,7 +330,10 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Releases all resources associated with the transport, such as readers, writers, and buffers.
-   * @param hardClose If true, attempts to close the underlying physical port as well.
+   *
+   * @param hardClose - If true, attempts to close the underlying physical port as well (default: false).
+   * @returns Promise resolving when all resources are cleaned up.
+   * @private
    */
   private async _releaseAllResources(hardClose = false): Promise<void> {
     this.logger.debug('Releasing WebSerial resources');
@@ -352,6 +386,10 @@ export default class WebSerialTransport implements ITransport {
   /**
    * Establishes a connection to the serial port.
    * Performs port configuration and initializes reading/writing streams.
+   *
+   * @returns Promise resolving when the connection is established or pending reconnect.
+   * @throws {WebSerialConnectionError} If port factory returns invalid port or streams cannot be opened.
+   * @throws {ModbusConfigError} If baud rate is out of valid range.
    */
   public async connect(): Promise<void> {
     if (this._isConnecting) {
@@ -369,6 +407,8 @@ export default class WebSerialTransport implements ITransport {
       this._resolveConnection = resolve;
       this._rejectConnection = reject;
     });
+    // See node/serial.ts: the internal promise's rejection must not become unhandled.
+    void this._connectionPromise.catch(() => undefined);
 
     try {
       if (this._reconnectTimer) {
@@ -461,9 +501,17 @@ export default class WebSerialTransport implements ITransport {
         );
       }
 
-      if (this._shouldReconnect && this._reconnectAttempts < this.options.maxReconnectAttempts) {
+      if (
+        this._shouldReconnect &&
+        this._reconnectAttempts < this.options.maxReconnectAttempts &&
+        !this._isPermanentOpenFailure(err as Error)
+      ) {
         this.logger.info('Auto-reconnect enabled, starting reconnect process...');
         this._scheduleReconnect(err as Error);
+        // Do not resolve connect(): the port is not yet open. Return a pending promise that
+        // will resolve only when the reconnection actually opens the port (or reject upon
+        // exhausting attempts)—otherwise, the controller would erroneously set the state to 'connected'.
+        return this._connectionPromise ?? Promise.resolve();
       } else {
         if (this._rejectConnection) {
           this._rejectConnection(err as Error);
@@ -478,8 +526,25 @@ export default class WebSerialTransport implements ITransport {
   }
 
   /**
+   * WebSerial throws browser DOMExceptions, such as "Failed to open serial port",
+   * "Access to the port was denied", "The port does not exist", or "No port selected".
+   *
+   * @param error - The error to evaluate.
+   * @returns True if the failure is unrecoverable without user action, false otherwise.
+   * @private
+   */
+  private _isPermanentOpenFailure(error: Error): boolean {
+    return /already in use|busy|permission|access denied|does not exist|file not found|no such device|invalid handle|cannot open|denied|not found/i.test(
+      error.message
+    );
+  }
+
+  /**
    * Starts the continuous reading loop from the serial port.
    * Appends incoming data to the internal read buffer.
+   *
+   * @returns void
+   * @private
    */
   private _startReading(): void {
     if (this._readLoopActive) return;
@@ -568,11 +633,17 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Writes a buffer of data to the serial port.
-   * @param buffer The Uint8Array to be sent.
+   *
+   * @param buffer - The Uint8Array to be sent.
+   * @returns Promise resolving when the write operation completes.
+   * @throws {ModbusFlushError} If a flush operation is in progress.
+   * @throws {WebSerialWriteError} If the port is not ready for writing.
+   * @throws {ModbusBufferUnderrunError} If the provided buffer is empty.
+   * @throws {ModbusTimeoutError} If the write operation times out.
    */
   public async write(buffer: Uint8Array): Promise<void> {
     if (this._isFlushing) throw new ModbusFlushError();
-    if (!this.isPortReady) throw new WebSerialWriteError('Port is not ready for writing');
+    if (!this.isPortReady()) throw new WebSerialWriteError('Port is not ready for writing');
     if (buffer.length === 0) throw new ModbusBufferUnderrunError(0, 1);
 
     const release = await this._operationMutex.acquire();
@@ -627,9 +698,14 @@ export default class WebSerialTransport implements ITransport {
   /**
    * Reads a specified number of bytes from the internal buffer.
    * Waits for data to arrive if the buffer is currently insufficient.
-   * @param length Number of bytes to read.
-   * @param timeout Maximum time to wait for the data in milliseconds.
+   *
+   * @param length - Number of bytes to read.
+   * @param timeout - Maximum time to wait for data in milliseconds (defaults to configured readTimeout).
    * @returns A Promise that resolves to the requested Uint8Array.
+   * @throws {WebSerialReadError} If the port is not ready or closed.
+   * @throws {ModbusDataConversionError} If length <= 0.
+   * @throws {ModbusFlushError} If the buffer is flushed while reading.
+   * @throws {ModbusTimeoutError} If no data received within timeout.
    */
   public async read(
     length: number,
@@ -699,6 +775,8 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Disconnects the transport and stops all ongoing operations and reconnection attempts.
+   *
+   * @returns Promise resolving when disconnect and cleanup are complete.
    */
   public async disconnect(): Promise<void> {
     this.logger.info('Disconnecting WebSerial transport...');
@@ -738,6 +816,8 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Clears the current read buffer and resets the empty read counter.
+   *
+   * @returns Promise resolving when buffer is cleared.
    */
   public async flush(): Promise<void> {
     if (this._isFlushing) {
@@ -746,7 +826,7 @@ export default class WebSerialTransport implements ITransport {
     }
 
     this._isFlushing = true;
-    const flushPromise = new Promise<void>(resolve => {
+    new Promise<void>(resolve => {
       this._pendingFlushPromises.push(resolve);
     });
 
@@ -764,7 +844,10 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Maps generic serial errors to specific Modbus error types and logs them.
-   * @param err The Error object caught during communication.
+   *
+   * @param err - The Error object caught during communication.
+   * @returns void
+   * @private
    */
   private _onError(err: Error): void {
     this.logger.error(`Serial port ${this.port} error: ${err.message}`);
@@ -780,7 +863,10 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Internal bridge to trigger connection loss handling upon a specific error.
-   * @param err The error that occurred.
+   *
+   * @param err - The error that occurred.
+   * @returns void
+   * @private
    */
   private _handleError(err: Error): void {
     this._handleConnectionLoss(`Error: ${err.message}`);
@@ -788,7 +874,10 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Manages state changes when the connection is lost and decides whether to trigger reconnection.
-   * @param reason A string describing why the connection was lost.
+   *
+   * @param reason - A string describing why the connection was lost.
+   * @returns void
+   * @private
    */
   private _handleConnectionLoss(reason: string): void {
     if (!this.isOpen && !this._isConnecting) return;
@@ -818,7 +907,10 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Schedules a reconnection attempt after a failure.
-   * @param err The error that triggered the reconnection requirement.
+   *
+   * @param err - The error that triggered the reconnection requirement.
+   * @returns void
+   * @private
    */
   private _scheduleReconnect(err: Error): void {
     if (!this._shouldReconnect || this._isDisconnecting) {
@@ -858,6 +950,9 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Internal logic to perform a reconnection attempt by re-opening the port.
+   *
+   * @returns Promise resolving when reconnection succeeds or next retry is scheduled.
+   * @private
    */
   private async _attemptReconnect(): Promise<void> {
     try {
@@ -948,6 +1043,8 @@ export default class WebSerialTransport implements ITransport {
 
   /**
    * Destroys the transport instance, cleaning up all resources and preventing future connections.
+   *
+   * @returns void
    */
   destroy(): void {
     this._shouldReconnect = false;

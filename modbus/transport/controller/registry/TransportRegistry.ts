@@ -1,18 +1,18 @@
 // modbus/transport/controller/registry/TransportRegistry.ts
 
 import { Mutex } from 'async-mutex';
-import type { ITransportInfo } from '../../../types/public.js';
+import type { PortSession } from '../session/PortSession.js';
 
 /**
  * Interface for the Transport Registry.
- * Manages the storage and mapping of transports and their assigned Slave IDs.
+ * Manages the storage and mapping of port sessions and their assigned Slave IDs.
  */
 export interface ITransportRegistry {
   has(id: string): boolean;
-  get(id: string): ITransportInfo | undefined;
-  getAll(): ITransportInfo[];
-  add(info: ITransportInfo): void;
-  remove(id: string): Promise<ITransportInfo | undefined>;
+  get(id: string): PortSession | undefined;
+  getAll(): PortSession[];
+  add(session: PortSession): void;
+  remove(id: string): Promise<PortSession | undefined>;
   size(): number;
   assignSlave(transportId: string, slaveId: number): void;
   unassignSlave(transportId: string, slaveId: number): void;
@@ -25,7 +25,7 @@ export interface ITransportRegistry {
  * Maintains a primary map of transports and a secondary map for reverse-lookup of Slave IDs to Transports.
  */
 export class TransportRegistry implements ITransportRegistry {
-  private readonly _transports = new Map<string, ITransportInfo>();
+  private readonly _transports = new Map<string, PortSession>();
   private readonly _slaveMap = new Map<number, string[]>();
   private readonly _mutex = new Mutex();
 
@@ -41,14 +41,15 @@ export class TransportRegistry implements ITransportRegistry {
    * Retrieves transport information by its ID.
    * @param {string} id - The transport identifier.
    */
-  public get(id: string): ITransportInfo | undefined {
+  public get(id: string): PortSession | undefined {
     return this._transports.get(id);
   }
 
   /**
-   * Returns an array of all registered transports.
+   * Retrieves all registered transports.
+   * @returns {PortSession[]} An array of all registered PortSession instances.
    */
-  public getAll(): ITransportInfo[] {
+  public getAll(): PortSession[] {
     return Array.from(this._transports.values());
   }
 
@@ -56,18 +57,18 @@ export class TransportRegistry implements ITransportRegistry {
    * Adds a new transport to the registry.
    * This operation is thread-safe and will update slave mappings automatically.
    *
-   * @param {ITransportInfo} info - The transport information object.
+   * @param {PortSession} session - The port session to register.
    * @throws {Error} If a transport with the same ID already exists.
    */
-  public async add(info: ITransportInfo): Promise<void> {
+  public async add(session: PortSession): Promise<void> {
     await this._mutex.runExclusive(() => {
-      if (this._transports.has(info.id)) {
-        throw new Error(`Transport "${info.id}" already exists`);
+      if (this._transports.has(session.id)) {
+        throw new Error(`Transport "${session.id}" already exists`);
       }
-      this._transports.set(info.id, info);
+      this._transports.set(session.id, session);
 
-      for (const slaveId of info.slaveIds) {
-        this._addToSlaveMap(slaveId, info.id);
+      for (const slaveId of session.slaveIds) {
+        this._addToSlaveMap(slaveId, session.id);
       }
     });
   }
@@ -75,24 +76,25 @@ export class TransportRegistry implements ITransportRegistry {
   /**
    * Removes a transport from the registry and cleans up slave mappings.
    * @param {string} id - The ID of the transport to remove.
-   * @returns {Promise<ITransportInfo | undefined>} The removed transport info, or undefined if not found.
+   * @returns {Promise<PortSession | undefined>} The removed session, or undefined if not found.
    */
-  public async remove(id: string): Promise<ITransportInfo | undefined> {
+  public async remove(id: string): Promise<PortSession | undefined> {
     return await this._mutex.runExclusive(() => {
-      const info = this._transports.get(id);
-      if (!info) return undefined;
+      const session = this._transports.get(id);
+      if (!session) return undefined;
 
-      for (const slaveId of info.slaveIds) {
+      for (const slaveId of session.slaveIds) {
         this._removeFromSlaveMap(slaveId, id);
       }
 
       this._transports.delete(id);
-      return info;
+      return session;
     });
   }
 
   /**
    * Returns the number of registered transports.
+   * @returns {number} The number of registered transports.
    */
   public size(): number {
     return this._transports.size;
@@ -104,11 +106,11 @@ export class TransportRegistry implements ITransportRegistry {
    * @param {number} slaveId - The Slave ID to assign.
    */
   public assignSlave(transportId: string, slaveId: number): void {
-    const info = this._transports.get(transportId);
-    if (!info) throw new Error(`Transport "${transportId}" not found`);
+    const session = this._transports.get(transportId);
+    if (!session) throw new Error(`Transport "${transportId}" not found`);
 
-    if (!info.slaveIds.includes(slaveId)) {
-      info.slaveIds.push(slaveId);
+    if (!session.slaveIds.includes(slaveId)) {
+      session.slaveIds.push(slaveId);
     }
     this._addToSlaveMap(slaveId, transportId);
   }
@@ -119,12 +121,12 @@ export class TransportRegistry implements ITransportRegistry {
    * @param {number} slaveId - The Slave ID to remove.
    */
   public unassignSlave(transportId: string, slaveId: number): void {
-    const info = this._transports.get(transportId);
-    if (!info) return;
+    const session = this._transports.get(transportId);
+    if (!session) return;
 
-    const idx = info.slaveIds.indexOf(slaveId);
+    const idx = session.slaveIds.indexOf(slaveId);
     if (idx !== -1) {
-      info.slaveIds.splice(idx, 1);
+      session.slaveIds.splice(idx, 1);
     }
     this._removeFromSlaveMap(slaveId, transportId);
   }
@@ -155,12 +157,17 @@ export class TransportRegistry implements ITransportRegistry {
   /**
    * Removes all transports and clears all slave mappings.
    * Used during controller shutdown to fully release resources.
+   * @returns {void}
    */
   public clearAll(): void {
     this._transports.clear();
     this._slaveMap.clear();
   }
 
+  /** Adds a transport ID to the list of transports associated with a Slave ID.
+   * @param {number} slaveId - The Slave ID to associate with the transport.
+   * @param {string} transportId - The transport ID to add.
+   */
   private _addToSlaveMap(slaveId: number, transportId: string): void {
     const list = this._slaveMap.get(slaveId) ?? [];
     if (!list.includes(transportId)) {
@@ -169,6 +176,11 @@ export class TransportRegistry implements ITransportRegistry {
     }
   }
 
+  /** Removes a transport ID from the list of transports associated with a Slave ID.
+   * If the list becomes empty, the Slave ID entry is removed from the map.
+   * @param {number} slaveId - The Slave ID to disassociate from the transport.
+   * @param {string} transportId - The transport ID to remove.
+   */
   private _removeFromSlaveMap(slaveId: number, transportId: string): void {
     const list = this._slaveMap.get(slaveId);
     if (!list) return;

@@ -128,41 +128,55 @@ class RegisterData extends Array<number> {
 
   // ── Scalar conversions (first value only) ──────────────────
 
+  /** Returns the first register as an unsigned 16-bit value. */
   asUInt16Scalar(): number {
     this._assertNonEmpty('asUInt16Scalar');
     return this[0]!;
   }
 
+  /** Returns the first register as a signed 16-bit value. */
   asInt16Scalar(): number {
     this._assertNonEmpty('asInt16Scalar');
     const v = this[0]!;
     return v > 0x7fff ? v - 0x10000 : v;
   }
 
+  /** Returns the first pair of registers as an unsigned 32-bit value. */
   asUInt32Scalar(wordOrder: TWordOrder = 'BE'): number {
     return this.sub(0, 2).asUInt32(wordOrder)[0]!;
   }
 
+  /** Returns the first pair of registers as a signed 32-bit value. */
   asInt32Scalar(wordOrder: TWordOrder = 'BE'): number {
     return this.sub(0, 2).asInt32(wordOrder)[0]!;
   }
 
+  /** Returns the first pair of registers as an IEEE 754 single-precision float. */
   asFloat32Scalar(wordOrder: TWordOrder = 'BE'): number {
     return this.sub(0, 2).asFloat32(wordOrder)[0]!;
   }
 
+  /** Returns the first group of 4 registers as an IEEE 754 double-precision float. */
   asFloat64Scalar(wordOrder: TWordOrder = 'BE'): number {
     return this.sub(0, 4).asFloat64(wordOrder)[0]!;
   }
 
   // ── Internal helpers ───────────────────────────────────────
 
+  /**
+   * Asserts that the register data is not empty.
+   * @param method - The name of the method that requires non-empty data.
+   */
   private _assertNonEmpty(method: string): void {
     if (this.length === 0) {
       throw new RangeError(`${method} requires at least 1 register, got 0`);
     }
   }
 
+  /**
+   * Asserts that the register data has an even number of registers (≥2).
+   * @param method - The name of the method that requires an even number of registers.
+   */
   private _assertEven(method: string): void {
     if (this.length === 0 || this.length % 2 !== 0) {
       throw new RangeError(
@@ -171,6 +185,10 @@ class RegisterData extends Array<number> {
     }
   }
 
+  /**
+   * Asserts that the register data has a multiple of 4 registers (≥4).
+   * @param method - The name of the method that requires a multiple of 4 registers.
+   */
   private _assertMultipleOf4(method: string): void {
     if (this.length === 0 || this.length % 4 !== 0) {
       throw new RangeError(`${method} requires a multiple of 4 registers (≥4), got ${this.length}`);

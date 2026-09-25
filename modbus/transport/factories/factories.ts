@@ -1,6 +1,6 @@
 // modbus/transport/factories/factories.ts
 
-import { Logger } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
 import type {
   ITransport,
   TTransportType,
@@ -37,6 +37,8 @@ export const NODE_RTU_KEYS = [
   'reconnectInterval',
   'maxReconnectAttempts',
   'RSMode',
+  'interFrameDelayMs',
+  'exclusiveLock',
 ] as const;
 
 /** Valid configuration keys for Node.js TCP transport. */
@@ -88,20 +90,21 @@ export abstract class TransportFactoryBase<TOptions = unknown> {
 
   /**
    * Creates an instance of a transport.
-   * @param {TOptions} options - Configuration options.
-   * @param {Logger} logger - Logger instance.
-   * @returns {Promise<ITransport>} A promise resolving to the created transport.
+   *
+   * @param options - Configuration options specific to the transport type.
+   * @param logger - Logger instance for transport-level logging.
+   * @returns A promise resolving to the created transport instance.
    */
-  abstract create(options: TOptions, logger: Logger): Promise<ITransport>;
+  abstract create(options: TOptions, logger: Logger<ILogObj>): Promise<ITransport>;
 }
 
 /**
  * Filters an object to include only specified keys that have defined values.
  *
  * @template T Resulting object type.
- * @param {object} source - The source object.
- * @param {readonly string[]} keys - Keys to extract.
- * @returns {T} A new object containing only the defined selected keys.
+ * @param source - The source object to filter.
+ * @param keys - Keys to extract from the source object.
+ * @returns A new object containing only the defined selected keys.
  */
 export function pickDefinedKeys<T extends object>(source: object, keys: readonly string[]): T {
   const result: Record<string, unknown> = {};
@@ -116,8 +119,8 @@ export function pickDefinedKeys<T extends object>(source: object, keys: readonly
 /**
  * Creates a factory function for WebSerial ports, ensuring the port is closed if already open.
  *
- * @param {IWebSerialPort} port - The WebSerial port instance.
- * @returns {() => Promise<IWebSerialPort>} A factory function that returns the port.
+ * @param port - The WebSerial port instance.
+ * @returns A factory function that returns a Promise resolving to the ready WebSerial port.
  */
 export function createPortFactory(port: IWebSerialPort): () => Promise<IWebSerialPort> {
   return async () => {
@@ -138,9 +141,17 @@ export class NodeRtuFactory extends TransportFactoryBase<
 > {
   readonly type = TRANSPORT_TYPES.NODE_RTU;
 
+  /**
+   * Creates a Modbus RTU serial transport instance for Node.js.
+   *
+   * @param options - Configuration options for Node.js serial transport (port/path, baudRate, etc.).
+   * @param _logger - Logger instance for diagnostics.
+   * @returns A promise resolving to the created NodeSerialTransport instance.
+   * @throws {Error} If neither "port" nor "path" is provided in options.
+   */
   async create(
     options: TransportOptionsMap[typeof TRANSPORT_TYPES.NODE_RTU],
-    _logger: Logger
+    _logger: Logger<ILogObj>
   ): Promise<ITransport> {
     const path = options.port || options.path;
     if (!path) throw new Error('Missing "port" (or "path") for node-rtu transport');
@@ -161,9 +172,17 @@ export class NodeTcpFactory extends TransportFactoryBase<
 > {
   readonly type = TRANSPORT_TYPES.NODE_TCP;
 
+  /**
+   * Creates a Modbus TCP transport instance for Node.js.
+   *
+   * @param options - Configuration options for Node.js TCP transport (host, port, timeouts, etc.).
+   * @param _logger - Logger instance for diagnostics.
+   * @returns A promise resolving to the created NodeTcpTransport instance.
+   * @throws {Error} If "host" is missing in options.
+   */
   async create(
     options: TransportOptionsMap[typeof TRANSPORT_TYPES.NODE_TCP],
-    _logger: Logger
+    _logger: Logger<ILogObj>
   ): Promise<ITransport> {
     if (!options.host) throw new Error('Missing "host" for node-tcp transport');
 
@@ -183,9 +202,17 @@ export class WebRtuFactory extends TransportFactoryBase<
 > {
   readonly type = TRANSPORT_TYPES.WEB_RTU;
 
+  /**
+   * Creates a Modbus RTU WebSerial transport instance for browser environments.
+   *
+   * @param options - Configuration options for WebSerial transport including the port instance.
+   * @param _logger - Logger instance for diagnostics.
+   * @returns A promise resolving to the created WebSerialTransport instance.
+   * @throws {Error} If "port" is missing in options.
+   */
   async create(
     options: TransportOptionsMap[typeof TRANSPORT_TYPES.WEB_RTU],
-    _logger: Logger
+    _logger: Logger<ILogObj>
   ): Promise<ITransport> {
     if (!options.port) throw new Error('Missing "port" for web-rtu transport');
 
@@ -206,9 +233,16 @@ export class RtuEmulatorFactory extends TransportFactoryBase<
 > {
   readonly type = TRANSPORT_TYPES.RTU_EMULATOR;
 
+  /**
+   * Creates a simulated Modbus RTU emulator transport instance.
+   *
+   * @param options - Configuration options for the RTU emulator (slaveId, latency, registers, etc.).
+   * @param _logger - Logger instance for diagnostics.
+   * @returns A promise resolving to the created RtuEmulatorTransport instance.
+   */
   async create(
     options: TransportOptionsMap[typeof TRANSPORT_TYPES.RTU_EMULATOR],
-    _logger: Logger
+    _logger: Logger<ILogObj>
   ): Promise<ITransport> {
     const { default: RtuEmulatorTransport } = await import('../emulator/rtu.js');
     return new RtuEmulatorTransport({
@@ -231,9 +265,16 @@ export class TcpEmulatorFactory extends TransportFactoryBase<
 > {
   readonly type = TRANSPORT_TYPES.TCP_EMULATOR;
 
+  /**
+   * Creates a simulated Modbus TCP emulator transport instance.
+   *
+   * @param options - Configuration options for the TCP emulator (slaveId, latency, registers, RSMode, etc.).
+   * @param logger - Logger instance used for logging emulator creation.
+   * @returns A promise resolving to the created TcpEmulatorTransport instance.
+   */
   async create(
     options: TransportOptionsMap[typeof TRANSPORT_TYPES.TCP_EMULATOR],
-    logger: Logger
+    logger: Logger<ILogObj>
   ): Promise<ITransport> {
     const { default: TcpEmulatorTransport } = await import('../emulator/tcp.js');
     logger.info({ slaveId: options.slaveId ?? 1 }, 'Creating TCP emulator transport');

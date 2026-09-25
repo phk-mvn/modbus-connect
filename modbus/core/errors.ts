@@ -27,6 +27,22 @@ export class ModbusTimeoutError extends ModbusError {
  * Thrown when the CRC (Cyclic Redundancy Check) of a received Modbus frame is invalid.
  * Typically occurs in RTU mode due to transmission errors.
  */
+/**
+ * The total budget of one call (`totalTimeout`) was exhausted before the exchange finished.
+ * Retries and retry delays are part of that budget. Extends ModbusTimeoutError, so callers
+ * that only distinguish "timeout" keep working.
+ */
+export class ModbusOperationTimeoutError extends ModbusTimeoutError {
+  constructor(totalTimeoutMs: number, slaveId?: number) {
+    super(
+      `Operation budget exceeded: ${totalTimeoutMs}ms` +
+        (slaveId !== undefined ? ` for device ${slaveId}` : '') +
+        ' (retries and delays included)'
+    );
+    this.name = 'ModbusOperationTimeoutError';
+  }
+}
+
 export class ModbusCRCError extends ModbusError {
   constructor(message: string = 'Modbus CRC check failed') {
     super(message);
@@ -253,8 +269,8 @@ export class ModbusConnectionTimeoutError extends ModbusError {
  * Thrown when attempting to perform an operation while no transport connection is established.
  */
 export class ModbusNotConnectedError extends ModbusError {
-  constructor() {
-    super('Not connected to Modbus device');
+  constructor(message: string = 'Not connected to Modbus device') {
+    super(message);
     this.name = 'ModbusNotConnectedError';
   }
 }
@@ -698,5 +714,86 @@ export class RSModeConstraintError extends ModbusError {
   constructor(message: string) {
     super(message);
     this.name = 'RSModeConstraintError';
+  }
+}
+
+/**
+ * Thrown when a port queue rejects a new job because its pending length already
+ * reached the configured hard limit (`maxLength`). Used as backpressure protection.
+ */
+export class ModbusQueueOverflowError extends ModbusError {
+  constructor(maxLength: number = 500) {
+    super(`Port queue overflow: pending jobs limit of ${maxLength} reached`);
+    this.name = 'ModbusQueueOverflowError';
+  }
+}
+
+/**
+ * Thrown when a port is paused for a device scan: new wire-level requests cannot be
+ * accepted while the scanner owns the physical line.
+ */
+export class ModbusScanActiveError extends ModbusError {
+  constructor(message: string = 'Port is paused for a device scan; retry after the scan finishes') {
+    super(message);
+    this.name = 'ModbusScanActiveError';
+  }
+}
+
+/**
+ * Thrown when a port cannot be handed over (e.g. draining before a scan timed out).
+ */
+export class ModbusBusyError extends ModbusError {
+  constructor(message: string = 'Port is busy and did not become idle in time') {
+    super(message);
+    this.name = 'ModbusBusyError';
+  }
+}
+
+/**
+ * Thrown when a client id is already registered on the controller.
+ */
+/**
+ * An attempt to serve one device (transport + slave id) with more than one client.
+ * Two clients for one device double the traffic on the bus, and the device connection
+ * state becomes ambiguous. Pass `allowDuplicateSlaveId: true` to do it deliberately.
+ */
+export class DuplicateSlaveIdError extends ModbusError {
+  constructor(transportId: string, slaveId: number, existingClientId: string) {
+    super(
+      `Device ${slaveId} on transport "${transportId}" is already served by client "${existingClientId}". ` +
+        'Two clients for one device double the bus traffic; pass allowDuplicateSlaveId: true to allow it.'
+    );
+    this.name = 'DuplicateSlaveIdError';
+  }
+}
+
+export class ClientAlreadyExistsError extends ModbusError {
+  constructor(clientId: string) {
+    super(`Client "${clientId}" already exists`);
+    this.name = 'ClientAlreadyExistsError';
+  }
+}
+
+/**
+ * Thrown when a client id is not present in the controller's client registry.
+ */
+export class ClientNotFoundError extends ModbusError {
+  constructor(clientId: string) {
+    super(`Client "${clientId}" not found`);
+    this.name = 'ClientNotFoundError';
+  }
+}
+
+/**
+ * Thrown when PortQueue.enqueue() is called synchronously from inside a currently
+ * executing job. Such a call can never be satisfied by the same drain loop and
+ * therefore would deadlock; it is rejected explicitly instead.
+ */
+export class ModbusReentrancyError extends ModbusError {
+  constructor(
+    message: string = 'Reentrant PortQueue.enqueue() detected: enqueue must not be called synchronously from inside a running job'
+  ) {
+    super(message);
+    this.name = 'ModbusReentrancyError';
   }
 }

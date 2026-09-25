@@ -1,9 +1,17 @@
 // modbus/transport/controller/scan/ScanService.ts
 
-import { Logger } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
 import { ModbusScanner, ScanController } from '../../../utils/scanner.js';
 import { TrafficSniffer } from '../../trackers/traffic-sniffer.js';
-import type { IScanOptions, IScanReport, IWebSerialPort } from '../../../types/public.js';
+import type { IScanOptions, IScanReport } from '../../../types/public.js';
+
+/** Session hand-over hooks the controller uses to pause the scanned port. */
+export interface IScanSessionHooks {
+  /** Called right before the scan starts (pauses the matching port session). */
+  pauseSession?: (options: IScanOptions) => Promise<void>;
+  /** Called in the finally block of a scan (releases the matching port session). */
+  resumeSession?: (options: IScanOptions) => Promise<void>;
+}
 
 /**
  * Service responsible for managing Modbus device scanning operations.
@@ -18,26 +26,42 @@ export class ScanService {
    * @param {Logger} logger - Pino logger instance for scan activity.
    * @param {TrafficSniffer} [sniffer] - Optional sniffer for debugging raw traffic during scans.
    */
-  constructor(logger: Logger, sniffer?: TrafficSniffer) {
+  constructor(logger: Logger<ILogObj>, sniffer?: TrafficSniffer) {
     this._scanner = new ModbusScanner(logger, sniffer ?? undefined);
   }
 
-  /** Indicates whether a scanning process is currently active. */
+  /**
+   * Indicates whether a scan operation is currently in progress.
+   * @returns {boolean} True if a scan is active, false otherwise.
+   */
   public get isScanning(): boolean {
     return this._isScanning;
   }
 
-  /** Pauses the current scanning operation. */
+  /**
+   * Pauses the current scanning operation, if any.
+   * If no scan is active, this method has no effect.
+   * Use the ScanController to manage scan state externally.
+   * @throws {Error} If no scan is currently active.
+   */
   public pause(): void {
     this._activeController?.pause();
   }
 
-  /** Resumes a paused scanning operation. */
+  /** Resumes the current scanning operation, if it was previously paused.
+   * If no scan is active or if the scan is not paused, this method has no effect.
+   * Use the ScanController to manage scan state externally.
+   * @throws {Error} If no scan is currently active.
+   */
   public resume(): void {
     this._activeController?.resume();
   }
 
-  /** Stops the current scanning operation immediately. */
+  /** Stops the current scanning operation, if any.
+   * If no scan is active, this method has no effect.
+   * Use the ScanController to manage scan state externally.
+   * @throws {Error} If no scan is currently active.
+   */
   public stop(): void {
     this._activeController?.stop();
   }
@@ -51,7 +75,11 @@ export class ScanService {
    * @returns {Promise<IScanReport>} Results of the scan.
    * @throws {Error} If another scan is already in progress.
    */
-  public async scanRtu(options: IScanOptions, controller?: ScanController): Promise<IScanReport> {
+  public async scanRtu(
+    options: IScanOptions,
+    controller?: ScanController,
+    hooks?: IScanSessionHooks
+  ): Promise<IScanReport> {
     if (this._isScanning) {
       throw new Error(
         'A scan is already in progress. Stop the current scan before starting a new one.'
@@ -61,10 +89,15 @@ export class ScanService {
     this._isScanning = true;
     this._activeController = controller ?? new ScanController();
 
+    let paused = false;
     try {
+      await hooks?.pauseSession?.(options);
+      paused = true;
+
       const transportType = this._detectRtuTransportType(options);
       return await this._scanner.scanRtu(options, transportType, this._activeController);
     } finally {
+      if (paused) await hooks?.resumeSession?.(options);
       this._activeController = null;
       this._isScanning = false;
     }
@@ -78,7 +111,11 @@ export class ScanService {
    * @returns {Promise<IScanReport>} Results of the scan.
    * @throws {Error} If another scan is already in progress.
    */
-  public async scanTcp(options: IScanOptions, controller?: ScanController): Promise<IScanReport> {
+  public async scanTcp(
+    options: IScanOptions,
+    controller?: ScanController,
+    hooks?: IScanSessionHooks
+  ): Promise<IScanReport> {
     if (this._isScanning) {
       throw new Error(
         'A scan is already in progress. Stop the current scan before starting a new one.'
@@ -88,17 +125,25 @@ export class ScanService {
     this._isScanning = true;
     this._activeController = controller ?? new ScanController();
 
+    let paused = false;
     try {
+      await hooks?.pauseSession?.(options);
+      paused = true;
+
       return await this._scanner.scanTcp(options, this._activeController);
     } finally {
+      if (paused) await hooks?.resumeSession?.(options);
       this._activeController = null;
       this._isScanning = false;
     }
   }
 
-  /**
-   * Internal helper to determine if the scan should use Node SerialPort or WebSerial API.
-   * @private
+  /** Detects the appropriate RTU transport type based on the provided scan options.
+   * If the 'type' property is explicitly set in options, it is used directly.
+   * Otherwise, the method infers the transport type based on the 'path' property.
+   *
+   * @param {IScanOptions} options - The scan options containing potential transport information.
+   * @returns {'node-rtu' | 'web-rtu'} The determined transport type for RTU scanning.
    */
   private _detectRtuTransportType(options: IScanOptions): 'node-rtu' | 'web-rtu' {
     if (options.type) return options.type;

@@ -28,9 +28,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
   /**
    * Creates a new DeviceConnectionTracker instance.
    *
-   * @param options - Configuration options for the tracker
-   * @param options.debounceMs - Debounce interval in milliseconds for disconnection notifications (default: 500)
-   * @param options.validateSlaveId - Whether to validate slaveId range (1–255) (default: true)
+   * @param options - Configuration options for the tracker.
+   * @param options.debounceMs - Debounce interval in milliseconds for disconnection notifications (default: 500).
+   * @param options.validateSlaveId - Whether to validate slaveId range (1–255) (default: true).
    */
   constructor(options: IDeviceConnectionTrackerOptions = {}) {
     this._debounceMs = options.debounceMs ?? 500;
@@ -41,7 +41,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * Sets the handler that will be called when a device's connection state changes.
    * When a new handler is set, it is immediately invoked for all currently tracked devices
    * to ensure the consumer has the latest state.
-   * @param handler - Callback function `(slaveId: number, connected: boolean, error?) => void`
+   *
+   * @param handler - Callback function `(slaveId: number, connected: boolean, error?) => void`.
+   * @returns Promise resolving when the handler is set and invoked for existing states.
    */
   public async setHandler(handler: TDeviceStateHandler): Promise<void> {
     const statesToNotify: IDeviceConnectionStateObject[] = [];
@@ -75,6 +77,8 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
   /**
    * Removes the current state change handler.
    * After calling this method, no further notifications will be sent.
+   *
+   * @returns Promise resolving when the handler is removed.
    */
   public async removeHandler(): Promise<void> {
     await this._mutex.runExclusive(async () => {
@@ -86,7 +90,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * Notifies the tracker that a device has become connected.
    * If the device is already marked as connected, the notification is ignored.
    * Any pending debounce timer for disconnection is cancelled.
-   * @param slaveId - Slave identifier (1–255)
+   *
+   * @param slaveId - Slave identifier (1–255).
+   * @returns Promise resolving when the connected notification is processed.
    */
   public async notifyConnected(slaveId: number): Promise<void> {
     if (this._validateSlaveId && (slaveId < 1 || slaveId > 255)) return;
@@ -132,9 +138,11 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
    * Notifies the tracker that a device has disconnected with trailing debounce.
    * The actual notification is delayed by `debounceMs`. If another `notifyDisconnected`
    * is called for the same slaveId before the timer fires, the previous timer is cancelled.
-   * @param slaveId - Slave identifier (1–255)
-   * @param errorType - Type of disconnection error (default: UnknownError)
-   * @param errorMessage - Detailed error message (default: 'Device disconnected')
+   *
+   * @param slaveId - Slave identifier (1–255).
+   * @param errorType - Type of disconnection error (default: UnknownError).
+   * @param errorMessage - Detailed error message (default: 'Device disconnected').
+   * @returns void
    */
   public notifyDisconnected(
     slaveId: number,
@@ -161,9 +169,11 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Completely removes a device's state from the tracker.
-   * This is a synchronous method used when a device is forcibly removed from configuration.
+   * This is an asynchronous method used when a device is forcibly removed from configuration.
    * Ensures that the next `notifyConnected` will trigger a fresh notification.
-   * @param slaveId - Slave identifier (1–255)
+   *
+   * @param slaveId - Slave identifier (1–255).
+   * @returns Promise resolving when device state is removed.
    */
   public async removeState(slaveId: number): Promise<void> {
     await this._mutex.runExclusive(async () => {
@@ -178,6 +188,12 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Performs the actual disconnection notification (internal method).
+   *
+   * @param slaveId - Slave identifier (1–255).
+   * @param errorType - Type of disconnection error.
+   * @param errorMessage - Description of disconnection reason.
+   * @returns Promise resolving when notification is complete.
+   * @private
    */
   private async _doNotifyDisconnected(
     slaveId: number,
@@ -223,8 +239,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Returns a shallow copy of the current state for a specific slave.
-   * @param slaveId - Slave identifier
-   * @returns Device state object or undefined if not tracked
+   *
+   * @param slaveId - Slave identifier.
+   * @returns Promise resolving to device state object or undefined if not tracked.
    */
   public async getState(slaveId: number): Promise<IDeviceConnectionStateObject | undefined> {
     return await this._mutex.runExclusive(async () => {
@@ -235,6 +252,8 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Returns a deep copy of all currently tracked device states.
+   *
+   * @returns Promise resolving to an array of all tracked device states.
    */
   public async getAllStates(): Promise<IDeviceConnectionStateObject[]> {
     return await this._mutex.runExclusive(async () => {
@@ -253,6 +272,8 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
   /**
    * Clears all tracked states and cancels any pending debounce timers.
    * Also removes the current handler.
+   *
+   * @returns Promise resolving when all states and timers are cleared.
    */
   public async clear(): Promise<void> {
     await this._mutex.runExclusive(async () => {
@@ -268,6 +289,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Checks whether a specific slave is being tracked.
+   *
+   * @param slaveId - Slave identifier to check.
+   * @returns Promise resolving to true if slave is tracked, false otherwise.
    */
   public async hasState(slaveId: number): Promise<boolean> {
     return await this._mutex.runExclusive(async () => {
@@ -277,6 +301,8 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Returns an array of all slaveIds that are currently marked as connected.
+   *
+   * @returns Promise resolving to an array of connected slave IDs.
    */
   public async getConnectedSlaveIds(): Promise<number[]> {
     return await this._mutex.runExclusive(async () => {
@@ -288,6 +314,9 @@ export class DeviceConnectionTracker implements IDeviceConnectionTracker {
 
   /**
    * Resets the debounce timer for a specific slave (intended for testing only).
+   *
+   * @param slaveId - Slave identifier whose debounce timer should be reset.
+   * @returns void
    * @internal
    */
   public __resetDebounce(slaveId: number): void {

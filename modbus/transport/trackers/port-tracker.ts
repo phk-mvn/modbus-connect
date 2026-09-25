@@ -27,8 +27,9 @@ export class PortConnectionTracker implements IPortConnectionTracker {
 
   /**
    * Creates a new PortConnectionTracker instance.
-   * @param options - Configuration options for the tracker
-   * @param options.debounceMs - Debounce interval in ms for disconnection notifications (default: 300)
+   *
+   * @param options - Configuration options for the tracker.
+   * @param options.debounceMs - Debounce interval in ms for disconnection notifications (default: 300).
    */
   constructor(options: IPortConnectionTrackerOptions = {}) {
     this._debounceMs = options.debounceMs ?? 300;
@@ -42,7 +43,9 @@ export class PortConnectionTracker implements IPortConnectionTracker {
   /**
    * Sets the handler that will be called when the port's connection state changes.
    * When a new handler is set, it is immediately called with the current state.
-   * @param handler - Callback function `(isConnected: boolean, slaveIds: number[], error?) => void`
+   *
+   * @param handler - Callback function `(isConnected: boolean, slaveIds: number[], error?) => void`.
+   * @returns Promise resolving when handler is registered and initial state has been dispatched.
    */
   public async setHandler(handler: TPortStateHandler): Promise<void> {
     let connected: boolean;
@@ -73,7 +76,9 @@ export class PortConnectionTracker implements IPortConnectionTracker {
    * Notifies that the port has become connected.
    * If the port is already connected with the same list of slaveIds, the notification is ignored.
    * Any pending disconnection debounce timer is cancelled.
-   * @param slaveIds - List of slave IDs currently accessible through this port (default: [])
+   *
+   * @param slaveIds - List of slave IDs currently accessible through this port (default: []).
+   * @returns Promise resolving when connection notification finishes.
    */
   public async notifyConnected(slaveIds: number[] = []): Promise<void> {
     let handlerToCall: TPortStateHandler | undefined;
@@ -112,9 +117,11 @@ export class PortConnectionTracker implements IPortConnectionTracker {
    * Notifies that the port has disconnected with trailing debounce.
    * The actual notification is delayed by `debounceMs`. If another disconnection
    * notification arrives before the timer fires, the previous one is cancelled.
-   * @param errorType - Type of disconnection error (default: UnknownError)
-   * @param errorMessage - Detailed error message (default: 'Port disconnected')
-   * @param slaveIds - List of slave IDs that were active before disconnection (default: [])
+   *
+   * @param errorType - Type of disconnection error (default: UnknownError).
+   * @param errorMessage - Detailed error message (default: 'Port disconnected').
+   * @param slaveIds - List of slave IDs that were active before disconnection (default: []).
+   * @returns void
    */
   public notifyDisconnected(
     errorType: EConnectionErrorType = EConnectionErrorType.UnknownError,
@@ -136,6 +143,11 @@ export class PortConnectionTracker implements IPortConnectionTracker {
   /**
    * Performs the actual disconnection state update and notification.
    * Internal method called by the debounce timer.
+   *
+   * @param errorType - Type of disconnection error.
+   * @param errorMessage - Description of disconnection reason.
+   * @param slaveIds - List of slave IDs that were active before disconnection.
+   * @returns Promise resolving when disconnection notification finishes.
    * @private
    */
   private async _doNotifyDisconnected(
@@ -174,6 +186,7 @@ export class PortConnectionTracker implements IPortConnectionTracker {
   /**
    * Returns a deep copy of the current port connection state.
    * Thread-safe access via mutex.
+   *
    * @returns Promise resolving to the current state object.
    */
   public async getState(): Promise<IPortConnectionState> {
@@ -185,6 +198,7 @@ export class PortConnectionTracker implements IPortConnectionTracker {
   /**
    * Clears any pending debounce timer and resets the port state to disconnected.
    * Typically called during destroy or full reset operations.
+   *
    * @returns Promise that resolves when the clear operation is complete.
    */
   public async clear(): Promise<void> {
@@ -205,6 +219,7 @@ export class PortConnectionTracker implements IPortConnectionTracker {
   /**
    * Returns whether the port is currently marked as connected.
    * Thread-safe access via mutex.
+   *
    * @returns Promise resolving to true if connected, false otherwise.
    */
   public async isConnected(): Promise<boolean> {
@@ -215,6 +230,8 @@ export class PortConnectionTracker implements IPortConnectionTracker {
 
   /**
    * Resets the debounce timer (intended for testing purposes only).
+   *
+   * @returns void
    * @internal
    */
   public __resetDebounce(): void {
@@ -227,6 +244,7 @@ export class PortConnectionTracker implements IPortConnectionTracker {
 
 /**
  * Helper function to compare two number arrays for equality (order-independent).
+ *
  * @param a - First array of numbers.
  * @param b - Second array of numbers.
  * @returns True if arrays contain the same elements, false otherwise.

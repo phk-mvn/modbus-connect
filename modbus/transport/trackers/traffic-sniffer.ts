@@ -38,6 +38,7 @@ export class TrafficSniffer implements ITrafficSniffer {
 
   /**
    * Subscribes a handler to the stream of processed packets.
+   *
    * @param handler - A callback function that receives an ISnifferPacket.
    * @returns A function to unsubscribe the handler.
    */
@@ -50,6 +51,7 @@ export class TrafficSniffer implements ITrafficSniffer {
 
   /**
    * Subscribes a handler to complete Modbus transactions (Request + Response pairs).
+   *
    * @param handler - A callback function that receives an ITransaction.
    * @returns A function to unsubscribe the handler.
    */
@@ -63,8 +65,11 @@ export class TrafficSniffer implements ITrafficSniffer {
   /**
    * Records an outgoing Modbus request (TX).
    * Automatically clears any stale RX buffers for the specific transport channel.
+   *
    * @param transportId - Unique identifier of the transport (e.g., COM port or IP address).
    * @param data - The raw bytes being sent.
+   * @param protocol - The Modbus protocol framing ('rtu' or 'tcp') (default: 'rtu').
+   * @returns void
    */
   public recordTx(
     transportId: string,
@@ -90,6 +95,8 @@ export class TrafficSniffer implements ITrafficSniffer {
   /**
    * Records the timestamp of the very first byte received in a response.
    * This is used to calculate the device's processing latency (Response Time).
+   *
+   * @returns void
    */
   public recordRxStart(): void {
     this._rxStartTime = performance.now();
@@ -99,9 +106,12 @@ export class TrafficSniffer implements ITrafficSniffer {
    * Records incoming data chunks (RX).
    * This method handles fragmentation by accumulating chunks until a valid
    * Modbus TCP or RTU packet is reassembled.
+   *
    * @param transportId - Unique identifier of the transport.
    * @param data - The raw bytes received in the current chunk.
+   * @param protocol - The Modbus protocol framing ('rtu' or 'tcp') (default: 'rtu').
    * @param error - Optional transport-level error message.
+   * @returns void
    */
   public recordRxEnd(
     transportId: string,
@@ -177,6 +187,9 @@ export class TrafficSniffer implements ITrafficSniffer {
 
   /**
    * Closes a pending request as a timeout if a new request is sent before the response arrives.
+   *
+   * @param transportId - Transport identifier whose pending transaction to time out.
+   * @returns void
    * @private
    */
   private _checkAndEmitTimeout(transportId: string): void {
@@ -199,6 +212,9 @@ export class TrafficSniffer implements ITrafficSniffer {
 
   /**
    * Asynchronously notifies all transaction handlers.
+   *
+   * @param tx - The transaction object to emit.
+   * @returns void
    * @private
    */
   private _emitTransaction(tx: ITransaction): void {
@@ -221,8 +237,10 @@ export class TrafficSniffer implements ITrafficSniffer {
   /**
    * Internal analyzer for Modbus Application Data Units (ADU).
    * Automatically detects protocol type and extracts fields.
+   *
    * @param raw - Raw bytes to analyze.
    * @param isTx - Direction flag (true for Request, false for Response).
+   * @param protocol - Protocol type ('rtu' or 'tcp').
    * @returns An ISnifferAnalysis object containing parsed protocol details.
    * @private
    */
@@ -273,7 +291,7 @@ export class TrafficSniffer implements ITrafficSniffer {
             description += `Response: ${byteCount} bytes (bits)`;
             break;
           case 0x03:
-          case 0x04:
+          case 0x04: {
             const regs = [];
             for (let i = 0; i < byteCount; i += 2) {
               const regIdx = offset + 3 + i;
@@ -284,6 +302,7 @@ export class TrafficSniffer implements ITrafficSniffer {
             data = regs;
             description += `Response: [${regs.join(', ')}]`;
             break;
+          }
           default:
             description += `Response: Success`;
         }
@@ -295,10 +314,11 @@ export class TrafficSniffer implements ITrafficSniffer {
 
   /**
    * Factory method to create an ISnifferPacket with HEX and ASCII representations.
+   *
    * @param transportId - Transport identifier.
-   * @param direction - 'tx' or 'rx'.
+   * @param direction - Packet direction ('tx' or 'rx').
    * @param data - Raw packet bytes.
-   * @param ts - Precise timestamp.
+   * @param ts - Precise high-resolution timestamp.
    * @returns A fully initialized ISnifferPacket.
    * @private
    */
@@ -331,7 +351,9 @@ export class TrafficSniffer implements ITrafficSniffer {
   /**
    * Asynchronously notifies all registered handlers of a new packet.
    * Uses Promise.resolve().then() to avoid blocking the main transport execution thread.
+   *
    * @param packet - The packet to emit.
+   * @returns void
    * @private
    */
   private _notify(packet: ISnifferPacket): void {
@@ -353,7 +375,8 @@ export class TrafficSniffer implements ITrafficSniffer {
 
   /**
    * Generates a unique alphanumeric ID for packet tracking.
-   * @returns A unique 9-character string.
+   *
+   * @returns A unique 9-character random string.
    * @private
    */
   private _generateId(): string {

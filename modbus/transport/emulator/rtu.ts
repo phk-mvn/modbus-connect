@@ -9,7 +9,8 @@ import {
   TPortStateHandler,
 } from '../../types/public.js';
 import ModbusSlaveCore from './slave-core.js';
-import { Logger, pino } from 'pino';
+import { Logger, type ILogObj } from 'tslog';
+import { createTsLogger } from '../../utils/logger.js';
 import { crc16Modbus } from '../../utils/crc.js';
 import { TrafficSniffer } from '../trackers/traffic-sniffer.js';
 
@@ -25,7 +26,7 @@ import { TrafficSniffer } from '../trackers/traffic-sniffer.js';
 export default class NodeRtuEmulatorTransport implements ITransport {
   public isOpen: boolean = false;
   private core: ModbusSlaveCore;
-  private logger: Logger;
+  private logger: Logger<ILogObj>;
   private responseLatencyMs: number;
   private _sniffer: TrafficSniffer | null = null;
   private _responseAdu: Uint8Array | null = null;
@@ -50,21 +51,9 @@ export default class NodeRtuEmulatorTransport implements ITransport {
 
     this.responseLatencyMs = options.responseLatencyMs ?? 30;
 
-    this.logger = pino({
-      level: 'info',
-      base: { component: 'RTU Emulator', path: slaveId },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component,path',
-                messageFormat: '[{component}] {msg}',
-              },
-            }
-          : undefined,
+    this.logger = createTsLogger({
+      name: 'RTU Emulator',
+      bindings: { path: slaveId },
     });
 
     this.logger.debug('RTU Emulator created');
@@ -78,6 +67,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
    * Attaches a TrafficSniffer instance to monitor emulated Modbus RTU traffic.
    * This allows for real-time analysis of emulated requests and responses.
    * @param sniffer - The TrafficSniffer instance to use for monitoring.
+   * @returns {void}
    */
   public setSniffer(sniffer: TrafficSniffer): void {
     this._sniffer = sniffer;
@@ -86,6 +76,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Opens the transport (emulator connection).
    * Marks the transport as open and ready to receive requests.
+   * @returns {Promise<void>} Resolves when the transport is successfully opened.
    */
   async connect(): Promise<void> {
     this.isOpen = true;
@@ -97,6 +88,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Closes the transport (emulator connection).
    * Marks the transport as closed and clears any pending response.
+   * @returns {Promise<void>} Resolves when the transport is successfully closed.
    */
   async disconnect(): Promise<void> {
     this.isOpen = false;
@@ -118,6 +110,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
    * the ModbusSlaveCore, adds CRC16, and prepares the response.
    * @param buffer - Complete Modbus RTU request frame (Slave ID + PDU + CRC)
    * @throws {Error} If transport is not open or frame is too short
+   * @returns {Promise<void>} Resolves when the write operation is complete
    */
   async write(buffer: Uint8Array): Promise<void> {
     if (!this.isOpen) throw new Error('Not open');
@@ -158,10 +151,10 @@ export default class NodeRtuEmulatorTransport implements ITransport {
    * after a short delay (to simulate asynchronous behavior).
    * @param length - Expected response length (not used in emulator, kept for interface compatibility)
    * @param timeout - Read timeout in milliseconds (not used in this emulator)
-   * @returns The full Modbus RTU response ADU or empty Uint8Array if no response is ready
+   * @returns {Promise<Uint8Array>} Resolves with the response ADU or an empty buffer
    * @throws {Error} If transport is not open
    */
-  async read(length: number, timeout: number = 1000): Promise<Uint8Array> {
+  async read(length: number, _timeout: number = 1000): Promise<Uint8Array> {
     if (!this.isOpen) throw new Error('Not open');
 
     if (this._responseAdu) {
@@ -183,6 +176,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Flushes any pending response data.
    * Clears the internal response buffer.
+   * @returns {Promise<void>}
    */
   async flush(): Promise<void> {
     this._responseAdu = null;
@@ -199,6 +193,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Sets the handler for device state changes (connected/disconnected).
    * @param handler - Callback function to be called when device state changes
+   * @returns {void}
    */
   setDeviceStateHandler(handler: TDeviceStateHandler): void {
     this._deviceStateHandler = handler;
@@ -207,6 +202,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Sets the handler for port state changes (open/closed).
    * @param handler - Callback function to be called when port state changes
+   * @returns {void}
    */
   setPortStateHandler(handler: TPortStateHandler): void {
     this._portStateHandler = handler;
@@ -214,6 +210,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
 
   /**
    * Disables device tracking by removing the device state handler.
+   * @return {Promise<void>}
    */
   async disableDeviceTracking(): Promise<void> {
     this._deviceStateHandler = null;
@@ -222,6 +219,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Enables device tracking and optionally sets a new device state handler.
    * @param handler - Optional new device state handler
+   * @returns {Promise<void>}
    */
   async enableDeviceTracking(handler?: TDeviceStateHandler): Promise<void> {
     if (handler) this._deviceStateHandler = handler;
@@ -230,6 +228,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
   /**
    * Notifies that a device has connected.
    * @param slaveId - ID of the connected slave
+   * @returns {void}
    */
   notifyDeviceConnected(slaveId: number): void {
     this._deviceStateHandler?.(slaveId, true);
@@ -240,6 +239,7 @@ export default class NodeRtuEmulatorTransport implements ITransport {
    * @param slaveId - ID of the disconnected slave
    * @param errorType - Type of disconnection error
    * @param errorMessage - Description of the disconnection reason
+   * @returns {void}
    */
   notifyDeviceDisconnected(
     slaveId: number,

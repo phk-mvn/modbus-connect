@@ -1,15 +1,14 @@
 // modbus/polling/task-controller.ts
 
-import type { Logger } from 'pino';
+import { type Logger, type ILogObj } from 'tslog';
 import { IPollingTaskOptions, IPollingTaskState, ITaskController } from '../types/public.js';
-import { ModbusFlushError, ModbusTimeoutError, PollingManagerError } from '../core/errors.js';
+import { ModbusTimeoutError, PollingManagerError } from '../core/errors.js';
+import { RetryAbortedError, defaultRetryDelay, runWithRetries } from '../utils/retry.js';
 
 /**
  * TaskController manages the full lifecycle of a single polling task.
  * It handles scheduling, execution with retries, timeouts, backoff logic,
  * and all lifecycle callbacks.
- *
- * IMP-6: Extracted from manager.ts into its own module.
  */
 export class TaskController implements ITaskController {
   public id: string;
@@ -35,22 +34,20 @@ export class TaskController implements ITaskController {
   public paused: boolean;
   public executionInProgress: boolean;
 
-  public logger: Logger;
+  public logger: Logger<ILogObj>;
 
-  // RISK-2: isEnqueued must be reset on pause/stop so resume can reschedule
   private _isEnqueued: boolean = false;
 
   /** Whether the task is currently sitting in the manager's execution queue. */
   public get isEnqueued(): boolean {
     return this._isEnqueued;
   }
+  /** Sets whether the task is currently sitting in the manager's execution queue. */
   public set isEnqueued(value: boolean) {
     this._isEnqueued = value;
   }
 
   private timerId: NodeJS.Timeout | null = null;
-
-  // RISK-7: AbortController for interruptible sleep / timeout
   private _abortController: AbortController | null = null;
 
   /**
@@ -65,7 +62,12 @@ export class TaskController implements ITaskController {
    */
   public dequeueFn!: (taskId: string) => void;
 
-  constructor(options: IPollingTaskOptions, logger: Logger) {
+  /**
+   * Constructs a new TaskController with the provided options and logger.
+   * @param {IPollingTaskOptions} options - The configuration options for the task.
+   * @param {Logger<ILogObj>} logger - The logger instance for logging task events.
+   */
+  constructor(options: IPollingTaskOptions, logger: Logger<ILogObj>) {
     const {
       id,
       priority = 0,
@@ -110,7 +112,7 @@ export class TaskController implements ITaskController {
     this.paused = false;
     this.executionInProgress = false;
 
-    this.logger = logger.child({ component: 'Task', taskId: id });
+    this.logger = logger.getSubLogger({ name: 'Task' }, { component: 'Task', taskId: id });
     this.logger.debug(
       { id, priority, interval, maxRetries, backoffDelay, taskTimeout },
       'TaskController created'
@@ -118,8 +120,8 @@ export class TaskController implements ITaskController {
   }
 
   /**
-   * Starts the task.
-   * BUG-1 fix: Direct call, no setTimeout wrapper needed.
+   * Starts the task, allowing it to be scheduled and executed.
+   * @returns {void}
    */
   public start(): void {
     if (!this.stopped) {
@@ -133,9 +135,8 @@ export class TaskController implements ITaskController {
   }
 
   /**
-   * Completely stops the task.
-   * RISK-2 fix: Reset isEnqueued and remove from queue.
-   * RISK-7 fix: Abort any in-flight sleep/timeout.
+   * Stops the task, preventing any further scheduling or execution.
+   * @returns {void}
    */
   public stop(): void {
     if (this.stopped) {
@@ -145,7 +146,6 @@ export class TaskController implements ITaskController {
     this.stopped = true;
     this._isEnqueued = false;
 
-    // RISK-7: Cancel any pending sleep or timeout
     this._abort();
 
     if (this.timerId) {
@@ -159,9 +159,8 @@ export class TaskController implements ITaskController {
   }
 
   /**
-   * Pauses the task temporarily.
-   * RISK-2 fix: Reset isEnqueued, remove from queue, and clear pending timer
-   * so the timer doesn't re-enqueue the task while paused.
+   * Pauses the task, preventing it from being scheduled or executed until resumed.
+   * @returns {void}
    */
   public pause(): void {
     if (this.paused) {
@@ -184,7 +183,9 @@ export class TaskController implements ITaskController {
   }
 
   /**
-   * Resumes a previously paused task.
+   * Resumes the task if it was previously paused, allowing it to be scheduled and executed again.
+   * If the task is not paused or is stopped, this method does nothing.
+   * @returns {void}
    */
   public resume(): void {
     if (!this.stopped && this.paused) {
@@ -199,6 +200,14 @@ export class TaskController implements ITaskController {
     }
   }
 
+  /**
+   * Schedules the next execution of the task based on the interval.
+   * If immediate is true, the task will be scheduled to run immediately.
+   * Otherwise, it will be scheduled to run after the specified interval.
+   * If the task is stopped, no scheduling will occur.
+   * If a timer is already set, it will be cleared before setting a new one.
+   * @param {boolean} immediate - Whether to schedule the task to run immediately.
+   */
   private _scheduleNextRun(immediate: boolean = false): void {
     if (this.stopped) return;
 
@@ -217,12 +226,10 @@ export class TaskController implements ITaskController {
     }, delay);
   }
 
-  /**
-   * Executes the task's functions with full retry logic, timeouts, and callbacks.
-   * BUG-2 fix: Uses AbortController for real cancellation.
-   * BUG-3 fix: overallSuccess uses && (all must succeed).
-   * BUG-4 fix: onError called before onFailure.
-   * RISK-7 fix: _sleep is interruptible.
+  /** Executes the task's functions in sequence, handling retries, timeouts, and aborts.
+   * If the task is stopped or paused, execution will not proceed.
+   * If shouldRun is defined and returns false, execution will be skipped.
+   * Lifecycle callbacks (onBeforeEach, onData, onError, onFinish, onSuccess, onFailure) are invoked as appropriate.
    */
   public async execute(): Promise<void> {
     this._isEnqueued = false;
@@ -240,7 +247,6 @@ export class TaskController implements ITaskController {
     this.onBeforeEach?.();
     this.executionInProgress = true;
 
-    // BUG-2: Create an AbortController for this execution cycle
     this._abortController = new AbortController();
     const { signal } = this._abortController;
 
@@ -251,51 +257,53 @@ export class TaskController implements ITaskController {
       for (let fnIndex = 0; fnIndex < this.fn.length; fnIndex++) {
         if (this.stopped || this.paused) break;
 
-        let retryCount = 0;
+        const fnToExecute = this.fn[fnIndex];
         let result: unknown = null;
         let fnSuccess = false;
 
-        while (!this.stopped && !this.paused && retryCount <= this.maxRetries) {
+        if (typeof fnToExecute === 'function') {
           try {
-            const fnToExecute = this.fn[fnIndex];
-            if (typeof fnToExecute !== 'function') break;
-
-            result = await this._withTimeoutAndAbort(
-              () => Promise.resolve(fnToExecute(signal)),
-              this.taskTimeout,
-              signal
+            // Retries, pauses, and interruptions — common policy (modbus/utils/retry.ts),
+            // the same one used by ModbusClient.
+            result = await runWithRetries<unknown>(
+              () =>
+                this._withTimeoutAndAbort(
+                  () => Promise.resolve(fnToExecute(signal)),
+                  this.taskTimeout,
+                  signal
+                ),
+              {
+                maxRetries: this.maxRetries,
+                signal,
+                shouldStop: () => this.stopped || this.paused,
+                getDelayMs: (error, retryNumber) =>
+                  defaultRetryDelay(error, retryNumber, this.backoffDelay),
+                onAttemptFailed: (error, attemptNumber) => {
+                  const e = error instanceof Error ? error : new PollingManagerError(String(error));
+                  // The log format remains the same: the retry number in the message is zero-indexed.
+                  this._logSpecificError(e, fnIndex, attemptNumber - 1);
+                  // onRetry — only when a retry actually takes place (as before).
+                  if (attemptNumber <= this.maxRetries) {
+                    this.onRetry?.(e, fnIndex, attemptNumber);
+                  }
+                },
+                onExhausted: (error, attempts) => {
+                  const e = error instanceof Error ? error : new PollingManagerError(String(error));
+                  this.onError?.(e, fnIndex, attempts);
+                  this.onFailure?.(e);
+                },
+              }
             );
 
             if (this.stopped || this.paused) return;
-
             fnSuccess = true;
-            break;
-          } catch (err: unknown) {
+          } catch (err) {
+            // Interruption (stop/pause/abort) — silent exit
+            if (err instanceof RetryAbortedError) return;
             if (this.stopped || this.paused) return;
-
-            const error = err instanceof Error ? err : new PollingManagerError(String(err));
-            this._logSpecificError(error, fnIndex, retryCount);
-            retryCount++;
-            this.onRetry?.(error, fnIndex, retryCount);
-
-            if (retryCount > this.maxRetries) {
-              // BUG-4: Call onError before onFailure
-              this.onError?.(error, fnIndex, retryCount);
-              this.onFailure?.(error);
-            } else {
-              const isFlushedError = error instanceof ModbusFlushError;
-              const baseDelay = isFlushedError
-                ? 50
-                : this.backoffDelay * Math.pow(2, retryCount - 1);
-              const delay = baseDelay + Math.random() * baseDelay * 0.5;
-
-              // RISK-7: Interruptible sleep
-              await this._interruptibleSleep(delay, signal);
-            }
           }
         }
 
-        // BUG-3: All functions must succeed for overallSuccess
         overallSuccess = overallSuccess && fnSuccess;
         results.push(result);
       }
@@ -323,19 +331,32 @@ export class TaskController implements ITaskController {
     }
   }
 
+  /**
+   * Returns whether the task is currently running (not stopped).
+   * @returns {boolean} True if the task is running, false if it is stopped.
+   */
   public isRunning(): boolean {
     return !this.stopped;
   }
 
+  /** Returns whether the task is currently paused.
+   * @returns {boolean} True if the task is paused, false otherwise.
+   */
   public isPaused(): boolean {
     return this.paused;
   }
 
+  /** Sets the interval for the task's execution.
+   * @param {number} ms - The new interval in milliseconds.
+   */
   public setInterval(ms: number): void {
     this.interval = ms;
     this.logger.info('Interval updated');
   }
 
+  /** Returns the current state of the task, including whether it is stopped, paused, running, and if an execution is in progress.
+   * @returns {IPollingTaskState} The current state of the task.
+   */
   public getState(): IPollingTaskState {
     return {
       stopped: this.stopped,
@@ -345,9 +366,10 @@ export class TaskController implements ITaskController {
     };
   }
 
-  /**
-   * Returns a promise that resolves when the current execution finishes.
-   * Used by RISK-6 (updateTask) to wait for graceful completion.
+  /** Waits for the current execution cycle to complete or until the specified timeout is reached.
+   * If the task is not currently executing, the promise resolves immediately.
+   * @param {number} timeoutMs - The maximum time to wait for completion in milliseconds (default: 5000).
+   * @returns {Promise<void>} A promise that resolves when the execution completes or the timeout is reached.
    */
   public waitForCompletion(timeoutMs: number = 5000): Promise<void> {
     if (!this.executionInProgress) return Promise.resolve();
@@ -374,54 +396,23 @@ export class TaskController implements ITaskController {
     });
   }
 
+  /** Logs a specific error with details about the function index and retry count.
+   * @param {Error} error - The error to log.
+   * @param {number} fnIdx - The index of the function that caused the error.
+   * @param {number} retry - The retry count when the error occurred.
+   */
   private _logSpecificError(error: Error, fnIdx: number, retry: number): void {
     const errorName = error.constructor.name;
     this.logger.error(`Fail (fn:${fnIdx}, retry:${retry}) -> ${errorName}: ${error.message}`);
   }
 
-  private _interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise<void>(resolve => {
-      if (signal.aborted || this.stopped || this.paused) {
-        resolve();
-        return;
-      }
-
-      let settled = false;
-      let checkInterval: NodeJS.Timeout | null = null;
-
-      const cleanup = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(mainTimer);
-        if (checkInterval) clearInterval(checkInterval);
-        signal.removeEventListener('abort', onAbort);
-      };
-
-      const mainTimer = setTimeout(() => {
-        cleanup();
-        resolve();
-      }, ms);
-
-      const onAbort = () => {
-        cleanup();
-        resolve();
-      };
-
-      signal.addEventListener('abort', onAbort, { once: true });
-
-      checkInterval = setInterval(() => {
-        if (this.stopped || this.paused) {
-          cleanup();
-          resolve();
-        }
-      }, 100);
-    });
-  }
-
-  /**
-   * BUG-2 fix: Timeout with AbortController.
-   * If the timeout fires before the promise settles, the AbortController
-   * signal is aborted, giving the underlying operation a chance to cancel.
+  /** Wraps a function execution with a timeout and abort signal.
+   * If the function does not complete within the specified timeout, it will be aborted and a ModbusTimeoutError will be thrown.
+   * If the abort signal is triggered before or during execution, a ModbusTimeoutError will also be thrown.
+   * @param {() => Promise<T>} fn - The function to execute.
+   * @param {number} timeout - The maximum time to wait for the function to complete in milliseconds.
+   * @param {AbortSignal} signal - The abort signal to monitor for cancellation.
+   * @returns {Promise<T>} A promise that resolves with the function's result or rejects with an error.
    */
   private _withTimeoutAndAbort<T>(
     fn: () => Promise<T>,

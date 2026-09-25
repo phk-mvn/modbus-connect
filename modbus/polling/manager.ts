@@ -1,7 +1,8 @@
 // modbus/polling/manager.ts
 
 import { Mutex } from 'async-mutex';
-import { pino, Logger } from 'pino';
+import { Logger, DefaultLogLevels, type ILogObj } from 'tslog';
+import { createTsLogger } from '../utils/logger.js';
 import {
   IPollingManagerConfig,
   IPollingTaskOptions,
@@ -9,11 +10,12 @@ import {
   IPollingQueueInfo,
   IPollingSystemStats,
   IPollingManager,
-  EPollingAction,
+  IPortQueueEnqueueOptions,
+  TManagerLogLevel,
+  TPollingEnqueueFn,
+  TPollingQueueStatsProvider,
 } from '../types/public.js';
 import {
-  ModbusFlushError,
-  ModbusTimeoutError,
   PollingManagerError,
   PollingTaskAlreadyExistsError,
   PollingTaskNotFoundError,
@@ -21,62 +23,61 @@ import {
 } from '../core/errors.js';
 import { TaskController } from './task-controller.js';
 
-// RISK-3: Resolved internal config type — no more `as Required<>` cast
 interface ResolvedPollingManagerConfig {
   defaultMaxRetries: number;
   defaultBackoffDelay: number;
   defaultTaskTimeout: number;
   interTaskDelay: number;
-  logLevel: string;
+  logLevel: TManagerLogLevel;
+  concurrency: 'strict' | 'per-slave';
 }
+
+const TSLOG_MIN_LEVEL: Record<Exclude<TManagerLogLevel, 'silent'>, DefaultLogLevels> = {
+  trace: DefaultLogLevels.TRACE,
+  debug: DefaultLogLevels.DEBUG,
+  info: DefaultLogLevels.INFO,
+  warn: DefaultLogLevels.WARN,
+  error: DefaultLogLevels.ERROR,
+  fatal: DefaultLogLevels.FATAL,
+};
 
 /**
  * PollingManager is the main class responsible for managing multiple polling tasks.
- * It handles task registration, lifecycle control (start/stop/pause), priority-based queuing,
- * concurrent execution safety via per-slave mutex, and comprehensive logging.
+ * It handles task registration, lifecycle control (start/stop/pause), priority-based queuing
+ * and comprehensive logging.
  *
- * RISK-1 fix: Uses per-slave-id mutex instead of a single global mutex,
- * allowing concurrent execution for different slave devices on the same transport.
+ * Since the port queue owns wire-level synchronization, the polling manager is a pure
+ * scheduler: in `strict` mode (default) it runs one task at a time and holds no mutex while
+ * a task runs, so tasks cannot collide with manual client requests. The legacy
+ * per-slave mutex model is still available via `concurrency: 'per-slave'`.
  */
 class PollingManager implements IPollingManager {
   private config: ResolvedPollingManagerConfig;
   public tasks: Map<string, TaskController>;
   private executionQueue: TaskController[];
 
-  // RISK-1: Per-slave mutex map for concurrent execution of different slaves
+  /** taskId -> clientId for tasks linked to a client (IPollingTaskOptions.clientId). */
+  private readonly _taskOwners = new Map<string, string>();
+  private readonly logger: Logger<ILogObj>;
+
   private slaveMutexes: Map<string, Mutex>;
   private defaultMutex: Mutex;
+
+  /** Port queue binding: when set, the manager schedules jobs on the session queue. */
+  private _enqueueFn?: TPollingEnqueueFn;
+  private _queueStatsProvider?: TPollingQueueStatsProvider;
 
   private isProcessing: boolean;
   private paused: boolean;
 
-  public logger: Logger;
-
   constructor(config: IPollingManagerConfig = {}) {
-    this.logger = pino({
-      level: config.logLevel || 'info',
-      base: { component: 'Polling Manager' },
-      transport:
-        process.env.NODE_ENV !== 'production'
-          ? {
-              target: 'pino-pretty',
-              options: {
-                colorize: true,
-                translateTime: 'SYS:HH:MM:ss',
-                ignore: 'pid,hostname,component,taskId',
-                messageFormat: '[{component}] {msg}',
-              },
-            }
-          : undefined,
-    });
-
-    // RISK-3: Explicit resolved config, no unsafe `as Required<>` cast
     this.config = {
       defaultMaxRetries: config.defaultMaxRetries ?? 3,
       defaultBackoffDelay: config.defaultBackoffDelay ?? 1000,
       defaultTaskTimeout: config.defaultTaskTimeout ?? 5000,
       interTaskDelay: config.interTaskDelay ?? 0,
       logLevel: config.logLevel ?? 'info',
+      concurrency: config.concurrency ?? 'strict',
     };
 
     this.tasks = new Map();
@@ -86,12 +87,32 @@ class PollingManager implements IPollingManager {
     this.isProcessing = false;
     this.paused = false;
 
-    this.logger.debug('PollingManager initialized');
+    const level = this.config.logLevel;
+    this.logger = createTsLogger({ name: 'manager', level });
+  }
+
+  /**
+   * Binds the polling manager to the port queue of its session.
+   * After binding, `executeImmediate` is submitted to that queue and the manager no longer
+   * serializes task bodies itself.
+   */
+  public setEnqueueFn(fn: TPollingEnqueueFn): void {
+    this._enqueueFn = fn;
+  }
+
+  /** Registers a provider of live port-queue / client counters (used by getQueueInfo). */
+  public setQueueStatsProvider(provider: TPollingQueueStatsProvider): void {
+    this._queueStatsProvider = provider;
+  }
+
+  /** Submits a job to the bound port queue, or runs it inline when no queue is bound. */
+  private async _submit<T>(fn: () => Promise<T> | T, opts?: IPortQueueEnqueueOptions): Promise<T> {
+    if (this._enqueueFn) return this._enqueueFn<T>(fn, opts);
+    return await fn();
   }
 
   /**
    * Returns (or creates) a mutex for a specific slave ID.
-   * RISK-1: Allows concurrent execution for different slaves.
    */
   private _getSlaveMutex(slaveId: string | undefined): Mutex {
     if (slaveId === undefined) return this.defaultMutex;
@@ -111,6 +132,10 @@ class PollingManager implements IPollingManager {
     return (task as any).slaveId;
   }
 
+  /** Validates the provided task options and throws a PollingTaskValidationError if invalid.
+   * @param {IPollingTaskOptions} options - The task options to validate.
+   * @throws {PollingTaskValidationError} If the options are invalid.
+   */
   private _validateTaskOptions(options: IPollingTaskOptions): void {
     if (!options || typeof options !== 'object') {
       throw new PollingTaskValidationError('Task options must be an object');
@@ -136,6 +161,11 @@ class PollingManager implements IPollingManager {
     }
   }
 
+  /** Adds a new polling task to the manager.
+   * @param {IPollingTaskOptions} options - The options for the new task.
+   * @throws {PollingTaskAlreadyExistsError} If a task with the same ID already exists.
+   * @throws {PollingTaskValidationError} If the provided options are invalid.
+   */
   public addTask(options: IPollingTaskOptions): void {
     try {
       this._validateTaskOptions(options);
@@ -156,6 +186,7 @@ class PollingManager implements IPollingManager {
       task.dequeueFn = (taskId: string) => this.removeFromQueue(taskId);
 
       this.tasks.set(options.id, task);
+      if (options.clientId) this._taskOwners.set(options.id, options.clientId);
       this.logger.info(`Task added -> ${options.id}`);
 
       if (options.immediate !== false) task.start();
@@ -166,9 +197,11 @@ class PollingManager implements IPollingManager {
     }
   }
 
-  /**
-   * RISK-6 fix: updateTask now waits for current execution to finish
-   * before destroying and recreating the task.
+  /** Updates an existing polling task with new options.
+   * @param {string} id - The ID of the task to update.
+   * @param {IPollingTaskOptions} newOptions - The new options for the task.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   * @throws {PollingTaskValidationError} If the provided new options are invalid.
    */
   public async updateTask(id: string, newOptions: IPollingTaskOptions): Promise<void> {
     const oldTask = this.tasks.get(id);
@@ -198,7 +231,6 @@ class PollingManager implements IPollingManager {
     const mergedOptions = { ...oldOptions, ...newOptions };
     const wasRunning = oldTask.isRunning();
 
-    // RISK-6: Wait for the current execution to finish before replacing
     if (oldTask.executionInProgress) {
       oldTask.pause(); // Stop scheduling new runs
       await oldTask.waitForCompletion();
@@ -209,11 +241,37 @@ class PollingManager implements IPollingManager {
     if (wasRunning) this.startTask(id);
   }
 
+  /**
+   * Stops and removes every task that belongs to a client.
+   * Used by the controller on `removeClient()`, so a removed client leaves no orphan tasks.
+   *
+   * @param {string} clientId - Owner client id (see `IPollingTaskOptions.clientId`).
+   * @returns {string[]} Ids of the removed tasks.
+   */
+  public removeTasksByClient(clientId: string): string[] {
+    const ids: string[] = [];
+    for (const [taskId, owner] of this._taskOwners) {
+      if (owner === clientId) ids.push(taskId);
+    }
+
+    for (const id of ids) {
+      this.stopTask(id);
+      this.removeTask(id);
+    }
+
+    return ids;
+  }
+
+  /** Removes a polling task from the manager.
+   * @param {string} id - The ID of the task to remove.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   */
   public removeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
       task.stop();
       this.tasks.delete(id);
+      this._taskOwners.delete(id);
       this.removeFromQueue(id);
       this.logger.info({ id }, 'Task removed');
     } else {
@@ -233,22 +291,38 @@ class PollingManager implements IPollingManager {
     }
   }
 
+  /** Starts a specific polling task.
+   * @param {string} id - The ID of the task to start.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   */
   public startTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) task.start();
     else throw new PollingTaskNotFoundError(id);
   }
 
+  /** Stops a specific polling task.
+   * @param {string} id - The ID of the task to stop.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   */
   public stopTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) task.stop();
   }
 
+  /** Pauses a specific polling task.
+   * @param {string} id - The ID of the task to pause.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   */
   public pauseTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) task.pause();
   }
 
+  /** Resumes a specific polling task.
+   * @param {string} id - The ID of the task to resume.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   */
   public resumeTask(id: string): void {
     const task = this.tasks.get(id);
     if (task) {
@@ -257,46 +331,69 @@ class PollingManager implements IPollingManager {
     }
   }
 
+  /** Sets the interval for a specific polling task.
+   * @param {string} id - The ID of the task to update.
+   * @param {number} interval - The new interval in milliseconds.
+   * @throws {PollingTaskNotFoundError} If no task with the given ID exists.
+   */
   public setTaskInterval(id: string, interval: number): void {
     const task = this.tasks.get(id);
     if (task) task.setInterval(interval);
   }
 
+  /** Checks if a specific polling task is currently running.
+   * @param {string} id - The ID of the task to check.
+   * @returns {boolean} True if the task is running, false otherwise.
+   */
   public isTaskRunning(id: string): boolean {
     const task = this.tasks.get(id);
     return task ? task.isRunning() : false;
   }
 
+  /** Checks if a specific polling task is currently paused.
+   * @param {string} id - The ID of the task to check.
+   * @returns {boolean} True if the task is paused, false otherwise.
+   */
   public isTaskPaused(id: string): boolean {
     const task = this.tasks.get(id);
     return task ? task.isPaused() : false;
   }
 
+  /** Retrieves the current state of a specific polling task.
+   * @param {string} id - The ID of the task to check.
+   * @returns {IPollingTaskState | null} The current state of the task, or null if not found.
+   */
   public getTaskState(id: string): IPollingTaskState | null {
     const task = this.tasks.get(id);
     return task ? task.getState() : null;
   }
 
+  /** Checks if a task with the given ID exists in the manager.
+   * @param {string} id - The ID of the task to check.
+   * @returns {boolean} True if the task exists, false otherwise.
+   */
   public hasTask(id: string): boolean {
     return this.tasks.has(id);
   }
 
+  /** Retrieves the IDs of all tasks currently managed by the PollingManager.
+   * @returns {string[]} An array of task IDs.
+   */
   public getTaskIds(): string[] {
     return Array.from(this.tasks.keys());
   }
 
   /**
-   * RISK-4 fix: clearAll no longer sets paused=true permanently.
+   * clearAll no longer sets paused=true permanently.
    * After clearing, the manager is ready to accept new tasks.
    */
   public clearAll(): void {
     this.logger.info('Clearing all tasks');
     this.tasks.forEach(task => task.stop());
     this.tasks.clear();
+    this._taskOwners.clear();
     this.executionQueue = [];
     this.isProcessing = false;
-    // RISK-4: Do NOT set paused=true here — the manager should be
-    // ready for new tasks after clearing.
     this.logger.info('All tasks cleared');
   }
 
@@ -313,22 +410,36 @@ class PollingManager implements IPollingManager {
     });
   }
 
+  /** Pauses all polling tasks managed by the PollingManager.
+   * This method sets the manager's paused state to true and calls pause() on each task.
+   */
   public pauseAllTasks(): void {
     this.paused = true;
     this.tasks.forEach(task => task.pause());
   }
 
+  /** Resumes all polling tasks managed by the PollingManager.
+   * This method sets the manager's paused state to false and calls resume() on each task.
+   * It also triggers the processing of the execution queue.
+   */
   public resumeAllTasks(): void {
     this.paused = false;
     this.tasks.forEach(task => task.resume());
     this._processQueue();
   }
 
+  /** Starts all polling tasks managed by the PollingManager.
+   * This method sets the manager's paused state to false and calls start() on each task.
+   */
   public startAllTasks(): void {
     this.paused = false;
     this.tasks.forEach(task => task.start());
   }
 
+  /** Stops all polling tasks managed by the PollingManager.
+   * This method calls stop() on each task and clears the execution queue.
+   * Note: It does not set the manager's paused state to true, allowing new tasks to be added and processed.
+   */
   public stopAllTasks(): void {
     // Do NOT set this.paused = true — stopping tasks is different from pausing
     // the manager. A stopped manager should still accept and process new tasks.
@@ -336,47 +447,72 @@ class PollingManager implements IPollingManager {
     this.executionQueue = [];
   }
 
+  /** Retrieves information about the current state of the execution queue and tasks.
+   * @returns {IPollingQueueInfo} An object containing queue length, task states, and optional port queue stats.
+   */
   public getQueueInfo(): IPollingQueueInfo {
+    const portStats = this._queueStatsProvider?.();
     return {
       queueLength: this.executionQueue.length,
       tasks: this.executionQueue.map(task => ({
         id: task.id,
         state: task.getState(),
       })),
+      portQueueLength: portStats?.queueLength,
+      clientsCount: portStats?.clientsCount,
     };
   }
 
+  /** Retrieves system-wide statistics about the polling manager and its tasks.
+   * @returns {IPollingSystemStats} An object containing total tasks, queues, queued tasks, and optional port queue stats.
+   */
   public getSystemStats(): IPollingSystemStats {
+    const portStats = this._queueStatsProvider?.();
     return {
       totalTasks: this.tasks.size,
       totalQueues: 1,
       queuedTasks: this.executionQueue.length,
+      portQueueLength: portStats?.queueLength,
+      clientsCount: portStats?.clientsCount,
     };
   }
 
+  /** Enqueues a task for execution based on its priority.
+   * If the task is already in the queue, it will not be added again.
+   * After enqueuing, the method triggers the processing of the execution queue.
+   * @param {TaskController} task - The task to enqueue.
+   */
   public enqueueTask(task: TaskController): void {
     if (!this.executionQueue.includes(task)) {
       this.executionQueue.push(task);
       this.executionQueue.sort((a, b) => b.priority - a.priority);
       this.logger.debug({ id: task.id, queueLen: this.executionQueue.length }, 'Enqueued');
     }
-    // RISK-5: Always call _processQueue; it guards with isProcessing check
     this._processQueue();
   }
 
+  /** Removes a task from the execution queue based on its ID.
+   * If the task is not found in the queue, no action is taken.
+   * @param {string} taskId - The ID of the task to remove from the queue.
+   */
   public removeFromQueue(taskId: string): void {
     this.executionQueue = this.executionQueue.filter(t => t.id !== taskId);
   }
 
+  /** Utility method to pause execution for a specified duration.
+   * @param {number} ms - The duration to sleep in milliseconds.
+   * @returns {Promise<void>} A promise that resolves after the specified duration.
+   */
   private _sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
    * Main queue processing loop.
-   * RISK-1 fix: Uses per-slave mutex so different slaves can execute concurrently.
-   * RISK-5 fix: Removed setTimeout in finally — just call _processQueue directly
-   * which is guarded by isProcessing flag.
+   *
+   * Strict mode (default): one task at a time, no mutex held while the task runs — the
+   * session's port queue guarantees that exchanges never interleave, and manual requests
+   * are not blocked by a whole polling cycle.
    */
   private async _processQueue(): Promise<void> {
     if (this.isProcessing || this.paused || this.executionQueue.length === 0) {
@@ -386,13 +522,12 @@ class PollingManager implements IPollingManager {
     this.isProcessing = true;
 
     try {
+      // Process tasks in the queue until it's empty or the manager is paused.
       while (this.executionQueue.length > 0 && !this.paused) {
         const task = this.executionQueue.shift();
         if (!task) continue;
 
-        // RISK-1: Acquire the mutex for this task's specific slave
         const slaveId = this._getTaskSlaveId(task);
-        const mutex = this._getSlaveMutex(slaveId);
 
         this.logger.debug(
           { id: task.id, slaveId: slaveId ?? 'default' },
@@ -400,11 +535,27 @@ class PollingManager implements IPollingManager {
         );
 
         try {
-          await mutex.runExclusive(async () => {
-            if (!task.stopped && !task.paused) {
-              await task.execute();
-            }
-          });
+          if (this.config.concurrency === 'per-slave') {
+            const mutex = this._getSlaveMutex(slaveId);
+            await mutex.runExclusive(async () => {
+              if (!task.stopped && !task.paused) {
+                await task.execute();
+              }
+            });
+          } else if (!task.stopped && !task.paused) {
+            // Strict mode: the port queue serializes the actual exchanges, so the scheduler
+            // must NOT keep one task (together with its whole retry budget and backoff
+            // sleeps) in a blocking slot. Otherwise a single silent device monopolizes the
+            // scheduler and starves every other device on the bus.
+            // A task never overlaps with itself: TaskController schedules its next run only
+            // after the current one finishes.
+            void Promise.resolve(task.execute()).catch((runError: unknown) => {
+              this.logger.error(
+                { id: task.id, error: (runError as Error).message },
+                'Task execution failed in queue'
+              );
+            });
+          }
         } catch (taskError: unknown) {
           this.logger.error(
             { id: task.id, error: (taskError as Error).message },
@@ -425,9 +576,6 @@ class PollingManager implements IPollingManager {
       );
     } finally {
       this.isProcessing = false;
-
-      // RISK-5: If new tasks arrived while we were winding down, process them.
-      // Direct call instead of setTimeout — _processQueue guards with isProcessing.
       if (this.executionQueue.length > 0 && !this.paused) {
         this._processQueue();
       }
@@ -440,6 +588,11 @@ class PollingManager implements IPollingManager {
    * that need to ensure atomicity of read/write operations while polling is active.
    */
   public async executeImmediate<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._enqueueFn) {
+      return this._submit<T>(fn, { immediate: true });
+    }
+
+    // Legacy standalone mode: no port queue is bound.
     const release = await this.defaultMutex.acquire();
     try {
       return await fn();
@@ -448,11 +601,19 @@ class PollingManager implements IPollingManager {
     }
   }
 
-  /**
-   * Executes a function immediately with exclusive access for a specific slave.
-   * RISK-1 extension: Allows immediate commands to coexist with polling for other slaves.
+  /** Executes a function immediately for a specific slave with exclusive access using the slave's mutex.
+   * This method is intended to be used by ModbusClient or other components
+   * that need to ensure atomicity of read/write operations for a specific slave while polling is active.
+   *
+   * @param {string} slaveId - The ID of the slave for which to execute the function.
+   * @param {() => Promise<T>} fn - The function to execute immediately.
+   * @returns {Promise<T>} A promise that resolves with the result of the executed function.
    */
   public async executeImmediateForSlave<T>(slaveId: string, fn: () => Promise<T>): Promise<T> {
+    if (this._enqueueFn) {
+      return this._submit<T>(fn, { immediate: true });
+    }
+
     const mutex = this._getSlaveMutex(slaveId);
     const release = await mutex.acquire();
     try {
@@ -462,11 +623,25 @@ class PollingManager implements IPollingManager {
     }
   }
 
+  /** Sets the log level for the PollingManager and all its tasks.
+   * @param {string} level - The log level to set (e.g., 'trace', 'debug', 'info', 'warn', 'error', 'fatal').
+   */
   public setLogLevel(level: string): void {
-    this.logger.level = level;
-    this.tasks.forEach(task => (task.logger.level = level));
+    if (level === 'silent') {
+      this.logger.settings.type = 'hidden';
+      this.tasks.forEach(task => (task.logger.settings.type = 'hidden'));
+      return;
+    }
+    const minLevel = (TSLOG_MIN_LEVEL as Record<string, DefaultLogLevels | undefined>)[level];
+    if (minLevel !== undefined) {
+      this.logger.settings.minLevel = minLevel;
+      this.tasks.forEach(task => (task.logger.settings.minLevel = minLevel));
+    }
   }
 
+  /** Disables all loggers for the PollingManager and its tasks.
+   * This method sets the log level to 'error' for the manager and all tasks, effectively silencing most log output.
+   */
   public disableAllLoggers(): void {
     this.setLogLevel('error');
   }

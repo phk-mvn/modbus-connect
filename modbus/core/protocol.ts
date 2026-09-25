@@ -5,6 +5,10 @@ import * as framer from '../protocol/framing.js';
 import { IModbusProtocol } from '../types/internal.js';
 import { ITransport } from '../types/public.js';
 
+export type TProtocolLogger = {
+  debug: (obj: Record<string, unknown>, msg?: string) => void;
+};
+
 /**
  * ModbusProtocol is a low-level class responsible for reliable Modbus ADU (Application Data Unit) exchange.
  * It handles framing (RTU or TCP), request transmission, response reception, and basic error recovery.
@@ -21,12 +25,20 @@ export class ModbusProtocol implements IModbusProtocol {
   constructor(
     private _transport: ITransport,
     private _framerClass: typeof framer.RtuFramer | typeof framer.TcpFramer,
-    private _echo: boolean = false
+    private _echo: boolean = false,
+    private _logger?: TProtocolLogger
   ) {
     // Minimum ADU length required before attempting to parse:
     // - RTU: at least 4 bytes (slaveId + functionCode + CRC)
     // - TCP: at least 7 bytes (MBAP header)
     this.minLen = this._framerClass === framer.TcpFramer ? 7 : 4;
+  }
+
+  /**
+   * Replaces the logger (the client may swap its tslog instance on enable/disableLogger()).
+   */
+  public setLogger(logger?: TProtocolLogger): void {
+    this._logger = logger;
   }
 
   /**
@@ -58,6 +70,7 @@ export class ModbusProtocol implements IModbusProtocol {
     const aduRequest = this._framerClass.buildAdu(unitId, pduRequest);
 
     const rawExpected = this._framerClass.getExpectedResponseLength(pduRequest);
+    const exceptionLen = this._framerClass.exceptionResponseLength;
     let expectedLen = rawExpected && rawExpected > 0 ? rawExpected : this.minLen;
 
     if (this._transport.flush) await this._transport.flush();
@@ -91,6 +104,12 @@ export class ModbusProtocol implements IModbusProtocol {
         buffer = utils.concatUint8Arrays([buffer, chunk]);
       }
 
+      // An exception response (FC with the 0x80 bit set) is always short. If we wait for the full length
+      // of a successful response, we will get a timeout instead of a device error.
+      if (buffer.length >= 2 && (buffer[1]! & 0x80) !== 0 && expectedLen > exceptionLen) {
+        expectedLen = exceptionLen;
+      }
+
       if (buffer.length >= this.minLen) {
         if (this.minLen === 7 && buffer.length >= 6) {
           const followingLen = (buffer[4] << 8) | buffer[5];
@@ -99,6 +118,23 @@ export class ModbusProtocol implements IModbusProtocol {
 
         try {
           const parsed = this._framerClass.parseAdu(buffer);
+
+          // An exception response (FC with the 0x80 bit set) is always short. If we wait for the full length
+          // of a successful response, we will get a timeout instead of a device error.
+          if (parsed.unitId !== unitId) {
+            this._logger?.debug(
+              { expected: unitId, received: parsed.unitId },
+              'Foreign frame ignored'
+            );
+            if (this.minLen === 7) {
+              const frameLen = 6 + ((buffer[4]! << 8) | buffer[5]!);
+              buffer = utils.sliceUint8Array(buffer, frameLen);
+            } else {
+              buffer = new Uint8Array(0);
+            }
+            continue;
+          }
+
           return parsed.pdu;
         } catch (err: any) {
           const errMsg = err.message || String(err);
@@ -111,12 +147,43 @@ export class ModbusProtocol implements IModbusProtocol {
           }
 
           if (errMsg.includes('CRC mismatch')) {
-            if (this.minLen === 4) continue;
+            if (this.minLen === 4) {
+              // Garbage/echo before the actual frame: looking for the frame (CRC + unitId) inside the already
+              // received bytes, without waiting for new ones — otherwise the exchange dies silently on timeout.
+              const recovered = this._tryRecoverRtuFrame(buffer, unitId);
+              if (recovered) return recovered;
+              continue;
+            }
           }
           throw err;
         }
       }
     }
+  }
+
+  /**
+   * Searches for a valid RTU frame within the already received buffer (CRC + unitId).
+   *
+   * Functions with unpredictable response lengths (e.g., 0x2B) are read byte-by-byte,
+   * and any noise at the start of the frame causes the entire buffer to result in a "CRC mismatch."
+   * Previously, the loop would silently wait for new bytes until the timeout expired.
+   * Here, the frame is located by iterating through all contiguous buffer fragments:
+   * the risk of a false positive is limited by the CRC probability (~1/65536 per
+   * fragment) and an additional unitId check.
+   */
+  private _tryRecoverRtuFrame(buffer: Uint8Array, unitId: number): Uint8Array | null {
+    const len = buffer.length;
+    for (let start = 0; start + 4 <= len; start++) {
+      for (let end = start + 4; end <= len; end++) {
+        try {
+          const parsed = this._framerClass.parseAdu(utils.sliceUint8Array(buffer, start, end));
+          if (parsed.unitId === unitId) return parsed.pdu;
+        } catch {
+          // fragment is invalid — trying the next one
+        }
+      }
+    }
+    return null;
   }
 
   /**
