@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "Modbus RTU/TCP over Web Serial",
   "main": "./dist/transport/controller/index.js",
   "module": "./dist/transport/controller/index.js",
@@ -35,7 +35,6 @@
   "scripts": {
     "build": "rimraf dist && tsc",
     "dev": "tsc --watch",
-    "test": "node test-crc.js",
     "lint": "eslint . --fix",
     "format": "prettier --write ."
   },

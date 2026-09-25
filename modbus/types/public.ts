@@ -317,6 +317,20 @@ export interface ICustomFunctionHandler {
    * @returns Parsed domain result.
    */
   parseResponse: (responsePdu: Uint8Array) => any;
+
+  /**
+   * Optional helper to predict or dynamically determine the expected response PDU length.
+   * Can return:
+   * - number: exact expected length of response PDU in bytes.
+   * - null: if the length cannot be determined yet from the partial data received so far.
+   *
+   * @param partialResponsePdu - Bytes of the response PDU received so far (starting with Function Code).
+   * @param requestPdu - The request PDU that was sent.
+   */
+  getExpectedResponseLength?: (
+    partialResponsePdu: Uint8Array,
+    requestPdu: Uint8Array
+  ) => number | null;
 }
 
 // ===================================================

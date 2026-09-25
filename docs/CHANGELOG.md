@@ -1,5 +1,15 @@
 # CHANGELOG
 
+### 5.0.1 (2026-09-25)
+
+**Dynamic response length resolution & framing optimizations**
+
+- **Dynamic response length resolution for custom plugins** — custom function handlers (`ICustomFunctionHandler`) can now implement an optional `getExpectedResponseLength(partialResponsePdu, requestPdu): number | null` resolver. For custom functions with dynamic or variable response lengths (such as file reads, archive chunk streaming, or vendor-specific telemetry), the protocol framer calculates the exact expected frame size from the incoming header and reads the full packet in one shot, eliminating 4+ second timeouts and byte-by-byte serial reads.
+- **Built-in dynamic length heuristics** — `ModbusProtocol.exchange()` now dynamically computes expected response lengths on the fly for standard variable-length responses (FC 0x01–0x04 and FC 0x11 Report Slave ID via byte count) as well as 16-bit big-endian payload frames (e.g. FC 0x5A).
+- **Optimized RTU frame noise recovery** — `_tryRecoverRtuFrame` now scans only candidate frame boundaries matching the target `unitId`, preventing $O(N^3)$ CPU starvation and false-positive CRC matches on noisy serial lines.
+- **Enhanced `client.rawExchange()`** — accepts an optional `expectedLengthResolver?: (partialResponsePdu: Uint8Array, requestPdu: Uint8Array) => number | null` parameter.
+- **Colorized response timing logs** — client execution logs now display colorized `+<N>ms` elapsed durations for responses and exceptions.
+
 ### 5.0.0 (2026-09-22)
 
 **Port queue / port session refactoring** — a port is now a single serialization point for every wire-level operation.

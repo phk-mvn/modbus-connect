@@ -367,7 +367,7 @@ console.log(id.objects);
 
 ---
 
-### `rawExchange(pdu, timeout?)`
+### `rawExchange(pdu, timeout?, expectedLengthResolver?)`
 
 Escape hatch for vendor/custom function codes and diagnostics. The PDU is sent as-is and the response
 PDU is returned without any function-specific parsing. The port queue, the device connection tracker
@@ -379,7 +379,7 @@ console.log(Buffer.from(response).toString('hex')); // '6402abcd'
 ```
 
 An unknown function code needs no configuration: the frame boundary is taken from the CRC (RTU) or
-the MBAP length (TCP). An empty PDU is rejected with `ModbusBufferUnderrunError`.
+the MBAP length (TCP). You can also provide an optional `expectedLengthResolver: (partialResponsePdu, requestPdu) => number | null` for variable-length custom frames. An empty PDU is rejected with `ModbusBufferUnderrunError`.
 
 ---
 
@@ -388,7 +388,7 @@ the MBAP length (TCP). An empty PDU is rejected with `ModbusBufferUnderrunError`
 The library allows you to extend the standard Modbus with manufacturer-specific functions.
 
 A plugin is a class that should have a `name` property and a `customFunctionCodes` object. Each function
-code must contain the `buildRequest` (PDU assembly) and `parseResponse` (response parsing) methods.
+code must contain `buildRequest` (PDU assembly) and `parseResponse` (response parsing), and can optionally provide `getExpectedResponseLength` for variable-length responses.
 
 ```js
 // Example of a plugin for working with a non-standard function code
@@ -415,6 +415,30 @@ class MyManufacturerPlugin {
   }
 }
 ```
+
+### Dynamic Response Length (`getExpectedResponseLength`)
+
+For custom functions whose response length depends on the response content (e.g., file chunks, archive readings, or variable strings), implement `getExpectedResponseLength`:
+
+```js
+readFileChunk: {
+  buildRequest: chunkIdx => new Uint8Array([0x5A, (chunkIdx >> 8) & 0xff, chunkIdx & 0xff]),
+
+  // Dynamically determines expected PDU length from the received header bytes
+  getExpectedResponseLength: (partialPdu, reqPdu) => {
+    if (partialPdu.length < 3) return null; // Need at least FC + 2 bytes length header
+    const dataSize = (partialPdu[1] << 8) | partialPdu[2];
+    return 3 + dataSize; // Total expected PDU length in bytes
+  },
+
+  parseResponse: responsePdu => {
+    const dataSize = (responsePdu[1] << 8) | responsePdu[2];
+    return responsePdu.subarray(3, 3 + dataSize);
+  },
+}
+```
+
+When `getExpectedResponseLength` returns a number, the protocol framer reads the entire remaining packet in a single transport read instead of reading byte-by-byte or timing out.
 
 ### Plugin registration
 

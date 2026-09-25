@@ -1,7 +1,7 @@
 // modbus/core/client.ts
 
 import { Logger, type ILogObj } from 'tslog';
-import { createTsLogger } from '../utils/logger.js';
+import { createTsLogger, formatDuration } from '../utils/logger.js';
 import * as framer from '../protocol/framing.js';
 import * as functions from '../protocol/functions.js';
 import { ModbusProtocol } from './protocol.js';
@@ -229,11 +229,18 @@ class ModbusClient implements IModbusClient {
    * @param timeout - Optional exchange budget in ms.
    * @throws ModbusBufferUnderrunError when the PDU is empty.
    */
-  public async rawExchange(pdu: Uint8Array, timeout?: number): Promise<Uint8Array> {
+  public async rawExchange(
+    pdu: Uint8Array,
+    timeout?: number,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
+  ): Promise<Uint8Array> {
     if (!(pdu instanceof Uint8Array) || pdu.length === 0) {
       throw new ModbusBufferUnderrunError(0, 1);
     }
-    return await this._sendRequest(pdu, timeout);
+    return await this._sendRequest(pdu, timeout, false, true, expectedLengthResolver);
   }
 
   /**
@@ -322,10 +329,20 @@ class ModbusClient implements IModbusClient {
       );
 
     const requestPdu = handler.buildRequest(...args);
-    const responsePdu = await this._sendRequest(requestPdu);
-    if (!responsePdu) return handler.parseResponse(new Uint8Array(0));
+    const expectedLengthResolver = handler.getExpectedResponseLength
+      ? (partialPdu: Uint8Array, reqPdu: Uint8Array) =>
+          handler.getExpectedResponseLength!(partialPdu, reqPdu)
+      : undefined;
 
-    return handler.parseResponse(responsePdu);
+    return await this._sendRequestAndParse(
+      requestPdu,
+      responsePdu => {
+        if (!responsePdu) return handler.parseResponse(new Uint8Array(0));
+        return handler.parseResponse(responsePdu);
+      },
+      this.defaultTimeout,
+      expectedLengthResolver
+    );
   }
 
   /**
@@ -450,6 +467,48 @@ class ModbusClient implements IModbusClient {
     return this._protocol;
   }
 
+  private _formatResponseForLog(response: unknown): string {
+    try {
+      const serialized = JSON.stringify(response, (_key, value) =>
+        value instanceof Uint8Array ? Array.from(value) : value
+      );
+      return serialized ?? String(response);
+    } catch {
+      return String(response);
+    }
+  }
+
+  private _formatDuration(durationMs: number): string {
+    return formatDuration(durationMs, this.logger.settings.type === 'pretty');
+  }
+
+  private _logParsedResponse(
+    slaveId: number,
+    funcCode: number,
+    response: unknown,
+    durationMs: number
+  ): void {
+    this.logger.info(
+      `[ID:${slaveId}][FC:${funcCode}] Response received ${this._formatResponseForLog(response)} ${this._formatDuration(durationMs)}`
+    );
+  }
+
+  private async _sendRequestAndParse<T>(
+    pdu: Uint8Array,
+    parseResponse: (responsePdu: Uint8Array) => T | Promise<T>,
+    timeout: number = this.defaultTimeout,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
+  ): Promise<T> {
+    const startTime = Date.now();
+    const responsePdu = await this._sendRequest(pdu, timeout, false, false, expectedLengthResolver);
+    const parsedResponse = await parseResponse(responsePdu);
+    this._logParsedResponse(this.slaveId, pdu[0] ?? 0, parsedResponse, Date.now() - startTime);
+    return parsedResponse;
+  }
+
   /**
    * Low-level method to send a Modbus request and receive a response.
    * Handles retries, timeouts, exception responses, and device connection notifications.
@@ -463,7 +522,12 @@ class ModbusClient implements IModbusClient {
   private async _sendRequest(
     pdu: Uint8Array,
     timeout: number = this.defaultTimeout,
-    ignoreNoResponse: boolean = false
+    ignoreNoResponse: boolean = false,
+    logGenericResponse: boolean = true,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
   ): Promise<Uint8Array> {
     const funcCode = pdu[0];
     const slaveId = this.slaveId;
@@ -498,7 +562,8 @@ class ModbusClient implements IModbusClient {
           slaveId,
           pdu,
           attemptTimeout,
-          ignoreNoResponse
+          ignoreNoResponse,
+          expectedLengthResolver
         );
 
         if (ignoreNoResponse) {
@@ -516,12 +581,20 @@ class ModbusClient implements IModbusClient {
         if ((responsePdu[0]! & 0x80) !== 0) {
           const excCode = responsePdu[1]!;
           const modbusExc = ModbusClient.EXCEPTION_CODE_MAP.get(excCode) ?? excCode;
+          this._logParsedResponse(
+            slaveId,
+            funcCode,
+            { exception: true, code: modbusExc, functionCode: responsePdu[0]! & 0x7f },
+            Date.now() - startTime
+          );
           throw new ModbusExceptionError(responsePdu[0]! & 0x7f, modbusExc as number);
         }
 
-        this.logger.info(
-          `Response received slaveId=${slaveId} funcCode=${funcCode} ${Date.now() - startTime}ms`
-        );
+        if (logGenericResponse) {
+          this.logger.info(
+            `Response received slaveId=${slaveId} funcCode=${funcCode} duration=${this._formatDuration(Date.now() - startTime)}`
+          );
+        }
 
         return responsePdu;
       },
@@ -586,7 +659,11 @@ class ModbusClient implements IModbusClient {
     slaveId: number,
     pdu: Uint8Array,
     timeout: number,
-    ignoreNoResponse: boolean
+    ignoreNoResponse: boolean,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
   ): Promise<Uint8Array> {
     const session = this._effectiveSession;
 
@@ -607,7 +684,7 @@ class ModbusClient implements IModbusClient {
           return new Uint8Array(0);
         }
 
-        return protocol.exchange(slaveId, pdu, timeout);
+        return protocol.exchange(slaveId, pdu, timeout, expectedLengthResolver);
       },
       { priority: REQUEST_PRIORITY, immediate: true }
     );
@@ -629,8 +706,9 @@ class ModbusClient implements IModbusClient {
     }
 
     const requestPdu = functions.buildReadHoldingRegistersRequest(startAddress, quantity);
-    const responsePdu = await this._sendRequest(requestPdu);
-    return RegisterData.from(functions.parseReadHoldingRegistersResponse(responsePdu));
+    return await this._sendRequestAndParse(requestPdu, responsePdu =>
+      RegisterData.from(functions.parseReadHoldingRegistersResponse(responsePdu))
+    );
   }
 
   /**
@@ -649,8 +727,9 @@ class ModbusClient implements IModbusClient {
     }
 
     const requestPdu = functions.buildReadInputRegistersRequest(startAddress, quantity);
-    const responsePdu = await this._sendRequest(requestPdu);
-    return RegisterData.from(functions.parseReadInputRegistersResponse(responsePdu));
+    return await this._sendRequestAndParse(requestPdu, responsePdu =>
+      RegisterData.from(functions.parseReadInputRegistersResponse(responsePdu))
+    );
   }
 
   /**
@@ -674,8 +753,11 @@ class ModbusClient implements IModbusClient {
     }
 
     const pdu = functions.buildWriteSingleRegisterRequest(address, value);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseWriteSingleRegisterResponse(responsePdu);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseWriteSingleRegisterResponse(responsePdu),
+      timeout
+    );
   }
 
   /**
@@ -703,8 +785,11 @@ class ModbusClient implements IModbusClient {
     }
 
     const pdu = functions.buildWriteMultipleRegistersRequest(address, values);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseWriteMultipleRegistersResponse(responsePdu);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseWriteMultipleRegistersResponse(responsePdu),
+      timeout
+    );
   }
 
   /**
@@ -728,8 +813,11 @@ class ModbusClient implements IModbusClient {
     }
 
     const pdu = functions.buildReadCoilsRequest(startAddress, quantity);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseReadCoilsResponse(responsePdu, quantity);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseReadCoilsResponse(responsePdu, quantity),
+      timeout
+    );
   }
 
   /**
@@ -753,8 +841,11 @@ class ModbusClient implements IModbusClient {
     }
 
     const pdu = functions.buildReadDiscreteInputsRequest(startAddress, quantity);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseReadDiscreteInputsResponse(responsePdu, quantity);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseReadDiscreteInputsResponse(responsePdu, quantity),
+      timeout
+    );
   }
 
   /**
@@ -779,8 +870,11 @@ class ModbusClient implements IModbusClient {
     }
 
     const pdu = functions.buildWriteSingleCoilRequest(address, value);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseWriteSingleCoilResponse(responsePdu);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseWriteSingleCoilResponse(responsePdu),
+      timeout
+    );
   }
 
   /**
@@ -810,8 +904,11 @@ class ModbusClient implements IModbusClient {
     }
 
     const pdu = functions.buildWriteMultipleCoilsRequest(address, values);
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseWriteMultipleCoilsResponse(responsePdu);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseWriteMultipleCoilsResponse(responsePdu),
+      timeout
+    );
   }
 
   /**
@@ -823,8 +920,11 @@ class ModbusClient implements IModbusClient {
     timeout?: number
   ): Promise<{ slaveId: number; isRunning: boolean; data: Uint8Array }> {
     const pdu = functions.buildReportSlaveIdRequest();
-    const responsePdu = await this._sendRequest(pdu, timeout);
-    return functions.parseReportSlaveIdResponse(responsePdu);
+    return await this._sendRequestAndParse(
+      pdu,
+      responsePdu => functions.parseReportSlaveIdResponse(responsePdu),
+      timeout
+    );
   }
 
   /**
@@ -837,6 +937,7 @@ class ModbusClient implements IModbusClient {
     timeout?: number
   ) {
     const pdu = functions.buildReadDeviceIdentificationRequest(0x01, 0x00);
+    const startTime = Date.now();
 
     // The response length (0x2B) is not known in advance (expectedResponsePduLength returns null),
     // so the RTU reads it byte-by-byte. The first request after (re)connection often
@@ -846,8 +947,8 @@ class ModbusClient implements IModbusClient {
     // are specified, we do not consume their budget.
     const responsePdu: Uint8Array =
       this.totalTimeout > 0 || this.retryCount >= 1
-        ? await this._sendRequest(pdu, timeout)
-        : await runWithRetries<Uint8Array>(() => this._sendRequest(pdu, timeout), {
+        ? await this._sendRequest(pdu, timeout, false, false)
+        : await runWithRetries<Uint8Array>(() => this._sendRequest(pdu, timeout, false, false), {
             maxRetries: 1,
             shouldRetry: error =>
               error instanceof ModbusTimeoutError || error instanceof ModbusCRCError,
@@ -883,10 +984,12 @@ class ModbusClient implements IModbusClient {
       }
     }
 
-    return {
+    const response = {
       ...rawResponse,
       objects: formattedObjects,
     };
+    this._logParsedResponse(this.slaveId, pdu[0] ?? 0, response, Date.now() - startTime);
+    return response;
   }
 }
 

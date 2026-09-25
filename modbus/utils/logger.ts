@@ -25,6 +25,12 @@ const LEVEL_ANSI: Record<string, string> = {
  * ANSI reset sequence to restore default terminal text styling.
  */
 const ANSI_RESET = '\u001b[0m';
+const DURATION_ANSI = '\u001b[36m';
+
+export function formatDuration(durationMs: number, colorize: boolean): string {
+  const duration = `+${durationMs}ms`;
+  return colorize ? `${DURATION_ANSI}${duration}${ANSI_RESET}` : duration;
+}
 
 /**
  * Wraps a text string in ANSI color codes corresponding to the specified log level name.

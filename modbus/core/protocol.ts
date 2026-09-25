@@ -64,7 +64,11 @@ export class ModbusProtocol implements IModbusProtocol {
   public async exchange(
     unitId: number,
     pduRequest: Uint8Array,
-    timeout: number
+    timeout: number,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
   ): Promise<Uint8Array> {
     const startTime = Date.now();
     const aduRequest = this._framerClass.buildAdu(unitId, pduRequest);
@@ -92,6 +96,13 @@ export class ModbusProtocol implements IModbusProtocol {
         throw new Error(`Response timeout after ${elapsed}ms. Buffer: ${utils.toHex(buffer)}`);
       }
 
+      expectedLen = this._resolveExpectedLength(
+        buffer,
+        pduRequest,
+        expectedLen,
+        expectedLengthResolver
+      );
+
       let bytesToRead = 1;
       if (buffer.length < this.minLen) {
         bytesToRead = this.minLen - buffer.length;
@@ -110,12 +121,19 @@ export class ModbusProtocol implements IModbusProtocol {
         expectedLen = exceptionLen;
       }
 
-      if (buffer.length >= this.minLen) {
-        if (this.minLen === 7 && buffer.length >= 6) {
-          const followingLen = (buffer[4] << 8) | buffer[5];
-          expectedLen = 6 + followingLen;
-        }
+      expectedLen = this._resolveExpectedLength(
+        buffer,
+        pduRequest,
+        expectedLen,
+        expectedLengthResolver
+      );
 
+      // If we know the expected length and have not received all bytes yet, wait for the full frame
+      if (expectedLen > this.minLen && buffer.length < expectedLen) {
+        continue;
+      }
+
+      if (buffer.length >= this.minLen) {
         try {
           const parsed = this._framerClass.parseAdu(buffer);
 
@@ -162,25 +180,80 @@ export class ModbusProtocol implements IModbusProtocol {
   }
 
   /**
+   * Resolves expected ADU length dynamically from received partial data and optional resolver.
+   */
+  private _resolveExpectedLength(
+    buffer: Uint8Array,
+    pduRequest: Uint8Array,
+    currentExpectedLen: number,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
+  ): number {
+    const isTcp = this.minLen === 7;
+    const headerOffset = isTcp ? 7 : 1;
+
+    // Check for exception response (FC with bit 0x80 set)
+    if (buffer.length >= headerOffset + 1) {
+      const fc = buffer[headerOffset];
+      if (fc !== undefined && (fc & 0x80) !== 0) {
+        return this._framerClass.exceptionResponseLength;
+      }
+    }
+
+    // TCP MBAP length field
+    if (isTcp && buffer.length >= 6) {
+      const followingLen = (buffer[4]! << 8) | buffer[5]!;
+      return 6 + followingLen;
+    }
+
+    // Custom resolver from plugin (supports dynamic arbitrary lengths)
+    if (expectedLengthResolver && buffer.length > headerOffset) {
+      const partialPdu = buffer.subarray(headerOffset);
+      const predictedPduLen = expectedLengthResolver(partialPdu, pduRequest);
+      if (predictedPduLen !== null && predictedPduLen > 0) {
+        return isTcp ? 7 + predictedPduLen : 1 + predictedPduLen + 2;
+      }
+    }
+
+    // Generic heuristics for dynamic response lengths when no plugin resolver is provided
+    if (buffer.length >= headerOffset + 2) {
+      const fc = buffer[headerOffset];
+      const partialPdu = buffer.subarray(headerOffset);
+      if (fc !== undefined && (fc <= 0x04 || fc === 0x11)) {
+        const byteCount = partialPdu[1];
+        if (byteCount !== undefined) {
+          const pduLen = 2 + byteCount;
+          return isTcp ? 7 + pduLen : 1 + pduLen + 2;
+        }
+      }
+      // 16-bit big-endian payload length (e.g. SGM 0x5A)
+      if (fc === 0x5a && partialPdu.length >= 3) {
+        const dataSize = (partialPdu[1]! << 8) | partialPdu[2]!;
+        const pduLen = 3 + dataSize;
+        return isTcp ? 7 + pduLen : 1 + pduLen + 2;
+      }
+    }
+
+    return currentExpectedLen;
+  }
+
+  /**
    * Searches for a valid RTU frame within the already received buffer (CRC + unitId).
    *
-   * Functions with unpredictable response lengths (e.g., 0x2B) are read byte-by-byte,
-   * and any noise at the start of the frame causes the entire buffer to result in a "CRC mismatch."
-   * Previously, the loop would silently wait for new bytes until the timeout expired.
-   * Here, the frame is located by iterating through all contiguous buffer fragments:
-   * the risk of a false positive is limited by the CRC probability (~1/65536 per
-   * fragment) and an additional unitId check.
+   * To prevent O(N^2)/O(N^3) CPU starvation and false-positive CRC matches on partial streams,
+   * candidate frames are checked starting with unitId and ending at the current buffer end.
    */
   private _tryRecoverRtuFrame(buffer: Uint8Array, unitId: number): Uint8Array | null {
     const len = buffer.length;
-    for (let start = 0; start + 4 <= len; start++) {
-      for (let end = start + 4; end <= len; end++) {
-        try {
-          const parsed = this._framerClass.parseAdu(utils.sliceUint8Array(buffer, start, end));
-          if (parsed.unitId === unitId) return parsed.pdu;
-        } catch {
-          // fragment is invalid — trying the next one
-        }
+    for (let start = 1; start + 4 <= len; start++) {
+      if (buffer[start] !== unitId) continue;
+      try {
+        const parsed = this._framerClass.parseAdu(utils.sliceUint8Array(buffer, start, len));
+        if (parsed.unitId === unitId) return parsed.pdu;
+      } catch {
+        // fragment is invalid — trying the next one
       }
     }
     return null;

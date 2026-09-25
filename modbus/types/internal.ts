@@ -28,12 +28,21 @@ export interface IModbusProtocol {
    * @param unitId - Modbus unit/slave address (1-247 for RTU, 0-255 for TCP).
    * @param pduRequest - Raw Protocol Data Unit (PDU) to send.
    * @param timeout - Maximum time to wait for a response in milliseconds.
+   * @param expectedLengthResolver - Optional dynamic length resolver for custom or variable-length functions.
    * @returns A Promise resolving to the response PDU bytes.
    * @throws {ModbusTimeoutError} When no valid response is received within the timeout.
    * @throws {ModbusCrcError} When the received frame fails CRC checksum validation (RTU).
    * @throws {ModbusExceptionError} When the slave returns an exception response.
    */
-  exchange(unitId: number, pduRequest: Uint8Array, timeout: number): Promise<Uint8Array>;
+  exchange(
+    unitId: number,
+    pduRequest: Uint8Array,
+    timeout: number,
+    expectedLengthResolver?: (
+      partialResponsePdu: Uint8Array,
+      requestPdu: Uint8Array
+    ) => number | null
+  ): Promise<Uint8Array>;
 }
 
 // ===================================================

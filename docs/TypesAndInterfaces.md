@@ -31,28 +31,28 @@
 
 The primary interface for high-level operations.
 
-| Method                                         | Description                                                                |
-| ---------------------------------------------- | -------------------------------------------------------------------------- |
-| `use(plugin)`                                  | Registers a plugin that extends the client with custom function codes.     |
-| `readHoldingRegisters(start, qty)`             | Reads holding registers (FC 0x03). Returns `Promise<RegisterData>`.        |
-| `readInputRegisters(start, qty)`               | Reads input registers (FC 0x04). Returns `Promise<RegisterData>`.          |
-| `writeSingleRegister(addr, val, timeout?)`     | Write a single register (FC 0x06).                                         |
-| `writeMultipleRegisters(addr, vals, timeout?)` | Write a group of registers (FC 0x10).                                      |
-| `readCoils(start, qty, timeout?)`              | Reads coils (FC 0x01). Returns `boolean[]`.                                |
-| `readDiscreteInputs(start, qty, timeout?)`     | Reads discrete inputs (FC 0x02).                                           |
-| `writeSingleCoil(addr, val, timeout?)`         | Writes a single bit (FC 0x05).                                             |
-| `writeMultipleCoils(addr, vals, timeout?)`     | Writes a group of bits (FC 0x0F).                                          |
-| `reportSlaveId(timeout?)`                      | Reports the device ID (FC 0x11).                                           |
-| `readDeviceIdentification(decoder, timeout?)`  | Reads the device ID (FC 0x2B). `decoder`: `'windows-1251'` \| `'utf-8'`.   |
-| `executeCustomFunction(name, ...args)`         | Calls a plugin function.                                                   |
-| `setSlaveId(newId)`                            | Changes the device address; managed clients go through `reassignClient()`. |
-| `rawExchange(pdu, timeout?)`                   | Sends an arbitrary PDU, returns the raw response PDU.                      |
-| `connect() / disconnect()`                     | Logical state management. `disconnect()` also unregisters the client.      |
-| `currentSlaveId`                               | Current slave address (getter).                                            |
-| `clientId`                                     | Roster id assigned by the controller (`undefined` for unmanaged clients).  |
-| `setDeviceStateHandler(handler)`               | Registers this client's own device connection tracker callback.            |
-| `clearDeviceState()`                           | Clears the client's device state (used by the controller on removal).      |
-| `enableLogger() / disableLogger()`             | Logging control.                                                           |
+| Method                                                | Description                                                                |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| `use(plugin)`                                         | Registers a plugin that extends the client with custom function codes.     |
+| `readHoldingRegisters(start, qty)`                    | Reads holding registers (FC 0x03). Returns `Promise<RegisterData>`.        |
+| `readInputRegisters(start, qty)`                      | Reads input registers (FC 0x04). Returns `Promise<RegisterData>`.          |
+| `writeSingleRegister(addr, val, timeout?)`            | Write a single register (FC 0x06).                                         |
+| `writeMultipleRegisters(addr, vals, timeout?)`        | Write a group of registers (FC 0x10).                                      |
+| `readCoils(start, qty, timeout?)`                     | Reads coils (FC 0x01). Returns `boolean[]`.                                |
+| `readDiscreteInputs(start, qty, timeout?)`            | Reads discrete inputs (FC 0x02).                                           |
+| `writeSingleCoil(addr, val, timeout?)`                | Writes a single bit (FC 0x05).                                             |
+| `writeMultipleCoils(addr, vals, timeout?)`            | Writes a group of bits (FC 0x0F).                                          |
+| `reportSlaveId(timeout?)`                             | Reports the device ID (FC 0x11).                                           |
+| `readDeviceIdentification(decoder, timeout?)`         | Reads the device ID (FC 0x2B). `decoder`: `'windows-1251'` \| `'utf-8'`.   |
+| `executeCustomFunction(name, ...args)`                | Calls a plugin function.                                                   |
+| `setSlaveId(newId)`                                   | Changes the device address; managed clients go through `reassignClient()`. |
+| `rawExchange(pdu, timeout?, expectedLengthResolver?)` | Sends an arbitrary PDU, returns the raw response PDU.                      |
+| `connect() / disconnect()`                            | Logical state management. `disconnect()` also unregisters the client.      |
+| `currentSlaveId`                                      | Current slave address (getter).                                            |
+| `clientId`                                            | Roster id assigned by the controller (`undefined` for unmanaged clients).  |
+| `setDeviceStateHandler(handler)`                      | Registers this client's own device connection tracker callback.            |
+| `clearDeviceState()`                                  | Clears the client's device state (used by the controller on removal).      |
+| `enableLogger() / disableLogger()`                    | Logging control.                                                           |
 
 ---
 
@@ -429,6 +429,7 @@ class MyPlugin implements IModbusPlugin {
   public customFunctionCodes: Record<string, ICustomFunctionHandler> = {
     getVoltage: {
       buildRequest: (addr: number) => new Uint8Array([0x65, addr >> 8, addr & 0xff]),
+      getExpectedResponseLength: (partialPdu: Uint8Array) => 2,
       parseResponse: (pdu: Uint8Array) => pdu[1],
     },
   };
