@@ -1,7 +1,7 @@
 // modbus/core/client.ts
 
 import { Logger, type ILogObj } from 'tslog';
-import { createTsLogger, formatDuration } from '../utils/logger.js';
+import { createTsLogger, formatDuration, formatMetaTags } from '../utils/logger.js';
 import * as framer from '../protocol/framing.js';
 import * as functions from '../protocol/functions.js';
 import { ModbusProtocol } from './protocol.js';
@@ -467,29 +467,13 @@ class ModbusClient implements IModbusClient {
     return this._protocol;
   }
 
-  private _formatResponseForLog(response: unknown): string {
-    try {
-      const serialized = JSON.stringify(response, (_key, value) =>
-        value instanceof Uint8Array ? Array.from(value) : value
-      );
-      return serialized ?? String(response);
-    } catch {
-      return String(response);
-    }
-  }
-
   private _formatDuration(durationMs: number): string {
     return formatDuration(durationMs, this.logger.settings.type === 'pretty');
   }
 
-  private _logParsedResponse(
-    slaveId: number,
-    funcCode: number,
-    response: unknown,
-    durationMs: number
-  ): void {
+  private _logParsedResponse(slaveId: number, funcCode: number, durationMs: number): void {
     this.logger.info(
-      `[ID:${slaveId}][FC:${funcCode}] Response received ${this._formatResponseForLog(response)} ${this._formatDuration(durationMs)}`
+      `[ID:${slaveId}][FC:${funcCode}] Response received ${this._formatDuration(durationMs)}`
     );
   }
 
@@ -505,7 +489,7 @@ class ModbusClient implements IModbusClient {
     const startTime = Date.now();
     const responsePdu = await this._sendRequest(pdu, timeout, false, false, expectedLengthResolver);
     const parsedResponse = await parseResponse(responsePdu);
-    this._logParsedResponse(this.slaveId, pdu[0] ?? 0, parsedResponse, Date.now() - startTime);
+    this._logParsedResponse(this.slaveId, pdu[0] ?? 0, Date.now() - startTime);
     return parsedResponse;
   }
 
@@ -581,12 +565,7 @@ class ModbusClient implements IModbusClient {
         if ((responsePdu[0]! & 0x80) !== 0) {
           const excCode = responsePdu[1]!;
           const modbusExc = ModbusClient.EXCEPTION_CODE_MAP.get(excCode) ?? excCode;
-          this._logParsedResponse(
-            slaveId,
-            funcCode,
-            { exception: true, code: modbusExc, functionCode: responsePdu[0]! & 0x7f },
-            Date.now() - startTime
-          );
+          this._logParsedResponse(slaveId, funcCode, Date.now() - startTime);
           throw new ModbusExceptionError(responsePdu[0]! & 0x7f, modbusExc as number);
         }
 
@@ -612,8 +591,7 @@ class ModbusClient implements IModbusClient {
         // The client owns its device tracker: connection quality to its slave is judged here.
         onAttemptFailed: (error, attemptNumber) => {
           this.logger.warn(
-            { slaveId, funcCode, attempt: attemptNumber, err: (error as any).message },
-            'Attempt failed'
+            `${formatMetaTags({ slaveId, funcCode, attempt: attemptNumber })}${(error as any).message} Attempt failed`
           );
 
           if (error instanceof ModbusExceptionError) return;
@@ -955,8 +933,7 @@ class ModbusClient implements IModbusClient {
             getDelayMs: () => 100,
             onAttemptFailed: (error, attemptNumber) =>
               this.logger.warn(
-                { attempt: attemptNumber, err: (error as Error).message },
-                'Identification read failed, retrying'
+                `${formatMetaTags({ slaveId: this.slaveId, funcCode: pdu[0], attempt: attemptNumber })}${(error as Error).message} Identification read failed, retrying`
               ),
           });
 
@@ -988,7 +965,7 @@ class ModbusClient implements IModbusClient {
       ...rawResponse,
       objects: formattedObjects,
     };
-    this._logParsedResponse(this.slaveId, pdu[0] ?? 0, response, Date.now() - startTime);
+    this._logParsedResponse(this.slaveId, pdu[0] ?? 0, Date.now() - startTime);
     return response;
   }
 }

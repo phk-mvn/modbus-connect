@@ -1,5 +1,40 @@
 # CHANGELOG
 
+### 5.0.2 (2026-09-26)
+
+**Logging rework — consistent metadata prefixes, no object payloads, no response data**
+
+- **`formatMetaTags()` (new)** — `modbus/utils/logger.ts` builds a compact bracketed prefix for a log message.
+  `[transportId]` and `[framing]` render as bare tags, then `[ID:<slaveId>]`, `[FC:<funcCode>]` and
+  `[ATT:<attempt>]`. Only the tags actually known at the call site are emitted, in that fixed order, so the same
+  helper serves the controller (`[TEST_RTU][rtu][ID:5]`), the client (`[ID:5][FC:3][ATT:1]`) and the port level
+  (`[TEST_RTU]`).
+- **TransportController — every log line is now a tagged string** — e.g.
+  `[TEST_RTU][rtu][ID:5] Client 'client-1' created`. The 10 object payloads were folded into the message
+  (`clientId` in single quotes, `err` inline, task ids joined); `disconnectTransport()` now binds its `catch`,
+  which previously discarded the error text. `assignSlaveIdToTransport()` and
+  `removeSlaveIdFromTransport()` gained the same `[transportId][framing][ID:<slaveId>]` prefix the other
+  client-facing methods already had.
+- **ModbusClient** — `Attempt failed` and `Identification read failed, retrying` are prefixed
+  `[ID:5][FC:3][ATT:1]`, with the error message inlined where the `err` object used to be.
+- **No object payloads in any WARN log** — all 26 `logger.warn()` calls pass a single string. The port queue
+  (`[PortQueue] overflow: 1/1 jobs queued`), the scanner, the polling manager and the two duplicate-slave
+  warnings inline their fields instead of dumping an object.
+- **No response data in the response log** — the line is now `[ID:92][FC:3] Response received +12ms`; the
+  serialized response payload is no longer interpolated into it.
+- **Fixed: WebSerial transport logged at `debug` by default** — `modbus/transport/web/serial.ts` hard-coded
+  `level: 'debug'`, so a browser transport printed debug lines that the Node transports never printed, including
+  the `file:line` noise the formatter only emits at DEBUG and below. It now takes the same default as every other
+  component (`info`).
+- **Documentation** — the log samples in `README.md`, `docs/Emulators.md`, `docs/ModbusClient.md`,
+  `docs/PollingManager.md` and `docs/TransportController.md` were corrected against actual output: the real
+  logger names (`manager` and `manager:Task`, not `[Polling Manager]` / `[Task][taskId:...]`), the real line
+  prefix (an ISO timestamp, then `LEVEL name`, with no colon after the level), the response format above and
+  the controller's new tags. Also removed from the samples: a `[Node RTU] Serial port ... opened` line shown
+  at `INFO` (it is `debug`, so it is not visible at the default level), and a documented
+  `[DeviceConnectionTracker] Device 1: OFFLINE (Timeout)` warning — the tracker emits no such line; a device
+  going offline surfaces as the client's `Attempt failed` warning.
+
 ### 5.0.1 (2026-09-25)
 
 **Dynamic response length resolution & framing optimizations**
@@ -10,7 +45,7 @@
 - **Enhanced `client.rawExchange()`** — accepts an optional `expectedLengthResolver?: (partialResponsePdu: Uint8Array, requestPdu: Uint8Array) => number | null` parameter.
 - **Colorized response timing logs** — client execution logs now display colorized `+<N>ms` elapsed durations for responses and exceptions.
 
-### 5.0.0 (2026-09-22)
+### 5.0.0 (2026-09-25)
 
 **Port queue / port session refactoring** — a port is now a single serialization point for every wire-level operation.
 

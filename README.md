@@ -111,13 +111,15 @@ async function main() {
 
 ```bash
 phk_mvn@MacBook-Air-Danila modbus-connect % node test-rtu.js
-[14:20:01] INFO: [Transport Controller] Transport "TEST_RTU" added with PollingManager
-[14:20:01] INFO: [Transport Controller] Transport "TEST_RTU" connected
-[14:20:01] INFO: [Polling Manager] Task added -> task-read-holding-registers
+2026-09-25 14:20:01.114 INFO Transport Controller Transport "TEST_RTU" added with PollingManager
+2026-09-25 14:20:01.402 INFO Node RTU Serial port /dev/tty.usbserial-01AB5F6D opened
+2026-09-25 14:20:01.403 INFO Transport Controller Transport "TEST_RTU" connected
+2026-09-25 14:20:01.404 INFO Transport Controller [TEST_RTU][rtu][ID:92] Client 'client-1' created
+2026-09-25 14:20:01.651 INFO manager Task added -> task-read-holding-registers
+2026-09-25 14:20:02.105 INFO ModbusClient [ID:92][FC:3] Response received +45ms
 [ [ 1024, 2048 ] ]
-[14:20:02] INFO: [ModbusClient][ID:92] Response received 45ms
+2026-09-25 14:20:03.098 INFO ModbusClient [ID:92][FC:3] Response received +42ms
 [ [ 1024, 2048 ] ]
-[14:20:03] INFO: [ModbusClient][ID:92] Response received 42ms
 ...
 ```
 
@@ -174,17 +176,18 @@ async function main() {
 
 ```bash
 phk_mvn@MacBook-Air-Danila modbus-connect % node test.js
-[04:04:57] INFO: [Transport Controller] Transport "TEST_TCP" added with PollingManager
-[04:04:57] INFO: [Node TCP] Connecting to 10.59.43.96:502...
-[04:04:57] INFO: [Transport Controller] Transport "TEST_TCP" connected
-[04:04:57] INFO: [Node TCP] SUCCESS: Connected to 10.59.43.96:502
-[04:04:57] INFO: [Polling Manager] Task added -> task-read-holding-registers
+2026-09-25 04:04:57.331 INFO Transport Controller Transport "TEST_TCP" added with PollingManager
+2026-09-25 04:04:57.402 INFO Node TCP Connecting to 10.59.43.96:502...
+2026-09-25 04:04:57.418 INFO Node TCP SUCCESS: Connected to 10.59.43.96:502
+2026-09-25 04:04:57.419 INFO Transport Controller Transport "TEST_TCP" connected
+2026-09-25 04:04:57.664 INFO Transport Controller [TEST_TCP][tcp][ID:92] Client 'client-1' created
+2026-09-25 04:04:57.912 INFO manager Task added -> task-read-holding-records
 [ [ 4114, 35714, 1986, 0 ] ]
-[04:04:57] INFO: [ModbusClient][ID:92] Response received 13ms
+2026-09-25 04:04:58.043 INFO ModbusClient [ID:92][FC:3] Response received +13ms
 [ [ 4114, 35714, 1986, 0 ] ]
-[04:04:58] INFO: [ModbusClient][ID:92] Response received 11ms
+2026-09-25 04:04:59.041 INFO ModbusClient [ID:92][FC:3] Response received +11ms
 [ [ 4114, 35714, 1986, 0 ] ]
-[04:04:59] INFO: [ModbusClient][ID:92] Response received 12ms
+2026-09-25 04:05:00.038 INFO ModbusClient [ID:92][FC:3] Response received +12ms
 ...
 ```
 
@@ -241,12 +244,13 @@ async function startModbus() {
 **Expected result**:
 
 ```bash
-[14:25:10] INFO: [Transport Controller] Transport "WEB_SERIAL_RTU" added with PollingManager
-[14:25:10] INFO: [Web RTU] Port opened successfully
-[14:25:10] INFO: [Transport Controller] Transport "WEB_SERIAL_RTU" connected
-[14:25:10] INFO: [Polling Manager] Task added -> web-task-coils
+2026-09-25 14:25:10.058 INFO Transport Controller Transport "WEB_SERIAL_RTU" added with PollingManager
+2026-09-25 14:25:10.412 INFO Web RTU WebSerial port opened successfully with new instance
+2026-09-25 14:25:10.601 INFO Transport Controller Transport "WEB_SERIAL_RTU" connected
+2026-09-25 14:25:10.702 INFO Transport Controller [WEB_SERIAL_RTU][rtu][ID:1] Client 'client-1' created
+2026-09-25 14:25:10.855 INFO manager Task added -> web-task-coils
 Coils status: [true, false, true, true, false, false, false, true]
-[14:25:11] INFO: [ModbusClient][ID:1] Response received 85ms
+2026-09-25 14:25:11.294 INFO ModbusClient [ID:1][FC:1] Response received +85ms
 ...
 ```
 
@@ -307,18 +311,20 @@ async function main() {
 
 ```bash
 phk_mvn@MacBook-Air-Danila modbus-connect % node test.js
-[04:04:52] INFO: [Polling Manager] Task added -> task1
-[04:04:52] INFO: [Transport Controller] Transport "emulator-1" added with PollingManager
-[04:04:52] INFO: [ModbusSlaveCore] ModbusSlaveCore initialized successfully (Slave ID: 1)
-[04:04:52] INFO: [RTU Emulator] RTU Emulator connected
-[04:04:52] INFO: [ModbusSlaveCore] Registers added successfully: {"coils":1,"discrete":0,"holding":2,"input":0}
-[04:04:52] INFO: [Transport Controller] Transport "emulator-1" connected
+2026-09-25 04:04:52.061 INFO ModbusSlaveCore ModbusSlaveCore initialized successfully (Slave ID: 1)
+2026-09-25 04:04:52.062 INFO Transport Controller Transport "emulator-1" added with PollingManager
+2026-09-25 04:04:52.341 INFO RTU Emulator RTU Emulator connected
+2026-09-25 04:04:52.342 INFO Transport Controller Transport "emulator-1" connected
+2026-09-25 04:04:52.347 INFO ModbusSlaveCore Registers added successfully: {"coils":1,"discrete":0,"holding":2,"input":0}
+2026-09-25 04:04:52.401 INFO Transport Controller [emulator-1][rtu][ID:1] Client 'client-1' created
+2026-09-25 04:04:52.638 INFO manager Task added -> task1
 [ [ 1234, 5678 ] ]
-[04:04:52] INFO: [ModbusClient][ID:1] Response received 32ms
+2026-09-25 04:04:52.671 INFO ModbusClient [ID:1][FC:3] Response received +32ms
 [ [ 1234, 5678 ] ]
-[04:04:53] INFO: [ModbusClient][ID:1] Response received 32ms
+2026-09-25 04:04:53.669 INFO ModbusClient [ID:1][FC:3] Response received +32ms
 [ [ 1234, 5678 ] ]
-[04:04:54] INFO: [ModbusClient][ID:1] Response received 32ms
+2026-09-25 04:04:54.671 INFO ModbusClient [ID:1][FC:3] Response received +32ms
+[ [ 1234, 5678 ] ]
 ```
 
 <br>

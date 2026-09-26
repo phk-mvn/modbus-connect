@@ -12,7 +12,7 @@ import {
 } from '../../types/public.js';
 import ModbusSlaveCore from './slave-core.js';
 import { Logger, type ILogObj } from 'tslog';
-import { createTsLogger } from '../../utils/logger.js';
+import { createTsLogger, formatMetaTags } from '../../utils/logger.js';
 import { TrafficSniffer } from '../trackers/traffic-sniffer.js';
 
 /**
@@ -145,7 +145,7 @@ export default class NodeTcpEmulatorTransport implements ITransport {
     const unitId = buffer[6];
 
     if (protocolId !== 0) {
-      this.logger.warn(`Invalid Protocol ID: ${protocolId}`);
+      this.logger.warn(`${formatMetaTags({ slaveId: unitId })}Invalid Protocol ID: ${protocolId}`);
       return;
     }
 

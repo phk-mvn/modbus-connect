@@ -242,8 +242,7 @@ export class ModbusScanner {
             await transport.connect();
           } catch (err: any) {
             this.logger.warn(
-              { baud, parity, stopBits, err: err?.message },
-              'Failed to open port, skipping'
+              `Failed to open port (baud ${baud}, parity ${parity}, stopBits ${stopBits}), skipping: ${err?.message}`
             );
             continue;
           }
@@ -358,7 +357,7 @@ export class ModbusScanner {
           );
           await transport.connect();
         } catch (err: any) {
-          this.logger.warn({ host, port, err: err?.message }, 'Failed to connect, skipping');
+          this.logger.warn(`Failed to connect to ${host}:${port}, skipping: ${err?.message}`);
           continue;
         }
 

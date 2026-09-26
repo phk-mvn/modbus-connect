@@ -1,7 +1,7 @@
 // modbus/transport/emulator/slave-core.ts
 
 import { Logger, type ILogObj } from 'tslog';
-import { createTsLogger } from '../../utils/logger.js';
+import { createTsLogger, formatMetaTags } from '../../utils/logger.js';
 import {
   ModbusDataConversionError,
   ModbusExceptionError,
@@ -120,7 +120,9 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
           return this.handleWriteMultipleRegisters(pdu);
 
         default:
-          this.logger.warn(`Unsupported function code: 0x${functionCode.toString(16)}`);
+          this.logger.warn(
+            `${formatMetaTags({ slaveId: this.slaveId, funcCode: functionCode })}Unsupported function code: 0x${functionCode.toString(16)}`
+          );
           throw new ModbusExceptionError(functionCode, 0x01); // Illegal Function
       }
     } catch (err: any) {
@@ -901,7 +903,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
     if (this.exceptions.has(key)) {
       const exCode = this.exceptions.get(key)!;
       this.logger.warn(
-        `Throwing exception for function 0x${functionCode.toString(16)} at address ${address}: code 0x${exCode.toString(16)}`
+        `${formatMetaTags({ slaveId: this.slaveId, funcCode: functionCode })}Throwing exception for function 0x${functionCode.toString(16)} at address ${address}: code 0x${exCode.toString(16)}`
       );
       throw new ModbusExceptionError(functionCode, exCode);
     }

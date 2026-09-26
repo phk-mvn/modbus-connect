@@ -275,7 +275,7 @@ class PollingManager implements IPollingManager {
       this.removeFromQueue(id);
       this.logger.info({ id }, 'Task removed');
     } else {
-      this.logger.warn({ id }, 'Attempt to remove non-existent task');
+      this.logger.warn(`Attempt to remove non-existent task: ${id}`);
     }
   }
 

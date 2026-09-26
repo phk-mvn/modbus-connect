@@ -2,7 +2,7 @@
 
 import { Mutex } from 'async-mutex';
 import { Logger, type ILogObj } from 'tslog';
-import { createTsLogger, type TTsLogLevel } from '../../utils/logger.js';
+import { createTsLogger, formatMetaTags, type TTsLogLevel } from '../../utils/logger.js';
 import { TransportFactory } from '../factory.js';
 import { TransportRegistry } from './registry/TransportRegistry.js';
 import { TransportRouter } from './router/TransportRouter.js';
@@ -192,7 +192,7 @@ class TransportController implements ITransportController {
     const session = this._findSessionByScanPath(options);
     if (!session) return;
     await session.pauseForScan();
-    this.logger.info({ transportId: session.id }, 'Port paused for scan');
+    this.logger.info(`${formatMetaTags({ transportId: session.id })}Port paused for scan`);
   }
 
   /**
@@ -204,7 +204,7 @@ class TransportController implements ITransportController {
     const session = this._findSessionByScanPath(options);
     if (!session) return;
     await session.resumeAfterScan();
-    this.logger.info({ transportId: session.id }, 'Port resumed after scan');
+    this.logger.info(`${formatMetaTags({ transportId: session.id })}Port resumed after scan`);
   }
 
   /**
@@ -419,8 +419,7 @@ class TransportController implements ITransportController {
           throw new DuplicateSlaveIdError(session.id, slaveId, duplicate.info.clientId);
         }
         this.logger.warn(
-          { slaveId, transportId: session.id, clients: [duplicate.info.clientId, clientId] },
-          'Two clients serve the same device (allowDuplicateSlaveId)'
+          `${formatMetaTags({ transportId: session.id, slaveId })}Two clients "${duplicate.info.clientId}" and "${clientId}" serve the same device (allowDuplicateSlaveId)`
         );
       }
 
@@ -453,7 +452,9 @@ class TransportController implements ITransportController {
       });
       session.clients.set(clientId, client);
 
-      this.logger.info({ clientId, slaveId, transportId: session.id, framing }, 'Client created');
+      this.logger.info(
+        `${formatMetaTags({ transportId: session.id, framing, slaveId })}Client '${clientId}' created`
+      );
       return client;
     });
   }
@@ -515,12 +516,7 @@ class TransportController implements ITransportController {
             throw new DuplicateSlaveIdError(session.id, newSlaveId, conflict.info.clientId);
           }
           this.logger.warn(
-            {
-              slaveId: newSlaveId,
-              transportId: session.id,
-              clients: [conflict.info.clientId, clientId],
-            },
-            'Two clients serve the same device (allowDuplicateSlaveId)'
+            `${formatMetaTags({ transportId: session.id, slaveId: newSlaveId })}Two clients "${conflict.info.clientId}" and "${clientId}" serve the same device (allowDuplicateSlaveId)`
           );
         }
 
@@ -538,7 +534,9 @@ class TransportController implements ITransportController {
       entry.client.applySlaveId(newSlaveId);
       entry.info.slaveId = newSlaveId;
 
-      this.logger.info({ clientId, from: oldSlaveId, to: newSlaveId }, 'Client re-assigned');
+      this.logger.info(
+        `${formatMetaTags({ transportId: entry.info.transportId, framing: entry.info.framing, slaveId: newSlaveId })}Client '${clientId}' re-assigned: ${oldSlaveId} -> ${newSlaveId}`
+      );
     });
   }
 
@@ -588,7 +586,9 @@ class TransportController implements ITransportController {
       // Polling tasks owned by this client (IPollingTaskOptions.clientId) must not survive it.
       const removedTasks = session.pollingManager.removeTasksByClient(clientId);
       if (removedTasks.length > 0) {
-        this.logger.info({ clientId, tasks: removedTasks }, 'Client polling tasks removed');
+        this.logger.info(
+          `${formatMetaTags({ transportId: entry.info.transportId, framing: entry.info.framing })}Client '${clientId}' polling tasks removed: ${removedTasks.join(', ')}`
+        );
       }
 
       // The client's personal device tracker goes away with the client.
@@ -607,7 +607,9 @@ class TransportController implements ITransportController {
     }
 
     this._clientRegistry.remove(clientId);
-    this.logger.info({ clientId }, 'Client removed');
+    this.logger.info(
+      `${formatMetaTags({ transportId: entry.info.transportId, framing: entry.info.framing, slaveId: entry.info.slaveId })}Client '${clientId}' removed`
+    );
   }
 
   /**
@@ -685,7 +687,9 @@ class TransportController implements ITransportController {
         );
         session.status = 'error';
         session.lastError = err;
-        this.logger.error({ transportId: id, err: err.message }, 'Failed to connect');
+        this.logger.error(
+          `${formatMetaTags({ transportId: id })}Failed to connect: ${err.message}`
+        );
         throw err;
       }
       session.status = 'connected';
@@ -694,7 +698,9 @@ class TransportController implements ITransportController {
     } catch (err) {
       session.status = 'error';
       session.lastError = err instanceof Error ? err : new Error(String(err));
-      this.logger.error({ transportId: id, err: session.lastError.message }, 'Failed to connect');
+      this.logger.error(
+        `${formatMetaTags({ transportId: id })}Failed to connect: ${session.lastError.message}`
+      );
       throw err;
     }
   }
@@ -762,7 +768,13 @@ class TransportController implements ITransportController {
       }
 
       this._registry.assignSlave(transportId, slaveId);
-      this.logger.info(`Assigned slave ${slaveId} to transport "${transportId}"`);
+      this.logger.info(
+        `${formatMetaTags({
+          transportId,
+          framing: rsModeToFraming(session.rsMode),
+          slaveId,
+        })}Slave ${slaveId} assigned to transport "${transportId}"`
+      );
     });
   }
 
@@ -785,7 +797,13 @@ class TransportController implements ITransportController {
         transportAny.removeConnectedDevice(slaveId);
       }
 
-      this.logger.info(`Removed slave ${slaveId} from transport "${transportId}"`);
+      this.logger.info(
+        `${formatMetaTags({
+          transportId,
+          framing: rsModeToFraming(session.rsMode),
+          slaveId,
+        })}Slave ${slaveId} removed from transport "${transportId}"`
+      );
 
       if (session.slaveIds.length === 0) {
         this.logger.info(`Transport "${transportId}" is empty. Auto-removing...`);
@@ -868,7 +886,9 @@ class TransportController implements ITransportController {
         } catch (err) {
           session.status = 'error';
           session.lastError = err instanceof Error ? err : new Error(String(err));
-          this.logger.error({ transportId: id }, 'Failed to reconnect after reload');
+          this.logger.error(
+            `${formatMetaTags({ transportId: id })}Failed to reconnect after reload: ${session.lastError.message}`
+          );
         }
       }
 
@@ -1138,8 +1158,10 @@ class TransportController implements ITransportController {
       this._pollingProxy.pauseAllForTransport(id);
       await session.transport.disconnect();
       session.status = 'disconnected';
-    } catch {
-      this.logger.error({ transportId: id }, 'Error disconnecting transport');
+    } catch (err) {
+      this.logger.error(
+        `${formatMetaTags({ transportId: id })}Error disconnecting transport: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 

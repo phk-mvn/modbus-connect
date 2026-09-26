@@ -66,7 +66,7 @@ await controller.addTransport(
 **Expected result**:
 
 ```bash
-[14:00:01] INFO: [Transport Controller] Transport "RS485_BUS" added with PollingManager
+2026-09-25 14:00:01.096 INFO Transport Controller Transport "RS485_BUS" added with PollingManager
 ```
 
 ---
@@ -84,8 +84,7 @@ await controller.connectTransport('RS485_BUS');
 **Expected result**:
 
 ```bash
-[14:00:02] INFO: [Node RTU] Serial port /dev/ttyUSB0 opened
-[14:00:02] INFO: [Transport Controller] Transport "RS485_BUS" connected
+2026-09-25 14:00:02.201 INFO Transport Controller Transport "RS485_BUS" connected
 ```
 
 ---
@@ -106,7 +105,7 @@ await controller.reloadTransport('RS485_BUS', {
 **Expected result**:
 
 ```bash
-[14:05:11] INFO: [Transport Controller] Transport "RS485_BUS" reloaded
+2026-09-25 14:05:11.774 INFO Transport Controller Transport "RS485_BUS" reloaded
 ```
 
 ---
@@ -209,7 +208,7 @@ await controller.assignSlaveIdToTransport('RS485_BUS', 10);
 **Expected result**:
 
 ```bash
-[14:10:00] INFO: [Transport Controller] Assigned slave 10 to transport "RS485_BUS"
+2026-09-25 14:10:00.330 INFO Transport Controller [RS485_BUS][rtu][ID:10] Slave 10 assigned to transport "RS485_BUS"
 ```
 
 ---
@@ -228,9 +227,9 @@ await controller.removeSlaveIdFromTransport('RS485_BUS', 10);
 **Expected result**:
 
 ```bash
-[14:15:00] INFO: [Transport Controller] Removed slave 10 from transport "RS485_BUS"
-[14:15:00] INFO: [Transport Controller] Transport "RS485_BUS" is empty. Auto-removing...
-[14:15:00] INFO: [Transport Controller] Transport "RS485_BUS" fully removed
+2026-09-25 14:15:00.412 INFO Transport Controller [RS485_BUS][rtu][ID:10] Slave 10 removed from transport "RS485_BUS"
+2026-09-25 14:15:00.413 INFO Transport Controller Transport "RS485_BUS" is empty. Auto-removing...
+2026-09-25 14:15:00.414 INFO Transport Controller Transport "RS485_BUS" fully removed
 ```
 
 ---
@@ -261,7 +260,7 @@ controller.addPollingTask('RS485_BUS', {
 **Expected result**:
 
 ```bash
-[14:20:00] INFO: [Polling Manager] Task added -> read-holding
+2026-09-25 14:20:00.517 INFO manager Task added -> read-holding
 ```
 
 ---
@@ -312,7 +311,7 @@ await controller.executeImmediate('RS485_BUS', async () => {
 **Expected result**:
 
 ```bash
-[14:22:05] INFO: [ModbusClient][ID:42] Response received slaveId=42 funcCode=6 50ms
+2026-09-25 14:22:05.288 INFO ModbusClient [ID:42][FC:6] Response received +50ms
 ```
 
 ---
@@ -404,7 +403,7 @@ await controller.setDeviceStateHandlerForTransport('RS485_BUS', (slaveId, connec
 **Expected result** (In case of disconnection):
 
 ```bash
-[14:30:05] WARN: [DeviceConnectionTracker] Device 1: OFFLINE (Timeout)
+2026-09-25 14:30:05.101 WARN ModbusClient [ID:1][FC:3][ATT:1] Modbus request timed out Attempt failed
 [Event] Device 1 is now disabled (Modbus request timed out)
 ```
 

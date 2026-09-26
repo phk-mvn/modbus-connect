@@ -134,7 +134,7 @@ await client.setSlaveId(10);
 **Expected result**:
 
 ```bash
-[12:00:10] INFO: [ModbusClient][ID:10] Slave ID changed 122 -> 10
+2026-09-25 12:00:10.204 INFO ModbusClient [ID:10] Slave ID changed 122 -> 10
 ```
 
 ---
@@ -153,7 +153,7 @@ console.log(coils);
 **Expected result**:
 
 ```bash
-[ModbusClient][ID:122] Response received slaveId=122 funcCode=1 45ms
+2026-09-25 12:00:20.114 INFO ModbusClient [ID:122][FC:1] Response received +45ms
 [true, true, true, true, false]
 ```
 
@@ -171,7 +171,7 @@ console.log(inputs);
 **Expected result**:
 
 ```bash
-[ModbusClient][ID:122] Response received slaveId=122 funcCode=2 40ms
+2026-09-25 12:01:20.109 INFO ModbusClient [ID:122][FC:2] Response received +40ms
 [true, true, false]
 ```
 
@@ -189,7 +189,7 @@ console.log(regs); // [1500, 240] — works like a regular array
 **Expected result**:
 
 ```bash
-[ModbusClient][ID:122] Response received slaveId=122 funcCode=3 55ms
+2026-09-25 12:02:20.162 INFO ModbusClient [ID:122][FC:3] Response received +55ms
 [1500, 240]
 ```
 
@@ -207,7 +207,7 @@ console.log(inputs); // [356]
 **Expected result**:
 
 ```bash
-[ModbusClient][ID:122] Response received slaveId=122 funcCode=4 48ms
+2026-09-25 12:03:20.155 INFO ModbusClient [ID:122][FC:4] Response received +48ms
 [356]
 ```
 
@@ -343,7 +343,7 @@ console.log(info);
 **Expected result**:
 
 ```bash
-[ModbusClient][ID:122] Response received slaveId=122 funcCode=17 35ms
+2026-09-25 12:04:20.142 INFO ModbusClient [ID:122][FC:17] Response received +35ms
 { slaveId: 122, isRunning: true, data: Uint8Array(...) }
 ```
 
@@ -361,7 +361,7 @@ console.log(id.objects);
 **Expected result**:
 
 ```bash
-[ModbusClient][ID:122] Response received slaveId=122 funcCode=43 110ms
+2026-09-25 12:05:20.217 INFO ModbusClient [ID:122][FC:43] Response received +110ms
 { 0: "VendorName", 1: "ProductCode", 2: "v1.0" }
 ```
 

@@ -33,6 +33,41 @@ export function formatDuration(durationMs: number, colorize: boolean): string {
 }
 
 /**
+ * Context metadata rendered as a compact bracketed prefix in front of a log message.
+ * Every field is optional: only the tags actually known at the call site are emitted, so a
+ * controller line produces `[TEST_RTU][rtu][ID:5]`, a retry warning `[ID:5][FC:3][ATT:1]`
+ * and a port-level line `[TEST_RTU]`. Tags always render in the order declared here.
+ */
+export interface TLogMetaTags {
+  /** Owning port id, rendered as a bare tag: `[TEST_RTU]`. */
+  transportId?: string;
+  /** Framing derived from the port RS mode, rendered as a bare tag: `[rtu]`. */
+  framing?: string;
+  /** Modbus slave unit address the exchange was addressed to. */
+  slaveId?: number;
+  /** Modbus function code of the request PDU. */
+  funcCode?: number;
+  /** 1-based attempt number, present only on retry-related messages. */
+  attempt?: number;
+}
+
+/**
+ * Builds the bracketed metadata prefix for a log message.
+ *
+ * @param meta - Known context metadata; absent fields are skipped.
+ * @returns The prefix followed by a single space, or an empty string when nothing is known.
+ */
+export function formatMetaTags(meta: TLogMetaTags): string {
+  const tags: string[] = [];
+  if (meta.transportId) tags.push(`[${meta.transportId}]`);
+  if (meta.framing) tags.push(`[${meta.framing}]`);
+  if (meta.slaveId !== undefined) tags.push(`[ID:${meta.slaveId}]`);
+  if (meta.funcCode !== undefined) tags.push(`[FC:${meta.funcCode}]`);
+  if (meta.attempt !== undefined) tags.push(`[ATT:${meta.attempt}]`);
+  return tags.length > 0 ? `${tags.join('')} ` : '';
+}
+
+/**
  * Wraps a text string in ANSI color codes corresponding to the specified log level name.
  *
  * @param logLevelName - Name of the log level (e.g., 'INFO', 'DEBUG').

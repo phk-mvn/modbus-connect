@@ -135,7 +135,6 @@ export default class WebSerialTransport implements ITransport {
 
     this.logger = createTsLogger({
       name: 'WEB RTU',
-      level: 'debug',
     });
 
     this.logger.debug('Transport instance created');

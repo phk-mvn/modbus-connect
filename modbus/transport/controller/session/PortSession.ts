@@ -144,8 +144,7 @@ export class PortQueue implements IPortQueue {
     if (this._pending.length >= this._maxLength) {
       if (this._overflowPolicy === 'reject') {
         this.logger.warn(
-          { queueLength: this._pending.length, maxLength: this._maxLength },
-          '[PortQueue] overflow'
+          `[PortQueue] overflow: ${this._pending.length}/${this._maxLength} jobs queued`
         );
         return Promise.reject(new ModbusQueueOverflowError(this._maxLength));
       }
@@ -191,8 +190,7 @@ export class PortQueue implements IPortQueue {
           const index = this._waiters.indexOf(waiter);
           if (index >= 0) this._waiters.splice(index, 1);
           this.logger.warn(
-            { maxLength: this._maxLength, waitMs: this._overflowWaitMs },
-            '[PortQueue] overflow: no free slot in time'
+            `[PortQueue] overflow: no free slot in ${this._overflowWaitMs}ms (max ${this._maxLength})`
           );
           reject(new ModbusQueueOverflowError(this._maxLength));
         }, this._overflowWaitMs);
@@ -233,7 +231,9 @@ export class PortQueue implements IPortQueue {
       running.reject(error);
     }
 
-    this.logger.warn({ dropped, running: running ? running.id : null }, '[PortQueue] aborted');
+    this.logger.warn(
+      `[PortQueue] aborted: ${dropped} dropped, running ${running ? running.id : 'none'}`
+    );
   }
 
   /**
@@ -246,7 +246,7 @@ export class PortQueue implements IPortQueue {
     this.cancelWaiters(error);
     const dropped = this._pending.length;
     this._rejectPending(error);
-    if (dropped > 0) this.logger.warn({ dropped }, '[PortQueue] pending jobs dropped');
+    if (dropped > 0) this.logger.warn(`[PortQueue] pending jobs dropped: ${dropped}`);
     return dropped;
   }
 

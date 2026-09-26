@@ -87,13 +87,20 @@ manager.addTask({
 **Expected result**:
 
 ```bash
-[10:00:00] INFO: [Polling Manager] Task added -> main-sensor-poll
-[10:00:00] DEBUG: [Task][taskId:main-sensor-poll] TaskController created
-[10:00:00] DEBUG: [Task][taskId:main-sensor-poll] Task started
+2026-09-25 10:00:00.417 DEBUG manager:Task {
+  id: 'main-sensor-poll',
+  priority: 10,
+  interval: 1000,
+  maxRetries: 3,
+  backoffDelay: 1000,
+  taskTimeout: 5000
+} TaskController created
+2026-09-25 10:00:00.418 INFO manager Task added -> main-sensor-poll
+2026-09-25 10:00:00.418 DEBUG manager:Task Task started
 >>> Task started
 >>> Preparing for request...
-[10:00:00] INFO: [ModbusClient][ID:1] Response received slaveId=1 funcCode=3 50ms
-[10:00:00] INFO: [ModbusClient][ID:1] Response received slaveId=1 funcCode=3 25ms
+2026-09-25 10:00:01.221 INFO ModbusClient [ID:1][FC:3] Response received +50ms
+2026-09-25 10:00:01.246 INFO ModbusClient [ID:1][FC:3] Response received +25ms
 >>> Raw data received: [[123, 456], [1]]
 >>> Cycle completed successfully: [[123, 456], [1]]
 >>> Iteration completed. Success: true
@@ -121,10 +128,12 @@ await manager.updateTask('main-sensor-poll', {
 **Expected result**:
 
 ```bash
-[10:05:00] INFO: [Task][taskId:main-sensor-poll] Task stopped
-[10:05:00] INFO: [Polling Manager] Task removed
-[10:05:00] INFO: [Polling Manager] Task added -> main-sensor-poll
-[10:05:00] DEBUG: [Task][taskId:main-sensor-poll] Task started
+2026-09-25 10:05:00.612 INFO manager:Task Task stopped
+2026-09-25 10:05:00.613 INFO manager {
+  id: 'main-sensor-poll'
+} Task removed
+2026-09-25 10:05:00.614 INFO manager Task added -> main-sensor-poll
+2026-09-25 10:05:00.615 DEBUG manager:Task Task started
 ```
 
 > Because the task was running, `updateTask` restarts it after the update (`Task stopped` →
@@ -143,8 +152,10 @@ manager.removeTask('main-sensor-poll');
 **Expected result**:
 
 ```bash
-[10:10:00] INFO: [Task][taskId:main-sensor-poll] Task stopped
-[10:10:00] INFO: [Polling Manager] Task removed
+2026-09-25 10:10:00.710 INFO manager:Task Task stopped
+2026-09-25 10:10:00.711 INFO manager {
+  id: 'main-sensor-poll'
+} Task removed
 ```
 
 ---
@@ -161,8 +172,8 @@ manager.resumeTask('main-sensor-poll');
 **Expected result**:
 
 ```bash
-[10:15:00] INFO: [Task][taskId:main-sensor-poll] Task paused
-[10:15:05] INFO: [Task][taskId:main-sensor-poll] Task resumed
+2026-09-25 10:15:00.308 INFO manager:Task Task paused
+2026-09-25 10:15:05.121 INFO manager:Task Task resumed
 ```
 
 ---
@@ -178,8 +189,8 @@ manager.restartTask('main-sensor-poll');
 **Expected result**:
 
 ```bash
-[10:20:00] INFO: [Task][taskId:main-sensor-poll] Task stopped
-[10:20:00] DEBUG: [Task][taskId:main-sensor-poll] Task started
+2026-09-25 10:20:00.422 INFO manager:Task Task stopped
+2026-09-25 10:20:00.424 DEBUG manager:Task Task started
 ```
 
 ---
@@ -195,7 +206,7 @@ manager.setTaskInterval('main-sensor-poll', 1000);
 **Expected result**:
 
 ```bash
-[10:25:00] INFO: [Task][taskId:main-sensor-poll] Interval updated
+2026-09-25 10:25:00.517 INFO manager:Task Interval updated
 ```
 
 ---
@@ -213,7 +224,7 @@ const result = await manager.executeImmediate(async () => {
 **Expected result**:
 
 ```bash
-[10:30:00] INFO: [ModbusClient][ID:1] Response received slaveId=1 funcCode=6 40ms
+2026-09-25 10:30:00.611 INFO ModbusClient [ID:1][FC:6] Response received +40ms
 ```
 
 ---
@@ -275,9 +286,9 @@ manager.clearAll();
 **Expected result**:
 
 ```bash
-[10:40:00] INFO: [Polling Manager] Clearing all tasks
-[10:40:00] INFO: [Task][taskId:main-sensor-poll] Task stopped
-[10:40:00] INFO: [Polling Manager] All tasks cleared
+2026-09-25 10:40:00.702 INFO manager Clearing all tasks
+2026-09-25 10:40:00.703 INFO manager:Task Task stopped
+2026-09-25 10:40:00.704 INFO manager All tasks cleared
 ```
 
 ---

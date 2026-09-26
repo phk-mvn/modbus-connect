@@ -71,8 +71,8 @@ await controller.addTransport('SIM_TCP', 'tcp-emulator', {
 **Expected result**:
 
 ```bash
-[10:00:00] INFO: [ModbusSlaveCore] ModbusSlaveCore initialized successfully (Slave ID: 122)
-[10:00:00] INFO: [Transport Controller] Transport "SIM_RTU" added with PollingManager
+2026-09-25 10:00:00.104 INFO ModbusSlaveCore ModbusSlaveCore initialized successfully (Slave ID: 122)
+2026-09-25 10:00:00.105 INFO Transport Controller Transport "SIM_RTU" added with PollingManager
 ```
 
 ---
@@ -107,7 +107,7 @@ core.addRegisters({
 **Expected result**:
 
 ```bash
-[10:05:00] INFO: [ModbusSlaveCore] Registers added successfully: {"coils":2,"discrete":1,"holding":2,"input":1}
+2026-09-25 10:05:00.221 INFO ModbusSlaveCore Registers added successfully: {"coils":2,"discrete":1,"holding":2,"input":1}
 ```
 
 ---
@@ -174,9 +174,9 @@ core.infinityChange({
 **Expected result**:
 
 ```bash
-[10:10:00] INFO: [ModbusSlaveCore] Infinity change started for Holding[0] (interval: 1000ms)
-[10:10:01] DEBUG: [ModbusSlaveCore] Infinity change: Holding[0] = 142
-[10:10:02] DEBUG: [ModbusSlaveCore] Infinity change: Holding[0] = 187
+2026-09-25 10:10:00.512 INFO ModbusSlaveCore Infinity change started for Holding[0] (interval: 1000ms)
+2026-09-25 10:10:01.523 DEBUG ModbusSlaveCore Infinity change: Holding[0] = 142
+2026-09-25 10:10:02.531 DEBUG ModbusSlaveCore Infinity change: Holding[0] = 187
 ```
 
 ---
@@ -195,7 +195,7 @@ core.stopInfinityChange({
 **Expected result**:
 
 ```bash
-[10:15:00] DEBUG: [ModbusSlaveCore] Infinity change stopped for Holding:0
+2026-09-25 10:15:00.098 DEBUG ModbusSlaveCore Infinity change stopped for Holding:0
 ```
 
 ---
@@ -218,8 +218,8 @@ core.setException(0x03, 10, 0x02);
 **Expected result (when requested by the client)**:
 
 ```bash
-[10:20:00] INFO: [ModbusSlaveCore] Exception set: functionCode=0x3, address=10, exceptionCode=0x2
-[10:20:00] WARN: [ModbusSlaveCore] Throwing exception for function 0x3 at address 10: code 0x2
+2026-09-25 10:20:00.118 INFO ModbusSlaveCore Exception set: functionCode=0x3, address=10, exceptionCode=0x2
+2026-09-25 10:20:00.118 WARN ModbusSlaveCore [FC:0x3] Throwing exception for function 0x3 at address 10: code 0x2
 ```
 
 ---
@@ -235,7 +235,7 @@ core.clearAll();
 **Expected result**:
 
 ```bash
-[10:25:00] INFO: [ModbusSlaveCore] All registers, exceptions and infinity tasks cleared
+2026-09-25 10:25:00.402 INFO ModbusSlaveCore All registers, exceptions and infinity tasks cleared
 ```
 
 ---
@@ -286,10 +286,12 @@ startSystem();
 **Expected result**:
 
 ```bash
-[12:00:00] INFO: [ModbusSlaveCore] ModbusSlaveCore initialized successfully (Slave ID: 10)
-[12:00:00] INFO: [RTU Emulator] RTU Emulator connected
-[12:00:00] INFO: [ModbusSlaveCore] Infinity change started for Holding[1] (interval: 1000ms)
-[12:00:00] INFO: [Polling Manager] Task added -> poll-emulator
-[12:00:02] INFO: [ModbusClient][ID:10] Response received slaveId=10 funcCode=3 22ms
+2026-09-25 12:00:00.089 INFO ModbusSlaveCore ModbusSlaveCore initialized successfully (Slave ID: 10)
+2026-09-25 12:00:00.317 INFO RTU Emulator RTU Emulator connected
+2026-09-25 12:00:00.318 INFO Transport Controller Transport "SIM_RTU" connected
+2026-09-25 12:00:00.401 INFO ModbusSlaveCore Infinity change started for Holding[1] (interval: 1000ms)
+2026-09-25 12:00:00.402 INFO Transport Controller [SIM_RTU][rtu][ID:10] Client 'client-1' created
+2026-09-25 12:00:00.451 INFO manager Task added -> poll-emulator
+2026-09-25 12:00:02.318 INFO ModbusClient [ID:10][FC:3] Response received +22ms
 Value from the emulator: [34]
 ```
