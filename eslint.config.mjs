@@ -38,7 +38,7 @@ export default tseslint.config(
     rules: {
       // Strict TS rules (error on types/unused)
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-      '@typescript-eslint/no-explicit-any': 'warn', // fix types
+      '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/require-await': 'off', // Async without await is ok
       'no-console': 'off', // Console warning in Node
       'prettier/prettier': 'error', // Prettier violations as errors

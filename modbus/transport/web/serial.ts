@@ -127,6 +127,7 @@ export default class WebSerialTransport implements ITransport {
       maxReconnectAttempts: Infinity,
       maxEmptyReadsBeforeReconnect: 10,
       RSMode: options.RSMode || 'RS485',
+      fallbacks: options.fallbacks ?? [],
       ...options,
     };
 
@@ -722,7 +723,7 @@ export default class WebSerialTransport implements ITransport {
     const start = Date.now();
 
     try {
-      return new Promise<Uint8Array>((resolve, reject) => {
+      return await new Promise<Uint8Array>((resolve, reject) => {
         const check = () => {
           if (!this.isOpen) {
             return reject(new WebSerialReadError('Port is closed'));

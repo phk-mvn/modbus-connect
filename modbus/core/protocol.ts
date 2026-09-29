@@ -4,6 +4,7 @@ import * as utils from '../utils/buffer.js';
 import * as framer from '../protocol/framing.js';
 import { IModbusProtocol } from '../types/internal.js';
 import { ITransport } from '../types/public.js';
+import { ModbusCRCError, ModbusTimeoutError, toErrorMessage } from './errors.js';
 
 export type TProtocolLogger = {
   debug: (obj: Record<string, unknown>, msg?: string) => void;
@@ -59,7 +60,7 @@ export class ModbusProtocol implements IModbusProtocol {
    *
    * @throws ModbusCRCError if CRC check fails and enough data was received
    * @throws ModbusResponseError for malformed or incomplete responses
-   * @throws Error with timeout message if the operation exceeds the timeout
+   * @throws ModbusTimeoutError if the operation exceeds the timeout
    */
   public async exchange(
     unitId: number,
@@ -93,7 +94,9 @@ export class ModbusProtocol implements IModbusProtocol {
     while (true) {
       const elapsed = Date.now() - startTime;
       if (elapsed >= timeout) {
-        throw new Error(`Response timeout after ${elapsed}ms. Buffer: ${utils.toHex(buffer)}`);
+        throw new ModbusTimeoutError(
+          `Response timeout after ${elapsed}ms. Buffer: ${utils.toHex(buffer)}`
+        );
       }
 
       expectedLen = this._resolveExpectedLength(
@@ -154,8 +157,8 @@ export class ModbusProtocol implements IModbusProtocol {
           }
 
           return parsed.pdu;
-        } catch (err: any) {
-          const errMsg = err.message || String(err);
+        } catch (err: unknown) {
+          const errMsg = toErrorMessage(err);
 
           if (errMsg.includes('short')) continue;
 
@@ -164,7 +167,7 @@ export class ModbusProtocol implements IModbusProtocol {
             continue;
           }
 
-          if (errMsg.includes('CRC mismatch')) {
+          if (err instanceof ModbusCRCError || errMsg.includes('CRC mismatch')) {
             if (this.minLen === 4) {
               // Garbage/echo before the actual frame: looking for the frame (CRC + unitId) inside the already
               // received bytes, without waiting for new ones — otherwise the exchange dies silently on timeout.

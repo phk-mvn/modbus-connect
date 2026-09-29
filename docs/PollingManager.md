@@ -48,6 +48,7 @@ manager.addTask({
   id: 'main-sensor-poll',
   name: 'Temperature sensor query',
   clientId: 'flow-meter', // Task owner: removeClient() stops and removes it automatically
+  slaveId: 1, // Optional: Modbus slave ID for device-level concurrency selection
   priority: 10, // High priority (0 - low)
   interval: 2000, // Every 2 seconds
   fn: [
@@ -108,6 +109,33 @@ manager.addTask({
 
 > `fn` is an array of two reads, so two `Response received` lines appear per cycle. Both `onData` and
 > `onSuccess` receive the full `results` array — one entry per `fn` (that is why both print the same).
+
+### Polling with Device Schema (`schema.read()`)
+
+If you configure a declarative device schema via `client.withSchema()`, `PollingManager` requires no special plugins or modifications. Simply call `await schema.read()` inside `fn`:
+
+```js
+const schema = client.withSchema({
+  name: 'SensorDevice',
+  fields: {
+    temperature: { address: 0, type: 'uint16' },
+    metrics: {
+      address: 1,
+      table: 'holding',
+      group: {
+        pressure: { offset: 0, type: 'float32' },
+      },
+    },
+  },
+});
+
+manager.addTask({
+  id: 'sensor-poll',
+  interval: 1000,
+  fn: async () => await schema.read(),
+  onData: ([telemetry]) => console.log('Telemetry:', telemetry),
+});
+```
 
 ---
 

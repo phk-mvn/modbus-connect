@@ -15,6 +15,7 @@ modbus-connect is a [cross-platform]() library for Modbus RTU/TCP communication 
 
 - **Isomorphism**: Works in Node.js and modern browsers
 - **Single serialization point (PortQueue)**: Background polling, manual commands and `writeToPort()` all go through one per-port queue — exchanges can never collide on the channel
+- **Declarative Device Schema**: High-level register mapping for single registers and contiguous register groups with single-PDU batch reads and atomic group writes (`client.withSchema()`)
 - **Polling Manager**: A queue of tasks with priorities, delays and exponential backoff
 - **Smart reconnect**: Automatic connection recovery for Serial and TCP/IP
 - **Emulator**: Full-fiedged TCP-slave and RTU-slave for testing without hardware

@@ -19,6 +19,7 @@ clients share one port. The client has no mutex of its own.
 - [Read Methods](#read-methods)
 - [RegisterData — Type Conversion & Sub-Selection](#registerdata--type-conversion--sub-selection)
 - [Write Methods](#write-methods)
+- [Declarative Device Schema (withSchema)](#declarative-device-schema-withschema)
 - [Service and diagnostic methods](#service-and-diagnostic-methods)
 - [Plugins and custom features](#plugins-and-custom-features)
 - [Getters](#getters)
@@ -329,6 +330,181 @@ console.log(res); // { startAddress: 10, quantity: 3 }
 
 ---
 
+### `writeFloat32(address, value, wordOrder?, timeout?)`
+
+Writes a 32-bit floating point number (IEEE 754 single precision) into 2 consecutive holding registers.
+Supports `'BE'` (default) or `'LE'` word order.
+
+```js
+await client.writeFloat32(10, 23.5); // Big-Endian
+await client.writeFloat32(12, 23.5, 'LE'); // Little-Endian (word-swapped)
+```
+
+---
+
+### `writeFloat64(address, value, wordOrder?, timeout?)`
+
+Writes a 64-bit floating point number (IEEE 754 double precision) into 4 consecutive holding registers.
+
+```js
+await client.writeFloat64(20, 123456.789);
+```
+
+---
+
+### `writeInt32(address, value, wordOrder?, timeout?)`
+
+Writes a signed 32-bit integer (−2147483648 … 2147483647) into 2 consecutive holding registers.
+
+```js
+await client.writeInt32(30, -50000);
+```
+
+---
+
+### `writeUInt32(address, value, wordOrder?, timeout?)`
+
+Writes an unsigned 32-bit integer (0 … 4294967295) into 2 consecutive holding registers.
+
+```js
+await client.writeUInt32(32, 100000);
+```
+
+---
+
+## Declarative Device Schema (`withSchema`)
+
+> `client.withSchema(definition)` binds a high-level, declarative device register map directly to the client.
+> It allows you to declare registers and groups using pure JavaScript/TypeScript objects, perform typed reads
+> (`schema.read()`), read individual groups in a single PDU (`schema.readGroup()`), write single values or
+> write entire register groups atomically (`schema.writeGroup()`).
+
+### Defining a Schema
+
+Schemas are defined using plain objects without any external helpers or DSL dependencies:
+
+```js
+const schema = client.withSchema({
+  name: 'PowerMeter',
+  fields: {
+    // 1. Single fields:
+    status: { address: 0x0001, type: 'uint16' },
+    relay: { address: 0x0000, type: 'boolean', table: 'coil' },
+    inputVal: { address: 0x0010, type: 'uint16', table: 'input' },
+
+    // 2. Contiguous register groups (read/written as a single contiguous Modbus PDU):
+    phaseA: {
+      address: 0x1000, // Starting base address of the group
+      table: 'holding', // Table for all group fields (defaults to 'holding')
+      group: {
+        voltage: { offset: 0, type: 'float32' }, // address 0x1000, 2 registers
+        current: { offset: 2, type: 'float32' }, // address 0x1002, 2 registers
+        power: { offset: 4, type: 'float32' }, // address 0x1004, 2 registers
+      },
+    },
+  },
+});
+```
+
+### Supported Field Types
+
+| Type        | Registers / Bits | Description                                                                                   |
+| ----------- | :--------------: | --------------------------------------------------------------------------------------------- |
+| `'uint16'`  |    1 register    | Unsigned 16-bit integer (0 … 65535)                                                           |
+| `'int16'`   |    1 register    | Signed 16-bit integer (−32768 … 32767)                                                        |
+| `'uint32'`  |   2 registers    | Unsigned 32-bit integer                                                                       |
+| `'int32'`   |   2 registers    | Signed 32-bit integer                                                                         |
+| `'float32'` |   2 registers    | IEEE 754 single precision float                                                               |
+| `'float64'` |   4 registers    | IEEE 754 double precision float                                                               |
+| `'boolean'` |      1 bit       | Single coil/discrete input, or single-register flag                                           |
+| `'bitmask'` |    1 register    | Unpacks single 16-bit register into `{ [key]: boolean }` flags via `bits: { flag: bitIndex }` |
+| `'string'`  |   N registers    | ASCII/UTF-8 string (length defined by `length`)                                               |
+
+### Reading with Schema
+
+#### Reading all fields (`schema.read()`)
+
+Reads all declared fields and groups. For each group, exactly **one** contiguous Modbus request is made for the entire block.
+
+```js
+const data = await schema.read();
+console.log(data);
+// Output:
+// {
+//   status: 1,
+//   relay: true,
+//   inputVal: 450,
+//   phaseA: { voltage: 220.0, current: 5.0, power: 1100.0 }
+// }
+```
+
+#### Reading a specific group (`schema.readGroup(groupKey)`)
+
+Reads only the specified group in a single network request:
+
+```js
+const phaseA = await schema.readGroup('phaseA');
+console.log(phaseA.voltage, phaseA.current);
+```
+
+#### Reading a subset of fields
+
+Pass an array of field/group keys to read:
+
+```js
+const subset = await schema.read(['status', 'phaseA']);
+```
+
+### Writing with Schema
+
+#### Writing single fields
+
+```js
+await schema.write('status', 1);
+```
+
+#### Writing inside a group with dot notation
+
+Targets a specific subfield inside a group without affecting the rest of the group:
+
+```js
+await schema.write('phaseA.voltage', 230.5);
+```
+
+#### Atomic Group Writes (`schema.writeGroup(groupKey, values)`)
+
+Writes all or partial subfields of a group **atomically in a single Modbus request** (`writeMultipleRegisters` FC 0x10 or `writeMultipleCoils` FC 0x0F):
+
+```js
+await schema.writeGroup('phaseA', {
+  voltage: 230.0,
+  current: 5.5,
+  power: 1265.0,
+});
+```
+
+_(If partial values are passed, the current block is read first to preserve unmentioned registers)._
+
+### Using Schema with PollingManager
+
+`PollingManager` remains completely transport-level and unchanged. You simply invoke `await schema.read()` inside the polling task's `fn`:
+
+```js
+controller.addPollingTask('RS485_BUS', {
+  id: 'poll-meter',
+  interval: 1000,
+  fn: async () => {
+    const data = await schema.read();
+    return data;
+  },
+  onData: data => {
+    console.log('Telemetry:', data[0]);
+  },
+});
+```
+
+---
+
 ## Service and diagnostic methods
 
 ### `reportSlaveId(timeout?)` (FC 0x11)
@@ -461,9 +637,9 @@ client.use(new MyManufacturerPlugin());
 
 ### Calling a custom function
 
-```js
-// Calling the function by the name specified in the plugin
-const hash = await client.executeCustomFunction('getFirmwareHash', 0x01);
+```ts
+// Calling the function by the name specified in the plugin (supports optional generic type for return value)
+const hash = await client.executeCustomFunction<string>('getFirmwareHash', 0x01);
 console.log('Firmware hash:', hash);
 ```
 

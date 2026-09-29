@@ -11,6 +11,7 @@
 - [Modbus Client API](#modbus-client-api)
   - [`IModbusClient`](#imodbusclient)
   - [`IModbusClientOptions`](#imodbusclientoptions)
+- [Device Schema API](#device-schema-api)
 - [Transport Layer](#transport-layer)
   - [`ITransportController`](#itransportcontroller)
   - [`ITransport`](#itransport-common-port-interface)
@@ -31,28 +32,33 @@
 
 The primary interface for high-level operations.
 
-| Method                                                | Description                                                                |
-| ----------------------------------------------------- | -------------------------------------------------------------------------- |
-| `use(plugin)`                                         | Registers a plugin that extends the client with custom function codes.     |
-| `readHoldingRegisters(start, qty)`                    | Reads holding registers (FC 0x03). Returns `Promise<RegisterData>`.        |
-| `readInputRegisters(start, qty)`                      | Reads input registers (FC 0x04). Returns `Promise<RegisterData>`.          |
-| `writeSingleRegister(addr, val, timeout?)`            | Write a single register (FC 0x06).                                         |
-| `writeMultipleRegisters(addr, vals, timeout?)`        | Write a group of registers (FC 0x10).                                      |
-| `readCoils(start, qty, timeout?)`                     | Reads coils (FC 0x01). Returns `boolean[]`.                                |
-| `readDiscreteInputs(start, qty, timeout?)`            | Reads discrete inputs (FC 0x02).                                           |
-| `writeSingleCoil(addr, val, timeout?)`                | Writes a single bit (FC 0x05).                                             |
-| `writeMultipleCoils(addr, vals, timeout?)`            | Writes a group of bits (FC 0x0F).                                          |
-| `reportSlaveId(timeout?)`                             | Reports the device ID (FC 0x11).                                           |
-| `readDeviceIdentification(decoder, timeout?)`         | Reads the device ID (FC 0x2B). `decoder`: `'windows-1251'` \| `'utf-8'`.   |
-| `executeCustomFunction(name, ...args)`                | Calls a plugin function.                                                   |
-| `setSlaveId(newId)`                                   | Changes the device address; managed clients go through `reassignClient()`. |
-| `rawExchange(pdu, timeout?, expectedLengthResolver?)` | Sends an arbitrary PDU, returns the raw response PDU.                      |
-| `connect() / disconnect()`                            | Logical state management. `disconnect()` also unregisters the client.      |
-| `currentSlaveId`                                      | Current slave address (getter).                                            |
-| `clientId`                                            | Roster id assigned by the controller (`undefined` for unmanaged clients).  |
-| `setDeviceStateHandler(handler)`                      | Registers this client's own device connection tracker callback.            |
-| `clearDeviceState()`                                  | Clears the client's device state (used by the controller on removal).      |
-| `enableLogger() / disableLogger()`                    | Logging control.                                                           |
+| Method                                                 | Description                                                                |
+| ------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `use(plugin)`                                          | Registers a plugin that extends the client with custom function codes.     |
+| `readHoldingRegisters(start, qty)`                     | Reads holding registers (FC 0x03). Returns `Promise<RegisterData>`.        |
+| `readInputRegisters(start, qty)`                       | Reads input registers (FC 0x04). Returns `Promise<RegisterData>`.          |
+| `writeSingleRegister(addr, val, timeout?)`             | Write a single register (FC 0x06).                                         |
+| `writeMultipleRegisters(addr, vals, timeout?)`         | Write a group of registers (FC 0x10).                                      |
+| `writeFloat32(addr, val, wordOrder?, timeout?)`        | Write a 32-bit float into 2 holding registers.                             |
+| `writeFloat64(addr, val, wordOrder?, timeout?)`        | Write a 64-bit float into 4 holding registers.                             |
+| `writeInt32(addr, val, wordOrder?, timeout?)`          | Write a signed 32-bit integer into 2 holding registers.                    |
+| `writeUInt32(addr, val, wordOrder?, timeout?)`         | Write an unsigned 32-bit integer into 2 holding registers.                 |
+| `readCoils(start, qty, timeout?)`                      | Reads coils (FC 0x01). Returns `boolean[]`.                                |
+| `readDiscreteInputs(start, qty, timeout?)`             | Reads discrete inputs (FC 0x02).                                           |
+| `writeSingleCoil(addr, val, timeout?)`                 | Writes a single bit (FC 0x05).                                             |
+| `writeMultipleCoils(addr, vals, timeout?)`             | Writes a group of bits (FC 0x0F).                                          |
+| `reportSlaveId(timeout?)`                              | Reports the device ID (FC 0x11).                                           |
+| `readDeviceIdentification(decoder, timeout?)`          | Reads the device ID (FC 0x2B). `decoder`: `'windows-1251'` \| `'utf-8'`.   |
+| `executeCustomFunction<TResult, TArgs>(name, ...args)` | Calls a registered plugin function with generic return type and arguments. |
+| `withSchema(definition)`                               | Binds a declarative device schema to the client. Returns `IBoundSchema`.   |
+| `setSlaveId(newId)`                                    | Changes the device address; managed clients go through `reassignClient()`. |
+| `rawExchange(pdu, timeout?, expectedLengthResolver?)`  | Sends an arbitrary PDU, returns the raw response PDU.                      |
+| `connect() / disconnect()`                             | Logical state management. `disconnect()` also unregisters the client.      |
+| `currentSlaveId`                                       | Current slave address (getter).                                            |
+| `clientId`                                             | Roster id assigned by the controller (`undefined` for unmanaged clients).  |
+| `setDeviceStateHandler(handler)`                       | Registers this client's own device connection tracker callback.            |
+| `clearDeviceState()`                                   | Clears the client's device state (used by the controller on removal).      |
+| `enableLogger() / disableLogger()`                     | Logging control.                                                           |
 
 ---
 
@@ -71,6 +77,142 @@ interface IModbusClientOptions {
   plugins?: TPluginConstructor[]; // List of plugin classes
 }
 ```
+
+---
+
+## Device Schema API
+
+> High-level, declarative register mapping for `ModbusClient`. Allows declaring single registers and
+> contiguous register blocks/groups, with automatic typing and single-request batching.
+
+### Schema Definition Types
+
+```ts
+type TSchemaTable = 'holding' | 'input' | 'coil' | 'discrete';
+type TSchemaFieldType =
+  | 'uint16'
+  | 'int16'
+  | 'uint32'
+  | 'int32'
+  | 'float32'
+  | 'float64'
+  | 'boolean'
+  | 'bitmask'
+  | 'string';
+
+type TSchemaWordOrder = 'BE' | 'LE';
+
+// Single field descriptor
+interface IBaseFieldDefinition<TType extends TSchemaFieldType = TSchemaFieldType> {
+  address: number;
+  type: TType;
+  table?: TSchemaTable; // Defaults to 'holding' (or 'coil' for booleans)
+  description?: string;
+}
+
+interface INumericFieldDefinition extends IBaseFieldDefinition<
+  'uint16' | 'int16' | 'uint32' | 'int32' | 'float32' | 'float64'
+> {
+  wordOrder?: TSchemaWordOrder;
+  unit?: string;
+}
+
+interface IBooleanFieldDefinition extends IBaseFieldDefinition<'boolean'> {
+  bit?: number; // 0..15 if stored inside a holding/input register
+}
+
+interface IBitmaskFieldDefinition<
+  TBits extends Record<string, number> = Record<string, number>,
+> extends IBaseFieldDefinition<'bitmask'> {
+  bits: TBits; // { flagName: bitIndex }
+}
+
+interface IStringFieldDefinition extends IBaseFieldDefinition<'string'> {
+  length: number; // Length in characters (2 per register)
+  encoding?: 'ascii' | 'utf-8';
+}
+
+type TSchemaField =
+  | INumericFieldDefinition
+  | IBooleanFieldDefinition
+  | IBitmaskFieldDefinition
+  | IStringFieldDefinition;
+
+// Group subfield descriptor (uses relative offset)
+interface IGroupSubFieldDefinition {
+  offset: number; // Register/bit offset from the group's base address
+  type: TSchemaFieldType;
+  wordOrder?: TSchemaWordOrder;
+  unit?: string;
+  description?: string;
+  length?: number;
+  bits?: Record<string, number>;
+  bit?: number;
+}
+
+type TGroupSubFields = Record<string, IGroupSubFieldDefinition>;
+
+// Contiguous register group
+interface ISchemaGroupDefinition<TGroup extends TGroupSubFields = TGroupSubFields> {
+  address: number; // Starting base address
+  table?: TSchemaTable; // Defaults to 'holding'
+  wordOrder?: TSchemaWordOrder;
+  description?: string;
+  group: TGroup;
+}
+
+type TSchemaEntry = TSchemaField | ISchemaGroupDefinition;
+type TSchemaFieldsDefinition = Record<string, TSchemaEntry>;
+
+interface ISchemaDefinition<TFields extends TSchemaFieldsDefinition = TSchemaFieldsDefinition> {
+  name?: string;
+  defaultWordOrder?: TSchemaWordOrder;
+  fields: TFields;
+}
+```
+
+### `IBoundSchema` (Client-bound Schema Interface)
+
+Returned by `client.withSchema(definition)`:
+
+```ts
+interface IBoundSchema<TFields extends TSchemaFieldsDefinition = TSchemaFieldsDefinition> {
+  readonly client: IModbusClient;
+  readonly definition: ISchemaDefinition<TFields>;
+
+  // Reads all or selected fields/groups:
+  read<K extends keyof TFields = keyof TFields>(
+    fields?: K[]
+  ): Promise<{ [P in K]: InferSchemaEntry<TFields[P]> }>;
+
+  // Reads a single group of registers in 1 Modbus request:
+  readGroup<K extends keyof TFields>(groupKey: K): Promise<InferSchemaEntry<TFields[K]>>;
+
+  // Writes a field, whole group, or dot-notation subfield ('group.subField'):
+  write(key: string, value: unknown): Promise<void>;
+
+  // Writes a whole group atomically in 1 request (FC 0x10):
+  writeGroup<K extends keyof TFields>(
+    groupKey: K,
+    values: Partial<InferSchemaEntry<TFields[K]>>
+  ): Promise<void>;
+}
+```
+
+### Buffer conversion utilities
+
+Exported from `modbus-connect/types` and `modbus/utils/buffer.ts`:
+
+| Function                               | Parameters                              |              Returns               | Description                                      |
+| -------------------------------------- | --------------------------------------- | :--------------------------------: | ------------------------------------------------ |
+| `float32ToRegisters(val, wordOrder?)`  | `val: number, wordOrder?: 'BE' \| 'LE'` |         `[number, number]`         | Converts float32 to two 16-bit registers         |
+| `registersToFloat32(regs, wordOrder?)` | `regs: [number, number], wordOrder?`    |              `number`              | Converts two 16-bit registers to float32         |
+| `float64ToRegisters(val, wordOrder?)`  | `val: number, wordOrder?: 'BE' \| 'LE'` | `[number, number, number, number]` | Converts float64 to four 16-bit registers        |
+| `registersToFloat64(regs, wordOrder?)` | `regs: number[], wordOrder?`            |              `number`              | Converts four 16-bit registers to float64        |
+| `int32ToRegisters(val, wordOrder?)`    | `val: number, wordOrder?: 'BE' \| 'LE'` |         `[number, number]`         | Converts signed int32 to two 16-bit registers    |
+| `registersToInt32(regs, wordOrder?)`   | `regs: [number, number], wordOrder?`    |              `number`              | Converts two 16-bit registers to signed int32    |
+| `uint32ToRegisters(val, wordOrder?)`   | `val: number, wordOrder?: 'BE' \| 'LE'` |         `[number, number]`         | Converts unsigned int32 to two 16-bit registers  |
+| `registersToUInt32(regs, wordOrder?)`  | `regs: [number, number], wordOrder?`    |              `number`              | Converts two 16-bit registers to unsigned uint32 |
 
 ---
 
@@ -105,6 +247,9 @@ Central manager of all connections.
 Any transport (Serial, TCP, WebSerial) must implement these:
 
 - `readonly isOpen: boolean` — Physical port open state.
+- `readonly path?: string` — Serial port path (if serial transport).
+- `readonly host?: string` — Remote TCP host (if network transport).
+- `readonly port?: number` — Remote TCP port (if network transport).
 - `connect()` / `disconnect()` — Open / close the physical port. **Async**.
 - `write(buffer)` — Send bytes.
 - `read(length, timeout)` — Read bytes.
@@ -112,8 +257,9 @@ Any transport (Serial, TCP, WebSerial) must implement these:
 - `getRSMode()` — Returns the current operating mode.
 - `setDeviceStateHandler(handler)` / `setPortStateHandler(handler)` — Wire state trackers into the transport.
 - `enableDeviceTracking(handler?)` / `disableDeviceTracking()` — Per-slave connection tracking for transports that have it.
+- `removeConnectedDevice?(slaveId)` — Remove slave device from transport tracking roster.
 - `notifyDeviceConnected?(slaveId)` / `notifyDeviceDisconnected?(slaveId, errorType, errorMessage?)` — Optional internal device notifications.
-- `setSniffer(sniffer)` — Attach a traffic sniffer.
+- `setSniffer(sniffer: ITrafficSniffer | null)` — Attach or detach a traffic sniffer.
 
 > **Note:** `EConnectionErrorType` and the handler signatures (`TDeviceStateHandler`, `TPortStateHandler`) are shared by all state-tracker APIs — see [Connection Trackers](#connection-trackers-state-tracking).
 
@@ -142,7 +288,10 @@ type TTransportType = 'node-rtu' | 'node-tcp' | 'web-rtu' | 'rtu-emulator' | 'tc
 type TRSMode = 'RS485' | 'RS232' | 'TCP/IP';
 type TParityType = 'none' | 'even' | 'mark' | 'odd' | 'space';
 type TModbusProtocolType = 'rtu' | 'tcp';
-type TPluginConstructor = new (...args: any[]) => IModbusPlugin;
+type TModbusPrimitive = number | boolean | string | Uint8Array | number[];
+type TPluginConstructor = new (
+  ...args: (Record<string, unknown> | number | string | boolean | undefined)[]
+) => IModbusPlugin;
 ```
 
 ### `ITransportInfo` and `ITransportStatus`
@@ -261,10 +410,11 @@ interface IClientContext {
 
 **`node-rtu` transport options** added by the refactoring:
 
-| Option              | Type      | Description                                                                                                                                    |
-| ------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `interFrameDelayMs` | `number`  | Minimum bus silence (ms) after the last received byte before the next request. Default `0` (off): the queue already leaves 3.6–7 ms naturally. |
-| `exclusiveLock`     | `boolean` | Exclusive port access via a pid lock file (default `true`). A second process gets a clear error instead of corrupting frames.                  |
+| Option              | Type       | Description                                                                                                                                    |
+| ------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `interFrameDelayMs` | `number`   | Minimum bus silence (ms) after the last received byte before the next request. Default `0` (off): the queue already leaves 3.6–7 ms naturally. |
+| `exclusiveLock`     | `boolean`  | Exclusive port access via a pid lock file (default `true`). A second process gets a clear error instead of corrupting frames.                  |
+| `fallbacks`         | `string[]` | Alternative port paths to attempt if opening the primary port fails. Default `[]`.                                                             |
 
 ---
 
@@ -289,6 +439,7 @@ interface IPollingManagerConfig {
 ```ts
 interface IPollingTaskOptions {
   id: string; // Unique task ID
+  slaveId?: number; // Device slave address associated with this task
   clientId?: string; // Owner (from createClient()); tasks are auto-stopped and removed with their client
   name?: string; // Human-readable task name
   priority?: number; // Priority (the higher the priority, the earlier in the queue)

@@ -6,7 +6,8 @@ import { Logger, type ILogObj } from 'tslog';
 import { createTsLogger } from '../../utils/logger.js';
 
 import {
-  NodeSerialWriteError,
+  NodeTcpWriteError,
+  NodeTcpReadError,
   ModbusTimeoutError,
   ModbusDataConversionError,
 } from '../../core/errors.js';
@@ -39,8 +40,8 @@ export default class NodeTcpTransport implements ITransport {
   public isOpen: boolean = false;
   public logger: Logger<ILogObj>;
 
-  private host: string;
-  private port: number;
+  public readonly host: string;
+  public readonly port: number;
   private options: Required<INodeTcpTransportOptions>;
   private socket: net.Socket | null = null;
 
@@ -386,21 +387,21 @@ export default class NodeTcpTransport implements ITransport {
    *
    * @param buffer - Data to be sent.
    * @returns Promise resolving when write completes.
-   * @throws {NodeSerialWriteError} If the socket is closed or writing fails.
+   * @throws {NodeTcpWriteError} If the socket is closed or writing fails.
    */
   public async write(buffer: Uint8Array): Promise<void> {
-    if (!this.isOpen || !this.socket) throw new NodeSerialWriteError('Socket is closed');
+    if (!this.isOpen || !this.socket) throw new NodeTcpWriteError('Socket is closed');
 
     const release = await this._operationMutex.acquire();
     try {
-      return new Promise((resolve, reject) => {
+      return await new Promise<void>((resolve, reject) => {
         if (this._sniffer) {
           this._sniffer.recordTx(`${this.host}:${this.port}`, buffer, 'tcp');
           this._waitingForResponse = true;
         }
 
         this.socket!.write(Buffer.from(buffer), err => {
-          if (err) reject(new NodeSerialWriteError(err.message));
+          if (err) reject(new NodeTcpWriteError(err.message));
           else resolve();
         });
       });
@@ -417,7 +418,7 @@ export default class NodeTcpTransport implements ITransport {
    * @param timeout - Maximum time to wait for data in milliseconds (defaults to transport options).
    * @returns A promise resolving to the Uint8Array data.
    * @throws {ModbusDataConversionError} If length is not positive.
-   * @throws {Error} If transport closes during read.
+   * @throws {NodeTcpReadError} If transport closes during read.
    * @throws {ModbusTimeoutError} If data is not received within the specified time.
    */
   public async read(
@@ -429,9 +430,9 @@ export default class NodeTcpTransport implements ITransport {
     const start = Date.now();
 
     try {
-      return new Promise((resolve, reject) => {
+      return await new Promise<Uint8Array>((resolve, reject) => {
         const check = () => {
-          if (!this.isOpen) return reject(new Error('Transport closed during read'));
+          if (!this.isOpen) return reject(new NodeTcpReadError('Transport closed during read'));
 
           if (this._readBufferCount >= length) {
             let result: Uint8Array;

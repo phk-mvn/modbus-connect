@@ -1,6 +1,6 @@
 {
   "name": "modbus-connect",
-  "version": "5.0.2",
+  "version": "5.0.4",
   "description": "Modbus RTU/TCP over Web Serial",
   "main": "./dist/transport/controller/index.js",
   "module": "./dist/transport/controller/index.js",

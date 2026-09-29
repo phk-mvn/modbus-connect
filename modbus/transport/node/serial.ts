@@ -57,7 +57,7 @@ export default class NodeSerialTransport implements ITransport {
   public isOpen: boolean = false;
   public logger: Logger<ILogObj>;
 
-  private path: string;
+  public readonly path: string;
   private options: Required<INodeSerialTransportOptions>;
   private port: SerialPort | null = null;
 
@@ -123,6 +123,7 @@ export default class NodeSerialTransport implements ITransport {
       RSMode: options.RSMode || 'RS485',
       interFrameDelayMs: options.interFrameDelayMs ?? 0,
       exclusiveLock: options.exclusiveLock ?? true,
+      fallbacks: options.fallbacks ?? [],
     };
 
     this._readBuffer = new Uint8Array(this.options.maxBufferSize);
@@ -205,7 +206,7 @@ export default class NodeSerialTransport implements ITransport {
         this._resolveConnection = null;
         this._rejectConnection = null;
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       const error = err instanceof Error ? err : new NodeSerialTransportError(String(err));
       this.logger.info(`Failed to open serial port ${this.path}: ${error.message}`);
       this.isOpen = false;
@@ -602,7 +603,7 @@ export default class NodeSerialTransport implements ITransport {
     const release = await this._operationMutex.acquire();
     try {
       await this._waitForBusSilence();
-      return new Promise<void>((resolve, reject) => {
+      return await new Promise<void>((resolve, reject) => {
         if (this._sniffer) {
           this._sniffer?.recordTx(this.path, buffer, 'rtu');
           this._waitingForResponse = true;
@@ -675,7 +676,7 @@ export default class NodeSerialTransport implements ITransport {
     const start = Date.now();
 
     try {
-      return new Promise((resolve, reject) => {
+      return await new Promise<Uint8Array>((resolve, reject) => {
         const check = () => {
           if (!this.isOpen || !this.port || !this.port?.isOpen) {
             return reject(new NodeSerialReadError('Port is closed'));

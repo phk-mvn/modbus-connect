@@ -125,7 +125,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
           );
           throw new ModbusExceptionError(functionCode, 0x01); // Illegal Function
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof ModbusExceptionError) {
         // Return Exception Response: functionCode | 0x80 + exception code
         return new Uint8Array([functionCode | 0x80, err.exceptionCode]);
@@ -696,7 +696,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
       }
 
       this.logger.info(`Registers added successfully: ${JSON.stringify(stats)}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       this.logger.error(err, 'Failed to add registers');
       throw err;
     }
@@ -759,7 +759,7 @@ class ModbusSlaveCore implements IModbusSlaveCoreEmulator {
 
         setter(register, value);
         this.logger.debug(`Infinity change: ${typeRegister}[${register}] = ${value}`);
-      } catch (err: any) {
+      } catch (err: unknown) {
         this.logger.error(err, `Error in infinity change task for ${typeRegister}[${register}]`);
       }
     }, interval);

@@ -2,7 +2,7 @@
 
 import { type Logger, type ILogObj } from 'tslog';
 import { IPollingTaskOptions, IPollingTaskState, ITaskController } from '../types/public.js';
-import { ModbusTimeoutError, PollingManagerError } from '../core/errors.js';
+import { ModbusTimeoutError, PollingManagerError, toErrorMessage } from '../core/errors.js';
 import { RetryAbortedError, defaultRetryDelay, runWithRetries } from '../utils/retry.js';
 
 /**
@@ -12,6 +12,7 @@ import { RetryAbortedError, defaultRetryDelay, runWithRetries } from '../utils/r
  */
 export class TaskController implements ITaskController {
   public id: string;
+  public slaveId?: number;
   public priority: number;
   public name: string | null;
   public fn: Array<(signal?: AbortSignal) => unknown | Promise<unknown>>;
@@ -70,6 +71,7 @@ export class TaskController implements ITaskController {
   constructor(options: IPollingTaskOptions, logger: Logger<ILogObj>) {
     const {
       id,
+      slaveId,
       priority = 0,
       interval,
       fn,
@@ -90,6 +92,7 @@ export class TaskController implements ITaskController {
     } = options;
 
     this.id = id;
+    this.slaveId = slaveId;
     this.priority = priority;
     this.name = name;
     this.fn = Array.isArray(fn) ? fn : [fn];
@@ -320,7 +323,7 @@ export class TaskController implements ITaskController {
       this.onFinish?.(overallSuccess, results);
     } catch (err: unknown) {
       if (!this.stopped && !this.paused) {
-        this.logger.error({ id: this.id, error: (err as any).message }, 'Fatal error in task');
+        this.logger.error({ id: this.id, error: toErrorMessage(err) }, 'Fatal error in task');
       }
     } finally {
       this.executionInProgress = false;

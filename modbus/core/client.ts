@@ -10,6 +10,12 @@ import RegisterData from './register-data.js';
 import { DeviceConnectionTracker } from '../transport/trackers/device-tracker.js';
 import { runWithRetries } from '../utils/retry.js';
 import {
+  float32ToRegisters,
+  float64ToRegisters,
+  int32ToRegisters,
+  uint32ToRegisters,
+} from '../utils/buffer.js';
+import {
   EConnectionErrorType,
   ICustomFunctionHandler,
   IModbusClient,
@@ -21,8 +27,13 @@ import {
   ITransportController,
   TDeviceStateHandler,
   TModbusClientLogLevel,
+  TModbusPrimitive,
   TRSMode,
+  IBoundSchema,
+  ISchemaDefinition,
+  TSchemaFieldsDefinition,
 } from '../types/public.js';
+import { createBoundSchema } from '../schema/index.js';
 import {
   ModbusCRCError,
   ModbusExceptionError,
@@ -37,6 +48,7 @@ import {
   ModbusQueueOverflowError,
   ModbusReentrancyError,
   ModbusScanActiveError,
+  toErrorMessage,
 } from '../core/errors.js';
 
 /** Queue priority of manual client requests (lower number runs earlier). */
@@ -215,7 +227,6 @@ class ModbusClient implements IModbusClient {
   public applySlaveId(newSlaveId: number): void {
     const old = this.slaveId;
     this.slaveId = newSlaveId;
-    // The previous slave's connection state does not belong to this client any more.
     void this._deviceTracker.removeState(old);
   }
 
@@ -321,7 +332,10 @@ class ModbusClient implements IModbusClient {
    * @param args - Arguments to pass to the custom function
    * @returns The result of the custom function
    */
-  public async executeCustomFunction(functionName: string, ...args: any[]): Promise<any> {
+  public async executeCustomFunction<
+    TResult = Uint8Array,
+    TArgs extends TModbusPrimitive[] = TModbusPrimitive[],
+  >(functionName: string, ...args: TArgs): Promise<TResult> {
     const handler = this._customFunctions.get(functionName);
     if (!handler)
       throw new Error(
@@ -334,7 +348,7 @@ class ModbusClient implements IModbusClient {
           handler.getExpectedResponseLength!(partialPdu, reqPdu)
       : undefined;
 
-    return await this._sendRequestAndParse(
+    return (await this._sendRequestAndParse(
       requestPdu,
       responsePdu => {
         if (!responsePdu) return handler.parseResponse(new Uint8Array(0));
@@ -342,7 +356,7 @@ class ModbusClient implements IModbusClient {
       },
       this.defaultTimeout,
       expectedLengthResolver
-    );
+    )) as TResult;
   }
 
   /**
@@ -591,7 +605,7 @@ class ModbusClient implements IModbusClient {
         // The client owns its device tracker: connection quality to its slave is judged here.
         onAttemptFailed: (error, attemptNumber) => {
           this.logger.warn(
-            `${formatMetaTags({ slaveId, funcCode, attempt: attemptNumber })}${(error as any).message} Attempt failed`
+            `${formatMetaTags({ slaveId, funcCode, attempt: attemptNumber })}${toErrorMessage(error)} Attempt failed`
           );
 
           if (error instanceof ModbusExceptionError) return;
@@ -771,6 +785,82 @@ class ModbusClient implements IModbusClient {
   }
 
   /**
+   * Writes a 32-bit floating point number (IEEE 754 single precision) into 2 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Floating point number to write.
+   * @param wordOrder - Word order: 'BE' (high word first) or 'LE' (low word first). Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  public async writeFloat32(
+    address: number,
+    value: number,
+    wordOrder: 'BE' | 'LE' = 'BE',
+    timeout?: number
+  ): Promise<void> {
+    const regs = float32ToRegisters(value, wordOrder);
+    await this.writeMultipleRegisters(address, regs, timeout);
+  }
+
+  /**
+   * Writes a 64-bit floating point number (IEEE 754 double precision) into 4 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Double precision floating point number to write.
+   * @param wordOrder - Word order: 'BE' or 'LE'. Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  public async writeFloat64(
+    address: number,
+    value: number,
+    wordOrder: 'BE' | 'LE' = 'BE',
+    timeout?: number
+  ): Promise<void> {
+    const regs = float64ToRegisters(value, wordOrder);
+    await this.writeMultipleRegisters(address, regs, timeout);
+  }
+
+  /**
+   * Writes a signed 32-bit integer into 2 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Signed 32-bit integer.
+   * @param wordOrder - Word order: 'BE' or 'LE'. Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  public async writeInt32(
+    address: number,
+    value: number,
+    wordOrder: 'BE' | 'LE' = 'BE',
+    timeout?: number
+  ): Promise<void> {
+    const regs = int32ToRegisters(value, wordOrder);
+    await this.writeMultipleRegisters(address, regs, timeout);
+  }
+
+  /**
+   * Writes an unsigned 32-bit integer into 2 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Unsigned 32-bit integer.
+   * @param wordOrder - Word order: 'BE' or 'LE'. Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  public async writeUInt32(
+    address: number,
+    value: number,
+    wordOrder: 'BE' | 'LE' = 'BE',
+    timeout?: number
+  ): Promise<void> {
+    const regs = uint32ToRegisters(value, wordOrder);
+    await this.writeMultipleRegisters(address, regs, timeout);
+  }
+
+  /**
    * Reads multiple coils (Function Code 0x01).
    * @param startAddress - Starting coil address (0-65535)
    * @param quantity - Number of coils to read (1-2000)
@@ -933,7 +1023,7 @@ class ModbusClient implements IModbusClient {
             getDelayMs: () => 100,
             onAttemptFailed: (error, attemptNumber) =>
               this.logger.warn(
-                `${formatMetaTags({ slaveId: this.slaveId, funcCode: pdu[0], attempt: attemptNumber })}${(error as Error).message} Identification read failed, retrying`
+                `${formatMetaTags({ slaveId: this.slaveId, funcCode: pdu[0], attempt: attemptNumber })}${toErrorMessage(error)} Identification read failed, retrying`
               ),
           });
 
@@ -951,7 +1041,7 @@ class ModbusClient implements IModbusClient {
 
       for (const [key, value] of Object.entries(rawResponse.objects)) {
         const id = parseInt(key, 10);
-        const bytes = value instanceof Uint8Array ? value : new Uint8Array(value as any);
+        const bytes = value;
         try {
           formattedObjects[id] = decodeText.decode(bytes).replace(/\0/g, '').trim();
         } catch {
@@ -967,6 +1057,18 @@ class ModbusClient implements IModbusClient {
     };
     this._logParsedResponse(this.slaveId, pdu[0] ?? 0, Date.now() - startTime);
     return response;
+  }
+
+  /**
+   * Binds a declarative device schema to this client, returning a typed schema instance.
+   *
+   * @param definition - Object defining the device schema, including fields and optional settings.
+   * @returns An IBoundSchema instance wired to this client with read() and write() operations.
+   */
+  public withSchema<TFields extends TSchemaFieldsDefinition>(
+    definition: ISchemaDefinition<TFields>
+  ): IBoundSchema<TFields> {
+    return createBoundSchema(this, definition);
   }
 }
 

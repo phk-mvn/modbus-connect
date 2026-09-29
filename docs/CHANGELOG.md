@@ -1,5 +1,47 @@
 # CHANGELOG
 
+### 5.0.4 (2026-09-29)
+
+**End-to-end strict typing & elimination of `any`**
+
+- **Generic `executeCustomFunction<TResult, TArgs>()`** — Custom Modbus functions now support generic return types and parameter arrays constrained by `TModbusPrimitive`, eliminating `any` and providing full IDE autocomplete on custom plugin calls.
+- **Contract expansion for `ITransport`** — Added roster management hook (`removeConnectedDevice?(slaveId: number): void;`), and strictly typed `setSniffer(sniffer: ITrafficSniffer | null): void;`. This eliminates unsafe `(session.transport as any)` casts across the controller.
+- **Strict `ITrafficSniffer` exports & payload types** — `ITrafficSniffer` is now exported in the public API types. Added `TSnifferPayloadData` and `IModbusAddressRange` unions in `types/internal.ts`, replacing untyped `any` in `ISnifferAnalysis.data`.
+- **Typed `initialRegisters` in emulator options** — `IRtuEmulatorTransportOptions` and `ITcpEmulatorTransportOptions` now strictly reference `IRegisterDefinitions`.
+- **Task Slave ID association** — Added `slaveId?: number` to `IPollingTaskOptions` and `ITaskController`.
+- **Type Guard safety** — `isUint8Array` in `utils/buffer.ts` now accepts `unknown` instead of `any`.
+- **Error normalization helpers** — Added `toErrorMessage(error: unknown)` and `toError(error: unknown)` in `core/errors.ts` for safe error inspection without type-erasure.
+- **Typed Device Identification parser** — Added `IDeviceIdentificationResponse` in `protocol/functions.ts` to replace `any` in `parseReadDeviceIdentificationResponse(pdu)`, strictly typing the parsed object map as `Record<number, Uint8Array>`.
+- **Catch error normalization in protocol exchange** — `ModbusProtocol.exchange()` now handles errors using `toErrorMessage(err)` with typed `catch (err: unknown)`.
+- **Generic `ModbusClient.executeCustomFunction`** — Implemented generic return and parameter inference on the client implementation, removing `any` casts in identification decoding and retry error logs.
+- **Type-safe task slave identification in PollingManager** — `TaskController` now stores typed `slaveId?: number`, and `PollingManager._getTaskSlaveId()` safely resolves the slave address without `any` casts. Fatal task execution errors are normalized using `toErrorMessage(err)`.
+- **Strictly typed Scanner & Controller** — Eliminated all `any` casts in `ModbusScanner` and `TransportController` by providing explicit option maps (`TransportOptionsMap`), typed transport instances, and inferred connection error types in state handlers.
+- **Enforced `@typescript-eslint/no-explicit-any: error`** — Promoted ESLint rule from `warn` to `error`, ensuring zero `any` types remain in the codebase.
+
+**Exception hierarchy consistency & Transport options validation**
+
+- **Typed `ModbusCRCError` in RTU framing** — `RtuFramer.parseAdu()` now throws `ModbusCRCError` instead of generic `Error('CRC mismatch')`. This enables `err instanceof ModbusCRCError` checks in `ModbusClient` and `ModbusScanner`, correctly mapping checksum failures to `EConnectionErrorType.CRCError` and incrementing `stats.crcErrors` in discovery reports.
+- **Typed `ModbusTimeoutError` in exchange loop** — `ModbusProtocol.exchange()` now throws `ModbusTimeoutError` instead of generic `Error('Response timeout after...')` when request timeout is exceeded, ensuring proper classification as `EConnectionErrorType.Timeout` instead of falling back to `UnknownError`.
+- **Protocol recovery support for typed CRC error** — `ModbusProtocol.exchange()` recovery handler now explicitly checks `err instanceof ModbusCRCError || errMsg.includes('CRC mismatch')` for noise and garbage recovery.
+
+**Transport concurrency & error safety**
+
+- **Mutex lifecycle fix in async I/O operations** — In `NodeTcpTransport`, `NodeSerialTransport`, and `WebSerialTransport`, `write` and `read` methods were returning un-awaited promises from inside `try { return new Promise(...) }`, causing the `finally { release(); }` block to execute synchronously and release `_operationMutex` prematurely before the I/O or timeout finished. Now `return await new Promise(...)` is used, ensuring the mutex is held until the operation completes or fails.
+- **Dedicated Node.js TCP transport error hierarchy** — Added `NodeTcpTransportError`, `NodeTcpConnectionError`, `NodeTcpReadError`, and `NodeTcpWriteError` (inheriting from `TransportError`). Fixed `NodeTcpTransport.write()` throwing `NodeSerialWriteError` instead of `NodeTcpWriteError`, and `NodeTcpTransport.read()` throwing generic `Error` on closed transport instead of `NodeTcpReadError`.
+- **Exposed readonly connection target identifiers** — Added public `readonly host` and `readonly port` properties to `NodeTcpTransport`, and public `readonly path` property to `NodeSerialTransport` (reflected in `ITransport` contract).
+- **Serial transport fallback options** — Added typed `fallbacks?: string[]` to `INodeSerialTransportOptions` and `IWebSerialTransportOptions`.
+
+**Declarative Device Schema API (`client.withSchema`) & Group Operations**
+
+- **Declarative register mapping with zero external DSL** — Introduced `client.withSchema({ name?, fields })` returning a strongly-typed `IBoundSchema`. Schema fields are defined using clean, standard JavaScript/TypeScript objects (`{ address, type, table? }`), eliminating boilerplate manual conversions and register slicing.
+- **Single registers and Contiguous Register Groups** — Supports single field declarations and grouped blocks via the `group` property (`{ address, table, group: { [key]: { offset, type } } }`). Grouped registers are fetched in a single contiguous Modbus PDU request, ensuring synchronized multi-variable readings and eliminating inter-register latency.
+- **Atomic group writes (`writeGroup`) & dot notation (`write`)** — Grouped holding registers and coils can be written atomically in a single `FC 0x10` (`writeMultipleRegisters`) or `FC 0x0F` (`writeMultipleCoils`) transaction via `schema.writeGroup('phaseA', values)`. Individual subfields inside a group can also be targeted directly using dot notation (e.g. `schema.write('phaseA.voltage', 230)`).
+- **Targeted single-group reads (`readGroup`)** — Added `schema.readGroup(groupKey)` to selectively query a specific contiguous register block in a single network exchange without reading the rest of the schema.
+- **Safe address-only reads** — Explicitly touches only configured register addresses without interpolating or guessing gaps, preventing `0x02 ILLEGAL_DATA_ADDRESS` device exceptions.
+- **Zero-coupling PollingManager integration** — `PollingManager` remains completely transport-level and unaware of schemas; calling `await schema.read()` inside a task's `fn: async () => { ... }` runs transparently through the port queue and device tracker.
+- **Dedicated multi-register write methods on `ModbusClient`** — Added `client.writeFloat32(address, value, wordOrder?, timeout?)`, `client.writeFloat64(address, value, wordOrder?, timeout?)`, `client.writeInt32(address, value, wordOrder?, timeout?)`, and `client.writeUInt32(address, value, wordOrder?, timeout?)` directly to `ModbusClient` and `IModbusClient`.
+- **Public buffer conversion utilities** — Exported `float32ToRegisters`, `registersToFloat32`, `float64ToRegisters`, `registersToFloat64`, `int32ToRegisters`, `registersToInt32`, `uint32ToRegisters`, and `registersToUInt32` from public types.
+
 ### 5.0.2 (2026-09-26)
 
 **Logging rework — consistent metadata prefixes, no object payloads, no response data**

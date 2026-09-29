@@ -1,6 +1,7 @@
 // modbus/protocol/framing.ts
 
 import { CRC16_MODBUS_TABLE } from '../constants/modbus.js';
+import { ModbusCRCError } from '../core/errors.js';
 import type { TModbusProtocolType, TRSMode } from '../types/public.js';
 
 /**
@@ -104,7 +105,7 @@ export class RtuFramer {
     const calculatedCrc = calculateCrc16(dataForCrc);
 
     if (receivedCrc[0] !== calculatedCrc[0] || receivedCrc[1] !== calculatedCrc[1]) {
-      throw new Error('CRC mismatch');
+      throw new ModbusCRCError('CRC mismatch');
     }
 
     return { unitId: packet[0]!, pdu: packet.slice(1, -2) };

@@ -663,6 +663,46 @@ export class NodeSerialWriteError extends NodeSerialTransportError {
   }
 }
 
+/**
+ * Base class for Node.js TCP transport errors.
+ */
+export class NodeTcpTransportError extends TransportError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeTcpTransportError';
+  }
+}
+
+/**
+ * Thrown when a connection error occurs with Node.js TCP transport.
+ */
+export class NodeTcpConnectionError extends NodeTcpTransportError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeTcpConnectionError';
+  }
+}
+
+/**
+ * Thrown when a read operation fails on Node.js TCP transport.
+ */
+export class NodeTcpReadError extends NodeTcpTransportError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeTcpReadError';
+  }
+}
+
+/**
+ * Thrown when a write operation fails on Node.js TCP transport.
+ */
+export class NodeTcpWriteError extends NodeTcpTransportError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NodeTcpWriteError';
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Polling Manager Errors
 // ─────────────────────────────────────────────────────────────
@@ -796,4 +836,31 @@ export class ModbusReentrancyError extends ModbusError {
     super(message);
     this.name = 'ModbusReentrancyError';
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Error Normalization Helpers
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Safely extracts a message from an unknown caught error value.
+ *
+ * @param error - The caught error value.
+ * @returns Human-readable string representation of the error.
+ */
+export function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/**
+ * Normalizes any caught value into an Error instance.
+ *
+ * @param error - The caught error value.
+ * @param fallbackMessage - Optional default message if the value cannot be converted nicely.
+ * @returns An Error instance.
+ */
+export function toError(error: unknown, fallbackMessage?: string): Error {
+  if (error instanceof Error) return error;
+  return new Error(typeof error === 'string' ? error : (fallbackMessage ?? String(error)));
 }

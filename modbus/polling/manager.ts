@@ -129,7 +129,7 @@ class PollingManager implements IPollingManager {
    * Tasks can optionally declare a `slaveId` in their options.
    */
   private _getTaskSlaveId(task: TaskController): string | undefined {
-    return (task as any).slaveId;
+    return task.slaveId !== undefined ? String(task.slaveId) : undefined;
   }
 
   /** Validates the provided task options and throws a PollingTaskValidationError if invalid.

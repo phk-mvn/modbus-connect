@@ -8,6 +8,7 @@ import {
   ITransaction,
   TSnifferHandler,
   TTransactionHandler,
+  TSnifferPayloadData,
 } from '../../types/internal.js';
 import { TModbusProtocolType } from '../../types/public.js';
 
@@ -269,7 +270,7 @@ export class TrafficSniffer implements ITrafficSniffer {
     }
 
     let description = isTcp ? '[TCP] ' : '[RTU] ';
-    let data: any = null;
+    let data: TSnifferPayloadData = null;
 
     if (isTx) {
       if (raw.length >= offset + 6) {
@@ -280,7 +281,7 @@ export class TrafficSniffer implements ITrafficSniffer {
       }
     } else {
       if (isException) {
-        data = raw[offset + 2];
+        data = raw[offset + 2] ?? null;
         description += `Exception: Code ${data}`;
       } else if (raw.length >= offset + 3) {
         const byteCount = raw[offset + 2];
@@ -292,7 +293,7 @@ export class TrafficSniffer implements ITrafficSniffer {
             break;
           case 0x03:
           case 0x04: {
-            const regs = [];
+            const regs: number[] = [];
             for (let i = 0; i < byteCount; i += 2) {
               const regIdx = offset + 3 + i;
               if (raw[regIdx] !== undefined) {

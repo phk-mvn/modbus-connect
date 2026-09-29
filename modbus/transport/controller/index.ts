@@ -24,6 +24,7 @@ import {
   ModbusNotConnectedError,
   RSModeConstraintError,
 } from '../../core/errors.js';
+import { defineSchema } from '../../schema/index.js';
 
 import type {
   ITransportController,
@@ -60,6 +61,8 @@ import type { TPollingAction, TPollingBulkAction } from '../../types/public.js';
  * This class implements a thread-safe approach using Mutex for CRUD operations.
  */
 class TransportController implements ITransportController {
+  public static readonly defineSchema = defineSchema;
+
   private readonly _mutex = new Mutex();
   public logger: Logger<ILogObj>;
 
@@ -217,7 +220,10 @@ class TransportController implements ITransportController {
     const scanPath = options.path;
 
     if (typeof scanPath === 'string' && scanPath) {
-      const byPath = sessions.find(session => (session.transport as any).path === scanPath);
+      const byPath = sessions.find(session => {
+        const t = session.transport;
+        return 'path' in t && (t as { path: string }).path === scanPath;
+      });
       if (byPath) return byPath;
     }
 
@@ -229,11 +235,12 @@ class TransportController implements ITransportController {
           : undefined;
 
       return sessions.find(session => {
-        const transport = session.transport as any;
+        const t = session.transport;
+        if (!('host' in t) || typeof (t as { host: unknown }).host !== 'string') return false;
+        const netTransport = t as { host: string; port?: number };
         return (
-          typeof transport?.host === 'string' &&
-          wantedHosts.has(transport.host) &&
-          (!wantedPorts || wantedPorts.has(transport.port))
+          wantedHosts.has(netTransport.host) &&
+          (!wantedPorts || (netTransport.port !== undefined && wantedPorts.has(netTransport.port)))
         );
       });
     }
@@ -278,7 +285,7 @@ class TransportController implements ITransportController {
       const session = new PortSession(transport, {
         id,
         type,
-        fallbacks: (options as any).fallbacks || [],
+        fallbacks: options.fallbacks ?? [],
         maxReconnectAttempts: reconnectOptions?.maxReconnectAttempts,
         reconnectInterval: reconnectOptions?.reconnectInterval,
         queue: queueOptions,
@@ -311,10 +318,9 @@ class TransportController implements ITransportController {
       await session.destroy();
       this._registry.clearSlaveAssignments(id);
 
-      const transportAny = session.transport as any;
-      if (typeof transportAny.removeConnectedDevice === 'function') {
+      if (typeof session.transport.removeConnectedDevice === 'function') {
         for (const sid of session.slaveIds) {
-          transportAny.removeConnectedDevice(sid);
+          session.transport.removeConnectedDevice(sid);
         }
       }
 
@@ -792,9 +798,8 @@ class TransportController implements ITransportController {
       this._registry.unassignSlave(transportId, slaveId);
       this._stateManager.removeDeviceState(slaveId, transportId);
 
-      const transportAny = session.transport as any;
-      if (typeof transportAny.removeConnectedDevice === 'function') {
-        transportAny.removeConnectedDevice(slaveId);
+      if (typeof session.transport.removeConnectedDevice === 'function') {
+        session.transport.removeConnectedDevice(slaveId);
       }
 
       this.logger.info(
@@ -821,11 +826,11 @@ class TransportController implements ITransportController {
   private _wireTransportHandlers(session: PortSession): void {
     const { transport, id } = session;
 
-    transport.setDeviceStateHandler((slaveId: number, connected: boolean, error: any) => {
+    transport.setDeviceStateHandler((slaveId, connected, error) => {
       this._onDeviceStateChange(id, slaveId, connected, error);
     });
 
-    transport.setPortStateHandler((connected: boolean, slaveIds: number[], error: any) => {
+    transport.setPortStateHandler((connected, slaveIds, error) => {
       this._onPortStateChange(id, connected, slaveIds, error);
     });
   }
@@ -1181,10 +1186,9 @@ class TransportController implements ITransportController {
 
     this._registry.clearSlaveAssignments(id);
 
-    const transportAny = session.transport as any;
-    if (typeof transportAny.removeConnectedDevice === 'function') {
+    if (typeof session.transport.removeConnectedDevice === 'function') {
       for (const sid of session.slaveIds) {
-        transportAny.removeConnectedDevice(sid);
+        session.transport.removeConnectedDevice(sid);
       }
     }
 

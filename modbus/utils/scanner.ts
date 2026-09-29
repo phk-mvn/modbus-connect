@@ -22,9 +22,12 @@ import {
   IScanReport,
   TScanProfile,
   TParityType,
+  ITransport,
+  IWebSerialPort,
 } from '../types/public.js';
-import { ModbusExceptionError, ModbusCRCError } from '../core/errors.js';
+import { ModbusExceptionError, ModbusCRCError, toErrorMessage } from '../core/errors.js';
 import { TrafficSniffer } from '../transport/trackers/traffic-sniffer.js';
+import { type TransportOptionsMap } from '../transport/factories/factories.js';
 
 /**
  * Predefined scanning parameter presets.
@@ -222,27 +225,45 @@ export class ModbusScanner {
 
           const timeout = Math.ceil(264000 / baud + opts.padding!);
 
-          let transport: any;
+          let transport: ITransport;
           try {
-            const transportOpts: any = {
-              port: opts.path,
-              baudRate: baud,
-              parity: parity,
-              stopBits: stopBits,
-              dataBits: 8,
-              RSMode: 'RS485',
-            };
-            transport = await TransportFactory.create(
-              transportType,
-              transportOpts,
-              this.logger,
-              this._sniffer ?? null
-            );
+            if (transportType === 'node-rtu') {
+              const transportOpts: TransportOptionsMap['node-rtu'] = {
+                port: typeof opts.path === 'string' ? opts.path : undefined,
+                path: typeof opts.path === 'string' ? opts.path : undefined,
+                baudRate: baud,
+                parity: parity,
+                stopBits: stopBits,
+                dataBits: 8,
+                RSMode: 'RS485',
+              };
+              transport = await TransportFactory.create(
+                'node-rtu',
+                transportOpts,
+                this.logger,
+                this._sniffer ?? null
+              );
+            } else {
+              const transportOpts: TransportOptionsMap['web-rtu'] = {
+                port: opts.path as IWebSerialPort,
+                baudRate: baud,
+                parity: parity,
+                stopBits: stopBits,
+                dataBits: 8,
+                RSMode: 'RS485',
+              };
+              transport = await TransportFactory.create(
+                'web-rtu',
+                transportOpts,
+                this.logger,
+                this._sniffer ?? null
+              );
+            }
 
             await transport.connect();
-          } catch (err: any) {
+          } catch (err: unknown) {
             this.logger.warn(
-              `Failed to open port (baud ${baud}, parity ${parity}, stopBits ${stopBits}), skipping: ${err?.message}`
+              `Failed to open port (baud ${baud}, parity ${parity}, stopBits ${stopBits}), skipping: ${toErrorMessage(err)}`
             );
             continue;
           }
@@ -278,7 +299,7 @@ export class ModbusScanner {
                   stopBits,
                   opts
                 );
-              } catch (err: any) {
+              } catch (err: unknown) {
                 stats.probesSent++;
                 if (err instanceof ModbusExceptionError) {
                   stats.exceptionResponses++;
@@ -347,7 +368,7 @@ export class ModbusScanner {
       for (const port of ports) {
         if (isScanStopped(ctrl, opts.signal)) break;
 
-        let transport: any;
+        let transport: ITransport;
         try {
           transport = await TransportFactory.create(
             'node-tcp',
@@ -356,8 +377,10 @@ export class ModbusScanner {
             this._sniffer ?? null
           );
           await transport.connect();
-        } catch (err: any) {
-          this.logger.warn(`Failed to connect to ${host}:${port}, skipping: ${err?.message}`);
+        } catch (err: unknown) {
+          this.logger.warn(
+            `Failed to connect to ${host}:${port}, skipping: ${toErrorMessage(err)}`
+          );
           continue;
         }
 
@@ -383,7 +406,7 @@ export class ModbusScanner {
                   opts.onRegisterRead?.(unitId, opts.registerAddress ?? 0, registers[0]);
 
                   this._addTcp(results, unitId, host, port, opts);
-                } catch (err: any) {
+                } catch (err: unknown) {
                   stats.probesSent++;
                   if (err instanceof ModbusExceptionError) {
                     stats.exceptionResponses++;

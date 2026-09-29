@@ -17,6 +17,34 @@ import type ModbusClient from '../core/client.js';
 import type PollingManager from '../polling/manager.js';
 import type { PortConnectionTracker } from '../transport/trackers/port-tracker.js';
 import type RegisterData from '../core/register-data.js';
+import type { ITrafficSniffer } from './internal.js';
+import type {
+  IBoundSchema,
+  ISchemaDefinition,
+  TSchemaFieldsDefinition,
+  TSchemaField,
+  TSchemaTable,
+  TSchemaFieldType,
+  TSchemaWordOrder,
+  INumericFieldDefinition,
+  IBooleanFieldDefinition,
+  IBitmaskFieldDefinition,
+  IStringFieldDefinition,
+  IGroupSubFieldDefinition,
+  TGroupSubFields,
+  ISchemaGroupDefinition,
+  TSchemaEntry,
+  InferFieldType,
+  InferSubFieldType,
+  InferGroupType,
+  InferSchemaEntry,
+  InferSchema,
+} from '../schema/types.js';
+
+/**
+ * Permitted primitive and binary argument types for custom Modbus function request builders.
+ */
+export type TModbusPrimitive = number | boolean | string | Uint8Array | number[];
 
 // ===================================================
 // MODBUS CLIENT
@@ -43,7 +71,13 @@ export interface IModbusClient {
    * @param args - Arguments passed to the plugin request builder.
    * @returns A Promise resolving to the parsed result of the custom function response.
    */
-  executeCustomFunction(functionName: string, ...args: any[]): Promise<any>;
+  executeCustomFunction<
+    TResult = Uint8Array,
+    TArgs extends TModbusPrimitive[] = TModbusPrimitive[],
+  >(
+    functionName: string,
+    ...args: TArgs
+  ): Promise<TResult>;
 
   /**
    * Disables logging for this client instance (sets log level to 'silent').
@@ -146,6 +180,70 @@ export interface IModbusClient {
   ): Promise<{ startAddress: number; quantity: number }>;
 
   /**
+   * Writes a 32-bit floating point number (IEEE 754 single precision) into 2 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Floating point number to write.
+   * @param wordOrder - Word order: 'BE' (high word first) or 'LE' (low word first). Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  writeFloat32(
+    address: number,
+    value: number,
+    wordOrder?: 'BE' | 'LE',
+    timeout?: number
+  ): Promise<void>;
+
+  /**
+   * Writes a 64-bit floating point number (IEEE 754 double precision) into 4 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Double precision floating point number to write.
+   * @param wordOrder - Word order: 'BE' or 'LE'. Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  writeFloat64(
+    address: number,
+    value: number,
+    wordOrder?: 'BE' | 'LE',
+    timeout?: number
+  ): Promise<void>;
+
+  /**
+   * Writes a signed 32-bit integer into 2 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Signed 32-bit integer.
+   * @param wordOrder - Word order: 'BE' or 'LE'. Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  writeInt32(
+    address: number,
+    value: number,
+    wordOrder?: 'BE' | 'LE',
+    timeout?: number
+  ): Promise<void>;
+
+  /**
+   * Writes an unsigned 32-bit integer into 2 consecutive holding registers.
+   *
+   * @param address - Starting register address (0-65535).
+   * @param value - Unsigned 32-bit integer.
+   * @param wordOrder - Word order: 'BE' or 'LE'. Defaults to 'BE'.
+   * @param timeout - Optional attempt timeout in milliseconds.
+   * @returns A Promise resolving when write completes.
+   */
+  writeUInt32(
+    address: number,
+    value: number,
+    wordOrder?: 'BE' | 'LE',
+    timeout?: number
+  ): Promise<void>;
+
+  /**
    * Reads multiple coils (Function Code 0x01).
    *
    * @param startAddress - Starting coil address (0-65535).
@@ -223,6 +321,16 @@ export interface IModbusClient {
     numberOfObjects: number;
     objects: Record<number, string>;
   }>;
+
+  /**
+   * Binds a declarative device schema to this client, returning a typed schema instance.
+   *
+   * @param definition - Object defining the device schema, including fields and optional settings.
+   * @returns An IBoundSchema instance wired to this client with read() and write() operations.
+   */
+  withSchema<TFields extends TSchemaFieldsDefinition>(
+    definition: ISchemaDefinition<TFields>
+  ): IBoundSchema<TFields>;
 }
 
 /**
@@ -281,7 +389,9 @@ export interface IModbusClientOptions {
 /**
  * Constructor type for instantiating custom Modbus plugins.
  */
-export type TPluginConstructor = new (...args: any[]) => IModbusPlugin;
+export type TPluginConstructor = new (
+  ...args: (Record<string, unknown> | number | string | boolean | undefined)[]
+) => IModbusPlugin;
 
 /**
  * Interface that custom Modbus plugins must implement to provide user-defined function codes.
@@ -301,14 +411,17 @@ export interface IModbusPlugin {
 /**
  * Handler definition for building requests and parsing responses of a custom Modbus function code.
  */
-export interface ICustomFunctionHandler {
+export interface ICustomFunctionHandler<
+  TResult = Uint8Array,
+  TArgs extends TModbusPrimitive[] = TModbusPrimitive[],
+> {
   /**
    * Builds the raw request PDU bytes for the custom function.
    *
    * @param args - Arbitrary arguments passed from executeCustomFunction.
    * @returns Raw PDU Uint8Array to send.
    */
-  buildRequest: (...args: any[]) => Uint8Array;
+  buildRequest: (...args: TArgs) => Uint8Array;
 
   /**
    * Parses the raw response PDU bytes returned by the slave.
@@ -316,7 +429,7 @@ export interface ICustomFunctionHandler {
    * @param responsePdu - Raw response PDU bytes.
    * @returns Parsed domain result.
    */
-  parseResponse: (responsePdu: Uint8Array) => any;
+  parseResponse: (responsePdu: Uint8Array) => TResult;
 
   /**
    * Optional helper to predict or dynamically determine the expected response PDU length.
@@ -484,12 +597,19 @@ export interface ITransport {
   ): void;
 
   /**
+   * Removes a connected device from the transport's internal tracking roster.
+   *
+   * @param slaveId - Slave address to remove.
+   */
+  removeConnectedDevice?(slaveId: number): void;
+
+  /**
    * Attaches a TrafficSniffer instance for monitoring raw transport traffic.
    *
-   * @param sniffer - Sniffer instance.
+   * @param sniffer - Sniffer instance or null to detach.
    * @returns void
    */
-  setSniffer(sniffer: any): void;
+  setSniffer(sniffer: ITrafficSniffer | null): void;
 }
 
 /**
@@ -960,6 +1080,11 @@ export interface IPollingTaskOptions {
   id: string;
 
   /**
+   * Optional Slave ID of the device associated with this polling task.
+   */
+  slaveId?: number;
+
+  /**
    * Task owner: the `clientId` from `createClient()`. Tasks with an owner are automatically
    * stopped and removed along with the client (`removeClient`).
    */
@@ -1147,6 +1272,11 @@ export interface IPollingSystemStats {
  */
 export interface ITaskController {
   /**
+   * Optional Slave ID of the device associated with this task.
+   */
+  slaveId?: number;
+
+  /**
    * Starts the task scheduler loop.
    */
   start(): void;
@@ -1204,7 +1334,7 @@ export interface ITransportController {
   /**
    * Global traffic sniffer instance if enabled in options, otherwise null.
    */
-  readonly sniffer: any | null;
+  readonly sniffer: ITrafficSniffer | null;
 
   /**
    * Disables logging across the controller.
@@ -1982,6 +2112,11 @@ export interface INodeSerialTransportOptions {
   RSMode?: TRSMode;
 
   /**
+   * Fallback ports or addresses to attempt if opening the primary fails.
+   */
+  fallbacks?: string[];
+
+  /**
    * Additional driver-specific options.
    */
   [key: string]: unknown;
@@ -2132,6 +2267,11 @@ export interface IWebSerialTransportOptions {
   RSMode?: TRSMode;
 
   /**
+   * Fallback ports or addresses to attempt if opening the primary fails.
+   */
+  fallbacks?: string[];
+
+  /**
    * Additional driver-specific options.
    */
   [key: string]: unknown;
@@ -2278,7 +2418,7 @@ export interface IRtuEmulatorTransportOptions {
   /**
    * Initial register data definitions to load upon startup.
    */
-  initialRegisters?: any;
+  initialRegisters?: IRegisterDefinitions;
 
   /**
    * Simulated device response latency in milliseconds.
@@ -2313,7 +2453,7 @@ export interface ITcpEmulatorTransportOptions {
   /**
    * Initial register data definitions to load upon startup.
    */
-  initialRegisters?: any;
+  initialRegisters?: IRegisterDefinitions;
 
   /**
    * Mode standard (defaults to 'TCP/IP').
@@ -2873,3 +3013,39 @@ export interface IPortSession {
    */
   destroy(): Promise<void>;
 }
+
+export type {
+  ITrafficSniffer,
+  IBoundSchema,
+  ISchemaDefinition,
+  TSchemaFieldsDefinition,
+  TSchemaField,
+  TSchemaTable,
+  TSchemaFieldType,
+  TSchemaWordOrder,
+  INumericFieldDefinition,
+  IBooleanFieldDefinition,
+  IBitmaskFieldDefinition,
+  IStringFieldDefinition,
+  IGroupSubFieldDefinition,
+  TGroupSubFields,
+  ISchemaGroupDefinition,
+  TSchemaEntry,
+  InferFieldType,
+  InferSubFieldType,
+  InferGroupType,
+  InferSchemaEntry,
+  InferSchema,
+};
+
+export { defineSchema, isSchemaGroup } from '../schema/index.js';
+export {
+  float32ToRegisters,
+  registersToFloat32,
+  float64ToRegisters,
+  registersToFloat64,
+  int32ToRegisters,
+  registersToInt32,
+  uint32ToRegisters,
+  registersToUInt32,
+} from '../utils/buffer.js';

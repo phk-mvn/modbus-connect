@@ -100,7 +100,7 @@ export const sliceUint8Array = (arr: Uint8Array, start: number, end?: number): U
  * @param obj - Any object or value to test.
  * @returns True if obj is a Uint8Array, false otherwise.
  */
-export const isUint8Array = (obj: any): obj is Uint8Array => {
+export const isUint8Array = (obj: unknown): obj is Uint8Array => {
   return obj instanceof Uint8Array;
 };
 
@@ -143,6 +143,158 @@ export const fromBytesLE = (lo: number, hi: number): number => {
   return ((hi << 8) | lo) >>> 0;
 };
 
+/**
+ * Converts a 32-bit floating point number to two 16-bit Modbus registers.
+ *
+ * @param val - Floating point number.
+ * @param wordOrder - 'BE' (high word first) or 'LE' (low word first). Default 'BE'.
+ * @returns Tuple of two 16-bit integers [reg0, reg1].
+ */
+export const float32ToRegisters = (
+  val: number,
+  wordOrder: 'BE' | 'LE' = 'BE'
+): [number, number] => {
+  const buf = new ArrayBuffer(4);
+  const view = new DataView(buf);
+  view.setFloat32(0, val, false);
+  const u8 = new Uint8Array(buf);
+  const w1 = (u8[0]! << 8) | u8[1]!;
+  const w2 = (u8[2]! << 8) | u8[3]!;
+  return wordOrder === 'LE' ? [w2, w1] : [w1, w2];
+};
+
+/**
+ * Converts two 16-bit Modbus registers to a 32-bit floating point number.
+ *
+ * @param registers - Tuple of two 16-bit integers [reg0, reg1].
+ * @param wordOrder - 'BE' (high word first) or 'LE' (low word first). Default 'BE'.
+ * @returns 32-bit float value.
+ */
+export const registersToFloat32 = (
+  registers: [number, number] | number[],
+  wordOrder: 'BE' | 'LE' = 'BE'
+): number => {
+  const buf = new ArrayBuffer(4);
+  const u8 = new Uint8Array(buf);
+  const ordered =
+    wordOrder === 'LE'
+      ? [registers[1] ?? 0, registers[0] ?? 0]
+      : [registers[0] ?? 0, registers[1] ?? 0];
+  u8[0] = (ordered[0]! >> 8) & 0xff;
+  u8[1] = ordered[0]! & 0xff;
+  u8[2] = (ordered[1]! >> 8) & 0xff;
+  u8[3] = ordered[1]! & 0xff;
+  return new DataView(buf).getFloat32(0, false);
+};
+
+/**
+ * Converts a 64-bit floating point number to four 16-bit Modbus registers.
+ *
+ * @param val - Double precision floating point number.
+ * @param wordOrder - 'BE' or 'LE'. Default 'BE'.
+ * @returns Tuple of four 16-bit integers.
+ */
+export const float64ToRegisters = (
+  val: number,
+  wordOrder: 'BE' | 'LE' = 'BE'
+): [number, number, number, number] => {
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  view.setFloat64(0, val, false);
+  const u8 = new Uint8Array(buf);
+  const w1 = (u8[0]! << 8) | u8[1]!;
+  const w2 = (u8[2]! << 8) | u8[3]!;
+  const w3 = (u8[4]! << 8) | u8[5]!;
+  const w4 = (u8[6]! << 8) | u8[7]!;
+  return wordOrder === 'LE' ? [w4, w3, w2, w1] : [w1, w2, w3, w4];
+};
+
+/**
+ * Converts four 16-bit Modbus registers to a 64-bit floating point number.
+ */
+export const registersToFloat64 = (
+  registers: [number, number, number, number] | number[],
+  wordOrder: 'BE' | 'LE' = 'BE'
+): number => {
+  const buf = new ArrayBuffer(8);
+  const u8 = new Uint8Array(buf);
+  const ordered =
+    wordOrder === 'LE'
+      ? [registers[3] ?? 0, registers[2] ?? 0, registers[1] ?? 0, registers[0] ?? 0]
+      : [registers[0] ?? 0, registers[1] ?? 0, registers[2] ?? 0, registers[3] ?? 0];
+  for (let i = 0; i < 4; i++) {
+    u8[i * 2] = (ordered[i]! >> 8) & 0xff;
+    u8[i * 2 + 1] = ordered[i]! & 0xff;
+  }
+  return new DataView(buf).getFloat64(0, false);
+};
+
+/**
+ * Converts a signed 32-bit integer to two 16-bit Modbus registers.
+ */
+export const int32ToRegisters = (val: number, wordOrder: 'BE' | 'LE' = 'BE'): [number, number] => {
+  const buf = new ArrayBuffer(4);
+  const view = new DataView(buf);
+  view.setInt32(0, val, false);
+  const u8 = new Uint8Array(buf);
+  const w1 = (u8[0]! << 8) | u8[1]!;
+  const w2 = (u8[2]! << 8) | u8[3]!;
+  return wordOrder === 'LE' ? [w2, w1] : [w1, w2];
+};
+
+/**
+ * Converts two 16-bit Modbus registers to a signed 32-bit integer.
+ */
+export const registersToInt32 = (
+  registers: [number, number] | number[],
+  wordOrder: 'BE' | 'LE' = 'BE'
+): number => {
+  const buf = new ArrayBuffer(4);
+  const u8 = new Uint8Array(buf);
+  const ordered =
+    wordOrder === 'LE'
+      ? [registers[1] ?? 0, registers[0] ?? 0]
+      : [registers[0] ?? 0, registers[1] ?? 0];
+  u8[0] = (ordered[0]! >> 8) & 0xff;
+  u8[1] = ordered[0]! & 0xff;
+  u8[2] = (ordered[1]! >> 8) & 0xff;
+  u8[3] = ordered[1]! & 0xff;
+  return new DataView(buf).getInt32(0, false);
+};
+
+/**
+ * Converts an unsigned 32-bit integer to two 16-bit Modbus registers.
+ */
+export const uint32ToRegisters = (val: number, wordOrder: 'BE' | 'LE' = 'BE'): [number, number] => {
+  const buf = new ArrayBuffer(4);
+  const view = new DataView(buf);
+  view.setUint32(0, val, false);
+  const u8 = new Uint8Array(buf);
+  const w1 = (u8[0]! << 8) | u8[1]!;
+  const w2 = (u8[2]! << 8) | u8[3]!;
+  return wordOrder === 'LE' ? [w2, w1] : [w1, w2];
+};
+
+/**
+ * Converts two 16-bit Modbus registers to an unsigned 32-bit integer.
+ */
+export const registersToUInt32 = (
+  registers: [number, number] | number[],
+  wordOrder: 'BE' | 'LE' = 'BE'
+): number => {
+  const buf = new ArrayBuffer(4);
+  const u8 = new Uint8Array(buf);
+  const ordered =
+    wordOrder === 'LE'
+      ? [registers[1] ?? 0, registers[0] ?? 0]
+      : [registers[0] ?? 0, registers[1] ?? 0];
+  u8[0] = (ordered[0]! >> 8) & 0xff;
+  u8[1] = ordered[0]! & 0xff;
+  u8[2] = (ordered[1]! >> 8) & 0xff;
+  u8[3] = ordered[1]! & 0xff;
+  return new DataView(buf).getUint32(0, false);
+};
+
 // For compatibility with Vite (fixes the "does not provide an export named default" error)
 export default {
   fromBytes,
@@ -155,4 +307,12 @@ export default {
   allocUint8Array,
   toBytesLE,
   fromBytesLE,
+  float32ToRegisters,
+  registersToFloat32,
+  float64ToRegisters,
+  registersToFloat64,
+  int32ToRegisters,
+  registersToInt32,
+  uint32ToRegisters,
+  registersToUInt32,
 };

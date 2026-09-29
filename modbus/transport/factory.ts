@@ -13,12 +13,19 @@ import {
   TcpEmulatorFactory,
 } from './factories/factories.js';
 
+export type TAnyTransportFactory =
+  | TransportFactoryBase<TransportOptionsMap['node-rtu']>
+  | TransportFactoryBase<TransportOptionsMap['node-tcp']>
+  | TransportFactoryBase<TransportOptionsMap['web-rtu']>
+  | TransportFactoryBase<TransportOptionsMap['rtu-emulator']>
+  | TransportFactoryBase<TransportOptionsMap['tcp-emulator']>;
+
 /**
  * Main factory class for Modbus transports.
  * Uses a static registry to manage and instantiate different transport types.
  */
 export class TransportFactory {
-  private static registry = new Map<TTransportType, TransportFactoryBase<any>>();
+  private static registry = new Map<TTransportType, TAnyTransportFactory>();
 
   static {
     this.register(new NodeRtuFactory());
@@ -34,7 +41,7 @@ export class TransportFactory {
    * @param factory - The factory instance to register.
    * @returns void
    */
-  static register(factory: TransportFactoryBase<any>): void {
+  static register(factory: TAnyTransportFactory): void {
     this.registry.set(factory.type, factory);
   }
 
@@ -51,7 +58,7 @@ export class TransportFactory {
   ): TransportFactoryBase<TransportOptionsMap[T]> {
     const factory = this.registry.get(type);
     if (!factory) throw new Error(`Unknown transport type: ${type}`);
-    return factory;
+    return factory as TransportFactoryBase<TransportOptionsMap[T]>;
   }
 
   /**

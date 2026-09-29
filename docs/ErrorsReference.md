@@ -22,6 +22,7 @@ All errors are grouped by their origin and scope:
 | [Implementation-Specific Errors](#implementation-specific-errors-nodeweb)         | Node.js / Web Serial specifics.                  |
 | [Port Queue / Session / Client Errors](#port-queue--session--client-errors)       | Queue, roster and duplicate devices.             |
 | [PollingManager Errors](#pollingmanager-errors)                                   | Polling task lifecycle.                          |
+| [Error Normalization Helpers](#error-normalization-helpers)                       | Safe error inspection and type normalization.    |
 
 ---
 
@@ -150,6 +151,15 @@ Physical errors describe the state of the **wire itself** — most often they in
 | `NodeSerialReadError`       | Physical port read error in Node.js.       |
 | `NodeSerialWriteError`      | Physical write or `drain` method error.    |
 
+### Node TCP Transport
+
+| Error class              | Description                        |
+| ------------------------ | ---------------------------------- |
+| `NodeTcpTransportError`  | Base class for Node.js TCP errors. |
+| `NodeTcpConnectionError` | TCP socket connection error.       |
+| `NodeTcpReadError`       | Socket read stream failed.         |
+| `NodeTcpWriteError`      | Socket write failed.               |
+
 ---
 
 ## Port Queue / Session / Client Errors
@@ -180,3 +190,14 @@ Physical errors describe the state of the **wire itself** — most often they in
 | `PollingTaskNotFoundError`      | Attempt to manage a task that is not in the list.                    |
 | `PollingTaskValidationError`    | Error in task parameters (invalid interval, missing function).       |
 | `RSModeConstraintError`         | Violation of mode rules (e.g., attempt to add two devices to RS232). |
+
+---
+
+## Error Normalization Helpers
+
+Utility functions exported from `modbus/core/errors.ts` for safe error handling in `catch (err: unknown)` blocks:
+
+| Helper function                             | Return type | Description                                                                                   |
+| ------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------- |
+| `toErrorMessage(error: unknown)`            | `string`    | Safely extracts `error.message` if `error instanceof Error`, or converts the value to string. |
+| `toError(error: unknown, fallbackMessage?)` | `Error`     | Returns `error` if it is an `Error` instance, or wraps non-error values in a new `Error`.     |

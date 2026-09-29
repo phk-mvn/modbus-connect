@@ -28,14 +28,14 @@ Emulators are registered as regular transports using `addTransport`.
 
 **Options for `rtu-emulator` and `tcp-emulator`**:
 
-| Option                 | Type      | Description                                                                                                                                               |
-| ---------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `slaveId`              | `number`  | Modbus Unit ID of the emulator (0-247). Defaults to 1.                                                                                                    |
-| `responseLatencyMs`    | `number`  | Artificial response delay in ms. Defaults: 30 for `rtu-emulator`, 5 for `tcp-emulator`.                                                                   |
-| `initialRegisters`     | `object`  | An object with initial data for memory: `{ coils?, discrete?, holding?, input? }`.                                                                        |
-| `deviceIdentification` | `object`  | Device identification objects (FC `0x2B`/`0x0E`): `{ [objectId]: string }`.                                                                               |
-| `loggerEnabled`        | `boolean` | Enable/disable internal logging. Defaults to `true`.                                                                                                      |
-| `RSMode`               | `string`  | For `tcp-emulator` only. Informational: the emulator always operates and reports `'TCP/IP'` (the option is accepted for factory signature compatibility). |
+| Option                 | Type                   | Description                                                                                                                                               |
+| ---------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `slaveId`              | `number`               | Modbus Unit ID of the emulator (0-247). Defaults to 1.                                                                                                    |
+| `responseLatencyMs`    | `number`               | Artificial response delay in ms. Defaults: 30 for `rtu-emulator`, 5 for `tcp-emulator`.                                                                   |
+| `initialRegisters`     | `IRegisterDefinitions` | An object with initial data for memory: `{ coils?, discrete?, holding?, input? }`.                                                                        |
+| `deviceIdentification` | `object`               | Device identification objects (FC `0x2B`/`0x0E`): `{ [objectId]: string }`.                                                                               |
+| `loggerEnabled`        | `boolean`              | Enable/disable internal logging. Defaults to `true`.                                                                                                      |
+| `RSMode`               | `string`               | For `tcp-emulator` only. Informational: the emulator always operates and reports `'TCP/IP'` (the option is accepted for factory signature compatibility). |
 
 > There is no `slaveIds` option anymore: when the emulator transport connects, its slave is registered
 > with the session's port automatically (via the device/port state handlers).

@@ -420,14 +420,30 @@ export const buildReadDeviceIdentificationRequest = (
 };
 
 /**
+ * Parsed payload for Function Code 0x2B (Read Device Identification).
+ */
+export interface IDeviceIdentificationResponse {
+  functionCode: number;
+  meiType: number;
+  category: number;
+  conformityLevel: number;
+  moreFollows: number;
+  nextObjectId: number;
+  numberOfObjects: number;
+  objects: Record<number, Uint8Array>;
+}
+
+/**
  * Parses a response PDU for Function Code 0x2B (Read Device Identification).
  *
  * @param {Uint8Array} pdu - The received response PDU.
- * @returns {any} An object containing device identification data or null if invalid.
+ * @returns {IDeviceIdentificationResponse | null} An object containing device identification data or null if invalid.
  */
-export const parseReadDeviceIdentificationResponse = (pdu: Uint8Array): any => {
+export const parseReadDeviceIdentificationResponse = (
+  pdu: Uint8Array
+): IDeviceIdentificationResponse | null => {
   if (pdu.length < 7 || pdu[0] !== 0x2b) return null;
-  const res: any = {
+  const res: IDeviceIdentificationResponse = {
     functionCode: pdu[0],
     meiType: pdu[1],
     category: pdu[2],

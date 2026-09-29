@@ -31,7 +31,7 @@ export interface IModbusProtocol {
    * @param expectedLengthResolver - Optional dynamic length resolver for custom or variable-length functions.
    * @returns A Promise resolving to the response PDU bytes.
    * @throws {ModbusTimeoutError} When no valid response is received within the timeout.
-   * @throws {ModbusCrcError} When the received frame fails CRC checksum validation (RTU).
+   * @throws {ModbusCRCError} When the received frame fails CRC checksum validation (RTU).
    * @throws {ModbusExceptionError} When the slave returns an exception response.
    */
   exchange(
@@ -405,6 +405,26 @@ export interface ITransaction {
 export type TTransactionHandler = (transaction: ITransaction) => void;
 
 /**
+ * Address range in a Modbus request packet.
+ */
+export interface IModbusAddressRange {
+  /**
+   * Starting address specified in the request.
+   */
+  address: number;
+
+  /**
+   * Number of registers, inputs, or coils requested.
+   */
+  quantity: number;
+}
+
+/**
+ * Decoded functional payload data formats produced by protocol analysis in TrafficSniffer.
+ */
+export type TSnifferPayloadData = IModbusAddressRange | number[] | number | null;
+
+/**
  * Protocol inspection details extracted from a raw Modbus packet.
  */
 export interface ISnifferAnalysis {
@@ -436,7 +456,7 @@ export interface ISnifferAnalysis {
   /**
    * Decoded functional payload data (registers, coils, counts, etc.).
    */
-  data?: any;
+  data?: TSnifferPayloadData;
 
   /**
    * Human-readable summary of the packet's function and arguments.
